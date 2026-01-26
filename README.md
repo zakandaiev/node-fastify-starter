@@ -70,7 +70,7 @@ npm run migration:down
 
 ``` bash
 # ESLint
-npm run lint:js
+npm run lint
 # or
-npm run lint:js:fix
+npm run lint:fix
 ```

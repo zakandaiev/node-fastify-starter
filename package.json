@@ -34,8 +34,8 @@
   "scripts": {
     "dev": "nodemon ./index.js | pino-pretty",
     "start": "node ./index.js",
-    "lint:js": "eslint ./",
-    "lint:js:fix": "eslint ./ --fix",
+    "lint": "eslint ./",
+    "lint:fix": "eslint ./ --fix",
     "migration:up": "node ./core/migration.js --direction=up",
     "migration:down": "node ./core/migration.js --direction=down"
   },
