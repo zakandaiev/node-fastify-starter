@@ -1,0 +1,12 @@
+{
+  "message": {
+    "type": "string",
+    "enum": [
+      "healthy"
+    ]
+  },
+  "requestDate": {
+    "type": "string",
+    "format": "date-time"
+  }
+}

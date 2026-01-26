@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en-US">
+
+<head>
+  <title>Node Fastify Starter</title>
+
+  <!-- Meta -->
+  <meta charset="utf-8">
+  <meta name="author" content="Oleksandr Zakandaiev">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="viewport" content="width=device-width,initial-scale=1,minimum-scale=1,maximum-scale=1">
+
+  <!-- Favicon -->
+  <link rel="icon shortcut" type="image/x-icon" sizes="any" href="/favicon.ico">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+
+      min-height: 100vh;
+      padding: 20px;
+
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      color: rgb(235 235 245 / 60%);
+
+      background: #1b1b1f;
+    }
+
+    .container {
+      display: flex;
+      flex-direction: column;
+      gap: 40px;
+
+      width: 100%;
+      max-width: 540px;
+      padding: 40px;
+      border-radius: 20px;
+
+      background: #202127;
+      box-shadow: 0 20px 60px rgb(0 0 0 / 30%);
+    }
+
+    h1 {
+      font-size: 38px;
+      font-weight: 700;
+      color: #fff;
+    }
+
+    h2 {
+      margin-top: -30px;
+      font-size: 18px;
+      font-weight: 400;
+    }
+
+    .badge {
+      display: inline-block;
+
+      padding: 6px 12px;
+      border-radius: 6px;
+
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1;
+      color: #fff;
+
+      background: #41b883;
+    }
+
+    .links {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .link {
+      display: block;
+
+      padding: 16px 20px;
+      border-radius: 10px;
+
+      font-size: 16px;
+      font-weight: 600;
+      line-height: 1;
+      color: #fff;
+      text-align: center;
+      text-decoration: none;
+
+      background: #41b883;
+
+      transition: all 0.3s ease;
+    }
+
+    .link:hover {
+      transform: translateY(-2px);
+      background: #4fc993;
+      box-shadow: 0 10px 20px rgb(0 0 0 / 15%);
+    }
+
+    .footer {
+      padding-top: 20px;
+      border-top: 1px solid rgb(255 255 255 / 30%);
+      font-size: 14px;
+      text-align: center;
+    }
+
+    .footer a {
+      font-weight: 600;
+      color: #667eea;
+      text-decoration: none;
+    }
+
+    .footer a:hover {
+      text-decoration: underline;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <h1>
+      <span>Node Fastify Starter</span>
+      <sup class="badge">LIVE</sup>
+    </h1>
+
+    <h2 class="subtitle">Boilerplate kit for building modern backend applications</h2>
+
+    <div class="links">
+      <a href="/api-docs" class="link">📖 API Documentation</a>
+      <a href="/healthcheck" class="link">🏥 Health Check</a>
+    </div>
+
+    <div class="footer">
+      Built with <a href="https://github.com/zakandaiev/node-fastify-starter" target="_blank">Node Fastify Starter</a>
+      <br>
+      <small>Node.js • Fastify • MySQL • Swagger • Docker</small>
+    </div>
+  </div>
+</body>
+
+</html>

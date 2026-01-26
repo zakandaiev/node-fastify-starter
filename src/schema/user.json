@@ -1,0 +1,39 @@
+{
+  "id": {
+    "type": "string",
+    "minLength": 16,
+    "maxLength": 64
+  },
+  "email": {
+    "type": "string",
+    "format": "email",
+    "maxLength": 256
+  },
+  "password": {
+    "type": "string",
+    "format": "password",
+    "minLength": 8,
+    "maxLength": 256
+  },
+  "name": {
+    "type": "string",
+    "minLength": 2,
+    "maxLength": 256
+  },
+  "phone": {
+    "type": "string",
+    "minLength": 8,
+    "maxLength": 128
+  },
+  "isEnabled": {
+    "type": "boolean"
+  },
+  "dateCreated": {
+    "type": "string",
+    "format": "date-time"
+  },
+  "dateEdited": {
+    "type": "string",
+    "format": "date-time"
+  }
+}

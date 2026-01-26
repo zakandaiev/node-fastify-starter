@@ -1,0 +1,12 @@
+{
+  "limit": {
+    "type": "number",
+    "format": "int32",
+    "minimum": 1
+  },
+  "offset": {
+    "type": "number",
+    "format": "int32",
+    "minimum": 0
+  }
+}

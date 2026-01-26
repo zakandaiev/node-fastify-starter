@@ -1,0 +1,11 @@
+# IGNORE ALL
+**
+
+# EXCEPT
+!core/
+!public/
+!src/
+!.env
+!bootstrap.js
+!index.js
+!package.json
