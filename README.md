@@ -58,7 +58,7 @@ npm run start
 npm run dev --port=3000
 ```
 
-### Database migration
+### Migration
 
 ``` bash
 npm run migration:up

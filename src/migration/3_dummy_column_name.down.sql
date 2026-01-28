@@ -1,0 +1,2 @@
+ALTER TABLE `dummy`
+DROP COLUMN IF EXISTS `name`;

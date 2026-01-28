@@ -21,12 +21,17 @@ const absPath = {
   util: nodePath.resolve(cwd(), pathSrc, 'util'),
 };
 
+function joinPath(...args) {
+  return nodePath.join(cwd(), ...args);
+}
+
 function resolvePath(...args) {
   return nodePath.resolve(cwd(), ...args);
 }
 
 export {
   absPath,
+  joinPath,
   pathCore,
   pathNodeModules,
   pathPublic,

@@ -38,7 +38,9 @@ function formatSql(originalSql, opt = {}) {
   }
 
   let sql = originalSql;
-  const sqlData = {};
+  const sqlData = {
+    ...opt.sqlData,
+  };
 
   // COLUMNS
   const columns = normalizeColumns(opt.columns, opt.defaultColumns);

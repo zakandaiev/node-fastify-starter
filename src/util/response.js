@@ -94,7 +94,7 @@ function setNotFoundHandler(request, reply) {
 function setErrorHandler(error, request, reply) {
   const responseErrorObj = {
     code: error.statusCode || 500,
-    message: 'Server Error',
+    message: 'Server error',
   };
 
   if (process.env.APP_MODE === 'dev') {

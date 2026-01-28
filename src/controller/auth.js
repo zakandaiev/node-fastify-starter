@@ -15,7 +15,7 @@ import bcrypt from 'bcryptjs';
 async function checkAuth(request, reply) {
   const invalidReply = () => replyError(reply, {
     сode: 401,
-    message: 'Authentication Error',
+    message: 'Authentication error',
   });
 
   try {
@@ -41,7 +41,7 @@ function checkRole(allowedRolesOneOrMany) {
     if (!allowedRoles.includes(role)) {
       return replyError(reply, {
         code: 403,
-        message: 'Authorization Error',
+        message: 'Authorization error',
       });
     }
   };
@@ -56,14 +56,14 @@ async function postLogin(request, reply) {
   const user = await getUserByEmail({ email });
   if (!user) {
     return replyError(reply, {
-      message: 'Invalid Credentials',
+      message: 'Invalid credentials',
     });
   }
 
   const isPasswordValid = await bcrypt.compare(password, user.password);
   if (!isPasswordValid) {
     return replyError(reply, {
-      message: 'Invalid Credentials',
+      message: 'Invalid credentials',
     });
   }
 
@@ -187,7 +187,7 @@ const postLogoutSchema = generateSchemaFromProperties(
 
 async function postRefresh(request, reply) {
   const invalidReply = () => replyError(reply, {
-    message: 'Invalid Refresh Token',
+    message: 'Invalid refresh token',
   });
 
   try {
@@ -253,7 +253,7 @@ async function postRegister(request, reply) {
   });
   if (userExists) {
     return replyError(reply, {
-      message: 'User Already Exists',
+      message: 'User already exists',
     });
   }
 

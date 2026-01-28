@@ -10,7 +10,7 @@ const getHealthCheckSchema = generateSchemaFromProperties(
     successSchemaOptions: {
       dataExample: {
         health: 'healthy',
-        requestDate: '2026-01-01T11:11:11.365Z',
+        requestDate: '2026-01-01T01:01:01.000Z',
       },
     },
   },

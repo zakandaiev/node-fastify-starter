@@ -18,6 +18,7 @@ const connection = await mysql.createConnection({
   password: process.env.APP_DATABASE_PASSWORD,
   multipleStatements: true,
   namedPlaceholders: true,
+  timezone: '+00:00',
 });
 
 try {
@@ -26,7 +27,7 @@ try {
     .sort();
 
   if (!files.length) {
-    console.log(`⚠️ Migration finished: no ${direction} migrations found`);
+    console.log(`⚠️ Migration cancelled: no ${direction} migrations found`);
     process.exit(0);
   }
 
