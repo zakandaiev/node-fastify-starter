@@ -12,7 +12,13 @@ async function useMysql(fastify) {
     uri: connectionString,
     namedPlaceholders: true,
     promise: true,
-    timezone: '+00:00',
+    typeCast(field, useDefaultTypeCasting) {
+      // CONVERT TINYINT 0/1 TO BOOLEAN true/false
+      if (field.type === 'TINY' && field.length === 1) {
+        return field.string() === '1';
+      }
+      return useDefaultTypeCasting();
+    },
   });
 }
 

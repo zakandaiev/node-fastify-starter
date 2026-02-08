@@ -1,3 +1,14 @@
+function normalizeDataByColumns(data, columns) {
+  if (Array.isArray(columns) && columns.length && columns[0] !== '*') {
+    return columns.reduce((outputObject, columnKey) => {
+      outputObject[columnKey] = data[columnKey] || null;
+      return outputObject;
+    }, {});
+  }
+
+  return structuredClone(data);
+}
+
 function replySuccess(reply, overwriteOptions = {}) {
   reply.code(overwriteOptions.code || 200);
   delete overwriteOptions.code;
@@ -20,6 +31,24 @@ function replyError(reply, overwriteOptions = {}) {
   });
 }
 
+function replyErrorAuthentication(reply, overwriteOptions = {}) {
+  return replyError(reply, {
+    code: 401,
+    message: 'Authentication error',
+    data: 'AUTHENTICATION',
+    ...overwriteOptions,
+  });
+}
+
+function replyErrorAuthorization(reply, overwriteOptions = {}) {
+  return replyError(reply, {
+    code: 403,
+    message: 'Authorization error',
+    data: 'AUTHORIZATION',
+    ...overwriteOptions,
+  });
+}
+
 function getSuccessSchema(options = {}, overwriteOptions = {}) {
   return {
     description: options.description || 'Success response',
@@ -37,8 +66,11 @@ function getSuccessSchema(options = {}, overwriteOptions = {}) {
             data: {
               schema: options.dataSchema || undefined,
               description: options.dataDescription || 'Additional data if needed',
-              example: options.dataExample === undefined ? 'Additional data if needed' : options.dataExample,
+              example: options.dataExample === undefined
+                ? 'Additional data if needed'
+                : options.dataExample,
             },
+            ...options.properties || {},
           },
         },
       },
@@ -69,13 +101,11 @@ function getErrorSchema(options = {}, overwriteOptions = {}) {
             data: {
               schema: options.dataSchema || undefined,
               description: options.dataDescription || 'Additional data if needed',
-              example: options.dataExample === undefined ? 'Additional data if needed' : options.dataExample,
+              example: options.dataExample === undefined
+                ? 'Additional data if needed'
+                : options.dataExample,
             },
-            validation: {
-              type: ['array'],
-              description: 'Validation data if needed',
-              example: options.validationExample === undefined ? [] : options.validationExample,
-            },
+            ...options.properties || {},
           },
         },
       },
@@ -88,6 +118,7 @@ function setNotFoundHandler(request, reply) {
   return replyError(reply, {
     code: 404,
     message: `Route ${request.method} ${request.url} not found`,
+    data: 'ROUTE_NOT_FOUND',
   });
 }
 
@@ -95,24 +126,32 @@ function setErrorHandler(error, request, reply) {
   const responseErrorObj = {
     code: error.statusCode || 500,
     message: 'Server error',
+    data: error.message,
   };
 
-  if (process.env.APP_MODE === 'dev') {
-    responseErrorObj.data = error.message;
-  }
-
+  // AJV validation
   if (error.validation) {
     responseErrorObj.code = 400;
     responseErrorObj.message = 'Validation Error';
-    responseErrorObj.validation = formatValidationErrors(error.validation) || [];
+    responseErrorObj.validation = formatValidationErrors(error.validation, error.validationContext, request) || [];
+  }
+
+  // MYSQL validation
+  if (['ER_DUP_ENTRY'].includes(error.code)) {
+    responseErrorObj.code = 400;
+    responseErrorObj.message = 'Validation Error';
+    const mysqlValidationErrors = formatMysqlValidationErrors(error, request) || [];
+    responseErrorObj.validation = Array.isArray(responseErrorObj.validation)
+      ? responseErrorObj.validation.concat(mysqlValidationErrors)
+      : mysqlValidationErrors;
   }
 
   return replyError(reply, responseErrorObj);
 }
 
-function formatValidationErrors(errors) {
+function formatValidationErrors(errors, validationContext, request) {
   if (!Array.isArray(errors) || !errors.length) {
-    return [];
+    return false;
   }
 
   return errors.map((errorSchema) => {
@@ -123,6 +162,17 @@ function formatValidationErrors(errors) {
     const column = errorSchema.instancePath
       ? errorSchema.instancePath.replace(/^\//, '')
       : errorSchema.params?.missingProperty || '';
+    const columnValue = errorSchema.params?.missingProperty
+      ? undefined
+      : errorSchema.instancePath
+        ?.slice(1)
+        ?.split('/')
+        ?.reduce(
+          (o, k) => o?.[k],
+          request[validationContext === 'querystring'
+            ? 'query'
+            : validationContext],
+        );
 
     const operator = errorSchema.keyword || '';
     const operatorValue = errorSchema.params?.limit || null;
@@ -131,6 +181,7 @@ function formatValidationErrors(errors) {
 
     return {
       column,
+      columnValue,
       operator,
       operatorValue,
       schema,
@@ -138,10 +189,35 @@ function formatValidationErrors(errors) {
   });
 }
 
+function formatMysqlValidationErrors(error) {
+  if (typeof error !== 'object') {
+    return false;
+  }
+
+  if (error.code === 'ER_DUP_ENTRY') {
+    const columnMatch = error.message.match(/Duplicate entry '(.+)' for key '(.+)'/);
+    return [{
+      column: columnMatch ? columnMatch[2] : null,
+      columnValue: columnMatch ? columnMatch[1] : null,
+      operator: 'unique',
+      operatorValue: null,
+      schema: {
+        keyword: 'unique',
+        message: error.message,
+      },
+    }];
+  }
+
+  return false;
+}
+
 export {
   getErrorSchema,
   getSuccessSchema,
+  normalizeDataByColumns,
   replyError,
+  replyErrorAuthentication,
+  replyErrorAuthorization,
   replySuccess,
   setErrorHandler,
   setNotFoundHandler,

@@ -1,10 +1,10 @@
 import { resolvePath } from '#root/core/path.js';
 import { readFileSync } from 'node:fs';
 
-async function useUserRoutes(fastify) {
+async function useRootRoutes(fastify) {
   fastify.get('/', {
     handler: (request, reply) => {
-      const pathToIndexHtml = resolvePath('public/index.html');
+      const pathToIndexHtml = resolvePath('public', 'index.html');
       const bufferIndexHtml = readFileSync(pathToIndexHtml, 'utf8');
 
       return reply.type('text/html').send(bufferIndexHtml);
@@ -15,4 +15,4 @@ async function useUserRoutes(fastify) {
   });
 }
 
-export default useUserRoutes;
+export default useRootRoutes;

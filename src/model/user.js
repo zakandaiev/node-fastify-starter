@@ -1,107 +1,65 @@
 import { executeSql } from '#src/util/database.js';
 import { randomUUID } from 'node:crypto';
 
-const DEFAULT_COLUMNS = ['id', 'email', 'name', 'phone', 'role'];
-
-function normalizeUser(user, opt = {}) {
-  return DEFAULT_COLUMNS.reduce((acc, key) => {
-    if (key === 'role') {
-      acc.role = user.role ?? 'user';
-    } else if (user[key] !== undefined) {
-      acc[key] = user[key];
-    }
-    return acc;
-  }, { ...opt });
-}
-
-async function createUser(opt = {}) {
-  const { email, password, name } = opt;
-
-  if (!email || !password || !name) {
-    return false;
+async function createUser(payload = {}, options = {}) {
+  // ID
+  if (!payload.id) {
+    payload.id = randomUUID();
   }
 
-  const id = opt.id || randomUUID();
-  const columns = opt.columns || ['id', 'email', 'password', 'name'];
-  if (!columns.includes('id')) {
-    columns.push('id');
-  }
+  // COLUMNS
+  const columns = Object.keys(payload);
+  const values = columns;
 
-  const sql = 'INSERT INTO user ({columns}) VALUES ({values})';
+  // SQL
+  const sql = 'INSERT INTO user ({columns}) VALUES ({values}) RETURNING {returning}';
   const rows = await executeSql(sql, {
-    ...opt,
-    id,
+    ...payload,
+    ...options,
     columns,
-    values: columns,
+    values,
   });
 
   return rows[0] || null;
 }
 
-async function getUserById(opt = {}) {
-  if (!opt.id) {
-    return false;
+async function getUserByConditions(payload = {}, options = {}) {
+  const sql = 'SELECT {columns} FROM user WHERE {conditions} LIMIT 1';
+
+  const rows = await executeSql(sql, {
+    ...payload,
+    ...options,
+  });
+
+  return rows[0] || null;
+}
+
+async function deleteUserByConditions(payload = {}, options = {}) {
+  const sql = 'DELETE FROM user WHERE {conditions}';
+
+  const result = await executeSql(sql, {
+    ...payload,
+    ...options,
+  });
+
+  return !!result.affectedRows;
+}
+
+async function getAllUsers(payload = {}, options = {}) {
+  if (!payload.orderBy) {
+    payload.orderBy = 'dateCreated DESC';
   }
 
-  const sql = 'SELECT {columns} FROM user WHERE {conditions} LIMIT 1';
+  const sql = `
+    SELECT {columns}
+    FROM user
+    ORDER BY :orderBy
+    {pagination}
+  `;
+
   const rows = await executeSql(sql, {
-    ...opt,
-    conditions: ['id'],
-    defaultColumns: opt.defaultColumns || DEFAULT_COLUMNS,
-  });
-
-  return rows[0] || null;
-}
-
-async function getUserByEmail(opt = {}) {
-  if (!opt.email) {
-    return false;
-  }
-
-  const sql = 'SELECT {columns} FROM user WHERE {conditions} LIMIT 1';
-  const rows = await executeSql(sql, {
-    ...opt,
-    conditions: ['email'],
-    defaultColumns: opt.defaultColumns || DEFAULT_COLUMNS,
-  });
-
-  return rows[0] || null;
-}
-
-async function getUserByPhone(opt = {}) {
-  if (!opt.phone) {
-    return false;
-  }
-
-  const sql = 'SELECT {columns} FROM user WHERE {conditions} LIMIT 1';
-  const rows = await executeSql(sql, {
-    ...opt,
-    conditions: ['phone'],
-    defaultColumns: opt.defaultColumns || DEFAULT_COLUMNS,
-  });
-
-  return rows[0] || null;
-}
-
-async function getUserByConditions(opt = {}) {
-  if (!opt.conditions) {
-    return false;
-  }
-
-  const sql = 'SELECT {columns} FROM user WHERE {conditions} LIMIT 1';
-  const rows = await executeSql(sql, {
-    ...opt,
-    defaultColumns: opt.defaultColumns || DEFAULT_COLUMNS,
-  });
-
-  return rows[0] || null;
-}
-
-async function getAllUsers(opt = {}) {
-  const sql = 'SELECT {columns} FROM user {pagination}';
-  const rows = await executeSql(sql, {
-    ...opt,
-    defaultColumns: opt.defaultColumns || DEFAULT_COLUMNS,
+    ...payload,
+    ...options,
   });
 
   return rows;
@@ -109,10 +67,7 @@ async function getAllUsers(opt = {}) {
 
 export {
   createUser,
+  deleteUserByConditions,
   getAllUsers,
   getUserByConditions,
-  getUserByEmail,
-  getUserById,
-  getUserByPhone,
-  normalizeUser,
 };

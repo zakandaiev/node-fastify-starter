@@ -1,9 +1,10 @@
 {
-  "message": {
-    "type": "string",
-    "enum": [
-      "healthy"
-    ]
+  "#example": {
+    "health": "healthy",
+    "requestDate": "2001-01-01T01:01:01.000Z"
+  },
+  "health": {
+    "type": "string"
   },
   "requestDate": {
     "type": "string",

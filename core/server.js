@@ -5,6 +5,11 @@ import fastifyAutoLoad from '@fastify/autoload';
 import fastifyLib from 'fastify';
 
 const fastify = fastifyLib({
+  ajv: {
+    customOptions: {
+      allErrors: true,
+    },
+  },
   logger: process.env.APP_MODE === 'dev'
     ? {
       transport: {

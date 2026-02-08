@@ -1,26 +1,13 @@
 import { replySuccess } from '#src/util/response.js';
-import { generateSchemaFromProperties } from '#src/util/schema.js';
+import { generateSchema } from '#src/util/schema.js';
 
-import healthcheckProperties from '#src/schema/healthcheck.json' with { type: 'json' };
+// NORMALIZATION
+const OUTPUT_COLUMNS = [
+  'health',
+  'requestDate',
+];
 
 // GET HEALTH CHECK
-const getHealthCheckSchema = generateSchemaFromProperties(
-  healthcheckProperties,
-  {
-    successSchemaOptions: {
-      dataExample: {
-        health: 'healthy',
-        requestDate: '2026-01-01T01:01:01.000Z',
-      },
-    },
-  },
-  {
-    tags: ['Healthcheck'],
-    summary: 'System health check',
-    description: 'Returns system health',
-  },
-);
-
 async function getHealthCheck(request, reply) {
   return replySuccess(reply, {
     data: {
@@ -29,8 +16,21 @@ async function getHealthCheck(request, reply) {
     },
   });
 }
+const getHealthCheckSchema = generateSchema(
+  'healthcheck',
+  {
+    responseCodeKeys: [200, 500],
+    responseSuccessDataExample: OUTPUT_COLUMNS,
+    overwrite: {
+      tags: ['Healthcheck'],
+      summary: 'System health check',
+      description: 'Returns system health',
+    },
+  },
+);
 
 export {
   getHealthCheck,
   getHealthCheckSchema,
+  OUTPUT_COLUMNS,
 };

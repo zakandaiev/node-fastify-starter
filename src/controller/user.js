@@ -1,81 +1,136 @@
 import {
+  deleteUserByConditions,
   getAllUsers as getAllUsersFromModel,
-  getUserById as getUserByIdFromModel,
+  getUserByConditions,
 } from '#src/model/user.js';
-import paginationProperties from '#src/schema/pagination.json' with { type: 'json' };
-import userProperties from '#src/schema/user.json' with { type: 'json' };
 import { replyError, replySuccess } from '#src/util/response.js';
-import { generateSchemaFromProperties } from '#src/util/schema.js';
+import { generateSchema } from '#src/util/schema.js';
 
-const EXAMPLE_OUTPUT = {
-  id: 'id-hash',
-  email: 'dummy@email.com',
-  name: 'Dummy Name',
-  phone: null,
-  role: 'user',
-};
+// NORMALIZATION
+const OUTPUT_COLUMNS = [
+  'id',
+  'email',
+  'name',
+  'phone',
+  'role',
+];
 
 // GET USER BY ID
 async function getUserById(request, reply) {
   const { id } = request.params;
-  if (!id) {
-    return replyError(reply, {
-      message: 'User id is invalid',
-    });
-  }
-  const data = await getUserByIdFromModel({ id });
+
+  const payload = {
+    id,
+  };
+  const options = {
+    columns: OUTPUT_COLUMNS,
+    conditions: ['id'],
+  };
+
+  const data = await getUserByConditions(payload, options);
 
   return replySuccess(reply, {
     data,
   });
 }
-const getUserByIdSchema = generateSchemaFromProperties(
-  userProperties,
+const getUserByIdSchema = generateSchema(
+  'user',
   {
     paramKeys: ['id'],
     paramRequiredKeys: ['id'],
-    successSchemaOptions: {
-      dataExample: EXAMPLE_OUTPUT,
+    responseSuccessDataExample: OUTPUT_COLUMNS,
+    overwrite: {
+      tags: ['User'],
+      summary: 'Get user by ID',
+      description: 'Returns one user by ID',
     },
   },
+);
+
+// DELETE USER BY ID
+async function deleteUserById(request, reply) {
+  const { id } = request.params;
+
+  const payload = {
+    id,
+  };
+  const options = {
+    conditions: ['id'],
+  };
+
+  const data = await deleteUserByConditions(payload, options);
+  if (!data) {
+    return replyError(reply, {
+      message: 'Invalid id',
+      data: 'INVALID_ID',
+    });
+  }
+
+  return replySuccess(reply, {
+    data,
+  });
+}
+const deleteUserByIdSchema = generateSchema(
+  'user',
   {
-    tags: ['User'],
-    summary: 'Get user by ID',
-    description: 'Returns one user by ID',
+    paramKeys: ['id'],
+    paramRequiredKeys: ['id'],
+    responseCodeOverwrite: {
+      200: {
+        dataExample: true,
+      },
+    },
+    overwrite: {
+      tags: ['User'],
+      summary: 'Delete user by ID',
+      description: 'Deletes the user',
+    },
   },
 );
 
 // GET ALL USERS
 async function getAllUsers(request, reply) {
-  const { limit, offset } = request.query;
+  const {
+    orderBy,
+    limit,
+    offset,
+  } = request.query;
 
-  const data = await getAllUsersFromModel({ limit, offset });
+  const payload = {
+    orderBy,
+    limit,
+    offset,
+  };
+  const options = {
+    columns: OUTPUT_COLUMNS,
+  };
+
+  const data = await getAllUsersFromModel(payload, options);
 
   return replySuccess(reply, {
     data,
   });
 }
-const getAllUsersSchema = generateSchemaFromProperties(
+const getAllUsersSchema = generateSchema(
+  ['user', 'pagination'],
   {
-    ...userProperties,
-    ...paginationProperties,
-  },
-  {
-    queryKeys: ['limit', 'offset'],
-    successSchemaOptions: {
-      dataExample: [EXAMPLE_OUTPUT],
+    queryKeys: ['orderBy', 'limit', 'offset'],
+    responseSuccessDataExample: OUTPUT_COLUMNS,
+    responseSuccessDataExampleFormat: 'array',
+    overwrite: {
+      tags: ['User'],
+      summary: 'Get users list',
+      description: 'Returns all users',
     },
-  },
-  {
-    tags: ['User'],
-    summary: 'Get users list',
-    description: 'Returns all users',
   },
 );
 
 export {
+  deleteUserById,
+  deleteUserByIdSchema,
   getAllUsers,
   getAllUsersSchema,
   getUserById,
   getUserByIdSchema,
+  OUTPUT_COLUMNS,
 };

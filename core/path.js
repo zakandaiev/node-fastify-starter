@@ -22,7 +22,7 @@ const absPath = {
 };
 
 function joinPath(...args) {
-  return nodePath.join(cwd(), ...args);
+  return nodePath.join(...args);
 }
 
 function resolvePath(...args) {

@@ -1,0 +1,9 @@
+{
+  "#example": {
+    "file": "/upload/id-file-hash.file-extension"
+  },
+  "file": {
+    "type": "string",
+    "format": "binary"
+  }
+}

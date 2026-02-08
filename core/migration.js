@@ -1,6 +1,6 @@
 /* eslint-disable no-console */
 import { processArg } from '#root/core/app.js';
-import { absPath, resolvePath } from '#root/core/path.js';
+import { absPath, joinPath } from '#root/core/path.js';
 import mysql from 'mysql2/promise';
 import { readdirSync, readFileSync } from 'node:fs';
 
@@ -18,7 +18,6 @@ const connection = await mysql.createConnection({
   password: process.env.APP_DATABASE_PASSWORD,
   multipleStatements: true,
   namedPlaceholders: true,
-  timezone: '+00:00',
 });
 
 try {
@@ -36,7 +35,7 @@ try {
   await files.reduce(async (prev, file) => {
     await prev;
 
-    const filePath = resolvePath(absPath.migration, file);
+    const filePath = joinPath(absPath.migration, file);
     const fileSql = readFileSync(filePath, 'utf8');
 
     console.log(`⏳ Migration started: ${file}`);

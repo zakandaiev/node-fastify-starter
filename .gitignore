@@ -27,10 +27,3 @@ coverage
 
 *.tsbuildinfo
 +.*
-
-# Cypress
-/cypress/videos/
-/cypress/screenshots/
-
-# Vitest
-__screenshots__/

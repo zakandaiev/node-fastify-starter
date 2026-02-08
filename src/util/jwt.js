@@ -1,29 +1,35 @@
-function normalizeUser(user, opt = {}) {
-  return {
-    id: user.id,
-    email: user.email,
-    phone: user.phone,
-    role: user.role || 'user',
-    ...opt,
-  };
-}
+import { OUTPUT_COLUMNS } from '#src/controller/user.js';
+import { normalizeDataByColumns } from '#src/util/response.js';
 
-function generateAccessToken(fastify, user) {
+function generateAccessToken(fastify, user, opt = {}) {
   return fastify.jwt.sign(
-    normalizeUser(user, { tokenType: 'access' }),
-    { expiresIn: process.env.APP_JWT_ACCESS_EXPIRE },
+    {
+      ...normalizeDataByColumns(user, OUTPUT_COLUMNS),
+      tokenType: 'access',
+      ...opt.payload || {},
+    },
+    {
+      expiresIn: process.env.APP_JWT_ACCESS_EXPIRE,
+      ...opt.options || {},
+    },
   );
 }
 
-function generateRefreshToken(fastify, user) {
+function generateRefreshToken(fastify, user, opt = {}) {
   return fastify.jwt.refresh.sign(
-    normalizeUser(user, { tokenType: 'refresh' }),
-    { expiresIn: process.env.APP_JWT_REFRESH_EXPIRE },
+    {
+      ...normalizeDataByColumns(user, OUTPUT_COLUMNS),
+      tokenType: 'refresh',
+      ...opt.payload || {},
+    },
+    {
+      expiresIn: process.env.APP_JWT_REFRESH_EXPIRE,
+      ...opt.options || {},
+    },
   );
 }
 
 export {
   generateAccessToken,
   generateRefreshToken,
-  normalizeUser,
 };

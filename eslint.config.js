@@ -55,6 +55,7 @@ export default [
       'import/no-named-as-default-member': 0,
       'max-len': 0,
       'no-param-reassign': 0,
+      'no-prototype-builtins': 0,
       'no-unneeded-ternary': 0,
       'no-use-before-define': 0,
     },

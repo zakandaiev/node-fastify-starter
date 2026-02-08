@@ -1,16 +1,21 @@
 import { resolvePath } from '#core/path.js';
 import { replyError, replySuccess } from '#src/util/response.js';
-import { generateSchemaFromProperties } from '#src/util/schema.js';
+import { generateSchema } from '#src/util/schema.js';
 import { randomUUID } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
 import nodePath from 'node:path';
 import { pipeline } from 'node:stream/promises';
 
+// NORMALIZATION
+const OUTPUT_COLUMNS = ['file'];
+
+// UPLOAD UTIL
 async function uploadFile(data) {
   if (!data) {
     return {
       status: 'error',
       message: 'File binary is invalid',
+      data: 'FILE_BINARY_IS_INVALID',
     };
   }
 
@@ -34,6 +39,7 @@ async function uploadFile(data) {
       data: 'FILE_EXTENSION_IS_INVALID',
       validation: [{
         column: 'extension',
+        columnValue: fileExtension,
         operator: 'extension',
         operatorValue: allowedExtensions,
       }],
@@ -49,6 +55,7 @@ async function uploadFile(data) {
       data: 'FILE_SIZE_IS_INVALID',
       validation: [{
         column: 'size',
+        columnValue: data.bytes,
         operator: 'maxSize',
         operatorValue: maxSize,
       }],
@@ -56,7 +63,7 @@ async function uploadFile(data) {
   }
 
   // GENERATE NAME&PATHS
-  const name = `${randomUUID()}-${filename}`;
+  const name = randomUUID();
   const path = resolvePath('public', 'upload', name);
   const uri = `/upload/${name}`;
 
@@ -70,51 +77,48 @@ async function uploadFile(data) {
   };
 }
 
+// UPLOAD ROUTE
 async function postUpload(request, reply) {
   const data = await request.file();
 
   const result = await uploadFile(data);
   if (result.status !== 'success') {
-    return replyError(reply, {
-      message: result.message,
-    });
+    delete result.status;
+    return replyError(reply, result);
   }
 
   return replySuccess(reply, {
     data: result.uri,
   });
 }
-const postUploadSchema = generateSchemaFromProperties(
+const postUploadSchema = generateSchema(
+  'upload',
   {
-    file: {
-      type: 'string',
-      format: 'binary',
+    bodyKeys: OUTPUT_COLUMNS,
+    bodyRequiredKeys: OUTPUT_COLUMNS,
+    responseSuccessDataExample: OUTPUT_COLUMNS,
+    responseSuccessDataExampleFormat: 'string',
+    responseCodeOverwrite: {
+      400: {
+        messageExample: 'File size is too big',
+        dataExample: 'FILE_SIZE_IS_INVALID',
+        validationExample: [{
+          column: 'size',
+          operator: 'maxSize',
+          operatorValue: 'number in bytes',
+        }],
+      },
     },
-  },
-  {
-    bodyKeys: ['file'],
-    bodyRequiredKeys: ['file'],
-    successSchemaOptions: {
-      dataExample: '/upload/id-file-hash.file-extension',
+    overwrite: {
+      tags: ['Upload'],
+      summary: 'Upload a file',
+      description: 'Uploads a file and returns path to it',
     },
-    errorSchemaOptions: {
-      messageExample: 'File size is too big',
-      dataExample: 'FILE_SIZE_IS_INVALID',
-      validationExample: [{
-        column: 'size',
-        operator: 'maxSize',
-        operatorValue: 'number in bytes',
-      }],
-    },
-  },
-  {
-    tags: ['Upload'],
-    summary: 'Upload a file',
-    description: 'Uploads a file and returns path to it',
   },
 );
 
 export {
+  OUTPUT_COLUMNS,
   postUpload,
   postUploadSchema,
   uploadFile,

@@ -1,4 +1,11 @@
 {
+  "#example": {
+    "id": "id-hash",
+    "email": "dummy@email.com",
+    "name": "Dummy Name",
+    "phone": null,
+    "role": "user"
+  },
   "id": {
     "type": "string",
     "minLength": 16,
@@ -33,10 +40,7 @@
     "format": "date-time"
   },
   "dateEdited": {
-    "type": [
-      "string",
-      "null"
-    ],
+    "type": "string",
     "format": "date-time"
   }
 }
