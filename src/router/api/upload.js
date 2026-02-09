@@ -1,4 +1,4 @@
-import { checkAuth } from '#src/controller/auth.js';
+import { checkJwtAuth } from '#src/controller/auth.js';
 import {
   postUpload,
   postUploadSchema,
@@ -6,7 +6,7 @@ import {
 
 async function useUploadRoutes(fastify) {
   fastify.post('/upload', {
-    preHandler: checkAuth,
+    preHandler: checkJwtAuth,
     handler: postUpload,
     schema: postUploadSchema,
   });

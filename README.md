@@ -19,6 +19,8 @@ Node.js Fastify Starter is a boilerplate kit for building modern backend applica
 
 ## How to use
 
+Prerequisites: [Node.js](https://nodejs.org/) (`>=22`)
+
 ### Install
 
 ``` bash

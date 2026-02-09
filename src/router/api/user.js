@@ -1,4 +1,4 @@
-import { checkAuth, checkRole } from '#src/controller/auth.js';
+import { checkJwtAuth, checkUserRole } from '#src/controller/auth.js';
 import {
   deleteUserById,
   deleteUserByIdSchema,
@@ -10,19 +10,19 @@ import {
 
 async function useUserRoutes(fastify) {
   fastify.get('/user/:id', {
-    preHandler: [checkAuth, checkRole('admin')],
+    preHandler: [checkJwtAuth, checkUserRole('admin')],
     handler: getUserById,
     schema: getUserByIdSchema,
   });
 
   fastify.delete('/user/:id', {
-    preHandler: [checkAuth, checkRole('admin')],
+    preHandler: [checkJwtAuth, checkUserRole('admin')],
     handler: deleteUserById,
     schema: deleteUserByIdSchema,
   });
 
   fastify.get('/users', {
-    preHandler: [checkAuth, checkRole('admin')],
+    preHandler: [checkJwtAuth, checkUserRole('admin')],
     handler: getAllUsers,
     schema: getAllUsersSchema,
   });

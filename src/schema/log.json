@@ -1,0 +1,15 @@
+{
+  "#example": {},
+  "app": {
+    "type": "object"
+  },
+  "client": {
+    "type": "object"
+  },
+  "error": {
+    "type": "object"
+  },
+  "url": {
+    "type": "string"
+  }
+}

@@ -1,6 +1,6 @@
 {
   "name": "node-fastify-starter",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "private": false,
   "author": "Oleksandr Zakandaiev",
   "authorUrl": "https://github.com/zakandaiev",
@@ -24,7 +24,7 @@
   },
   "type": "module",
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=22"
   },
   "imports": {
     "#root/*": "./*",

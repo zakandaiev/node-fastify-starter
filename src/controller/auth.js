@@ -14,8 +14,8 @@ import bcrypt from 'bcryptjs';
 // NORMALIZATION
 const OUTPUT_COLUMNS = ['accessToken'];
 
-// CHECK AUTH
-async function checkAuth(request, reply) {
+// CHECK JWT AUTH
+async function checkJwtAuth(request, reply) {
   try {
     const payload = await request.jwtVerify();
     if (payload.tokenType !== 'access') {
@@ -26,13 +26,28 @@ async function checkAuth(request, reply) {
   }
 }
 
+// CHECK ORIGIN AUTH
+async function checkOriginAuth(request, reply) {
+  if (!request.headers.origin) {
+    return replyErrorAuthentication(reply);
+  }
+
+  const frontendDomainList = process.env.APP_FRONTEND_DOMAINS
+    ? process.env.APP_FRONTEND_DOMAINS.split(',')
+    : false;
+
+  if (!frontendDomainList.includes(request.headers.origin)) {
+    return replyErrorAuthentication(reply);
+  }
+}
+
 // CHECK ROLE
-function checkRole(allowedRolesOneOrMany) {
+function checkUserRole(allowedRolesOneOrMany) {
   const allowedRoles = Array.isArray(allowedRolesOneOrMany)
     ? allowedRolesOneOrMany
     : [allowedRolesOneOrMany];
 
-  const checkRoleMiddleware = async (request, reply) => {
+  const checkUserRoleMiddleware = async (request, reply) => {
     const { role } = request.user || {};
 
     if (!allowedRoles.includes(role)) {
@@ -40,7 +55,7 @@ function checkRole(allowedRolesOneOrMany) {
     }
   };
 
-  return checkRoleMiddleware;
+  return checkUserRoleMiddleware;
 }
 
 // LOGIN
@@ -114,7 +129,7 @@ async function postLoginDev(request, reply) {
   };
 
   const accessTokenOptions = {
-    expiresIn: '1h',
+    expiresIn: '1d',
   };
 
   const accessToken = generateAccessToken(request.server, user, { options: accessTokenOptions });
@@ -296,8 +311,9 @@ const postRegisterSchema = generateSchema(
 );
 
 export {
-  checkAuth,
-  checkRole,
+  checkJwtAuth,
+  checkOriginAuth,
+  checkUserRole,
   OUTPUT_COLUMNS,
   postLogin,
   postLoginDev,
