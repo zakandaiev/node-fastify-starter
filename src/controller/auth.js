@@ -114,7 +114,7 @@ const postLoginSchema = generateSchema(
 );
 
 async function postLoginDev(request, reply) {
-  if (process.env.APP_MODE !== 'dev') {
+  if (!['local', 'dev'].includes(process.env.APP_MODE)) {
     return replyError(reply, {
       code: 404,
       message: `Route ${request.method} ${request.url} not found`,
@@ -213,7 +213,7 @@ async function postRefresh(request, reply) {
 
     let user;
 
-    if (process.env.APP_MODE === 'dev' && payload.id === 'dev-user') {
+    if (['local', 'dev'].includes(process.env.APP_MODE) && payload.id === 'dev-user') {
       user = { ...payload };
     } else {
       user = await getUserByConditions({ id: payload.id }, { conditions: ['id'] });

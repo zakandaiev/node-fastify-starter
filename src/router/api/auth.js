@@ -17,7 +17,7 @@ async function useAuthRoutes(fastify) {
     schema: postLoginSchema,
   });
 
-  if (process.env.APP_MODE === 'dev') {
+  if (['local', 'dev'].includes(process.env.APP_MODE)) {
     fastify.post('/auth/login-dev', {
       handler: postLoginDev,
       schema: postLoginDevSchema,

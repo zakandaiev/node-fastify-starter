@@ -11,13 +11,8 @@ dotenv.config({
 
 const processArg = minimist(argv.slice(2));
 
-const isProd = env.NODE_ENV === 'production';
-const isDev = !isProd;
-
 const appData = {
-  APP_IS_DEV: isDev,
-  APP_IS_PROD: isProd,
-  APP_MODE: isProd ? 'prod' : 'dev',
+  APP_MODE: 'local',
 
   APP_NAME: packageData.name,
   APP_NAME_FORMATTED: packageData.name.replace(/[^a-z]+/gi, ' ').replace(/(^\w|\s\w)/g, (m) => m.toUpperCase()),
@@ -46,8 +41,6 @@ const replaceData = {
 export {
   appData,
   envData,
-  isDev,
-  isProd,
   packageData,
   processArg,
   replaceData,
