@@ -1,4 +1,4 @@
-import { replaceData } from '#core/app.js';
+import { appData } from '#core/app.js';
 
 // EXTEND process.env with APP_* entities
-Object.assign(process.env, replaceData);
+Object.assign(process.env, appData);

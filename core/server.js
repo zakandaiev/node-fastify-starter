@@ -10,7 +10,7 @@ const fastify = fastifyLib({
       allErrors: true,
     },
   },
-  logger: ['local', 'dev'].includes(process.env.APP_MODE)
+  logger: process.env.APP_MODE === 'dev'
     ? {
       transport: {
         target: 'pino-pretty',
