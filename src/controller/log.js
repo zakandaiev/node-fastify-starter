@@ -2,6 +2,7 @@ import { replyError, replySuccess } from '#src/util/response.js';
 import { generateSchema } from '#src/util/schema.js';
 import { sendTelegramMessage } from '#src/util/telegram.js';
 
+// LOG UTIL
 async function logErrorToTelegram(payload = {}) {
   const telegramLoggerChatId = process.env.APP_TELEGRAM_LOGGER_CHAT_ID;
   const isLoggerEnabled = process.env.APP_TELEGRAM_LOGGER_ENABLE === 'true';
@@ -31,7 +32,7 @@ async function logErrorToTelegram(payload = {}) {
   return result.code === 200;
 }
 
-// POST LOG ERROR
+// LOG  ROUTE
 async function postLogError(request, reply) {
   const result = await logErrorToTelegram(request.body);
   if (!result) {

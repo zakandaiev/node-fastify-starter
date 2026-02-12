@@ -1,6 +1,6 @@
 {
   "name": "node-fastify-starter",
-  "version": "1.3.2",
+  "version": "1.4.0",
   "private": false,
   "author": "Oleksandr Zakandaiev",
   "authorUrl": "https://github.com/zakandaiev",
@@ -37,7 +37,9 @@
     "lint": "eslint ./",
     "lint:fix": "eslint ./ --fix",
     "migration:up": "node ./core/migration.js --direction=up",
-    "migration:down": "node ./core/migration.js --direction=down"
+    "migration:down": "node ./core/migration.js --direction=down",
+    "seed:up": "node ./core/migration.js --type=seed --direction=up",
+    "seed:down": "node ./core/migration.js --type=seed --direction=down"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.3.3",

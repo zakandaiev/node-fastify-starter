@@ -26,10 +26,14 @@ async function start() {
   await fastify.register(fastifyAutoLoad, {
     dir: absPath.plugin,
     encapsulate: false,
+    forceESM: true,
+    ignoreFilter: (path) => path.endsWith('.ignore.js'),
   });
 
   await fastify.register(fastifyAutoLoad, {
     dir: absPath.router,
+    forceESM: true,
+    ignoreFilter: (path) => path.endsWith('.ignore.js'),
   });
 
   await fastify.listen({

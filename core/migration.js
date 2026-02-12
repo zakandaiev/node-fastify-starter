@@ -4,10 +4,31 @@ import { absPath, joinPath } from '#root/core/path.js';
 import mysql from 'mysql2/promise';
 import { readdirSync, readFileSync } from 'node:fs';
 
-const { direction } = processArg;
+const {
+  type,
+  direction,
+  names,
+  'names-exclude': namesExclude,
+} = processArg;
+
+const isSeed = type === 'seed'
+  ? true
+  : false;
+const filesDirectory = isSeed
+  ? absPath.seed
+  : absPath.migration;
+const typeName = isSeed
+  ? 'Seed'
+  : 'Migration';
+const excludedNames = namesExclude
+  ? namesExclude.split(',')
+  : null;
+const selectedNames = names
+  ? names.split(',')
+  : null;
 
 if (!['up', 'down'].includes(direction)) {
-  console.log('❌ Migration failed: direction must be "up" or "down"');
+  console.log(`❌ ${typeName} failed: direction must be "up" or "down"`);
   process.exit(1);
 }
 
@@ -21,39 +42,54 @@ const connection = await mysql.createConnection({
 });
 
 try {
-  const files = readdirSync(absPath.migration)
-    .filter((file) => file.endsWith(`.${direction}.sql`))
-    .sort();
+  const files = readdirSync(filesDirectory)
+    .filter((file) => {
+      const fileNameRegex = new RegExp(`^\\d+_.+\\.${direction}\\.sql$`);
+      if (!fileNameRegex.test(file)) {
+        return false;
+      }
+
+      if (excludedNames && excludedNames.some((excludedName) => file.includes(`_${excludedName}.`))) {
+        return false;
+      }
+
+      if (selectedNames && !selectedNames.some((selectedName) => file.includes(`_${selectedName}.`))) {
+        return false;
+      }
+
+      return true;
+    })
+    .sort((a, b) => {
+      const numA = parseInt(a.split('_')[0], 10);
+      const numB = parseInt(b.split('_')[0], 10);
+      return direction === 'down'
+        ? numB - numA
+        : numA - numB;
+    });
 
   if (!files.length) {
-    console.log(`⚠️ Migration cancelled: no ${direction} migrations found`);
+    console.log(`⚠️  ${typeName} cancelled: no ${direction} ${type}s found`);
     process.exit(0);
   }
 
   await connection.beginTransaction();
-
   await files.reduce(async (prev, file) => {
     await prev;
 
-    const filePath = joinPath(absPath.migration, file);
+    const filePath = joinPath(filesDirectory, file);
     const fileSql = readFileSync(filePath, 'utf8');
 
-    console.log(`⏳ Migration started: ${file}`);
-
+    console.log(`⏳ ${typeName} started: ${file}`);
     await connection.query(fileSql);
-
-    console.log(`✅ Migration finished: ${file}`);
+    console.log(`✅ ${typeName} finished: ${file}`);
   }, Promise.resolve());
 
   await connection.commit();
-
-  console.log(`🎉 Migration succeeded: ${files.length} ${direction} migrations done`);
+  await connection.end();
+  console.log(`🎉 ${typeName} succeeded: ${files.length} ${direction} ${type}s done`);
   process.exit(0);
 } catch (error) {
   await connection.rollback();
-
-  console.log(`❌ Migration failed: ${error.message}`);
+  console.log(`❌ ${typeName} failed: ${error.message}`);
   process.exit(1);
-} finally {
-  await connection.end();
 }

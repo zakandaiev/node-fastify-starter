@@ -50,7 +50,7 @@ rm -rf .git
 # Start development mode with live-server
 npm run dev
 # or with options
-npm run dev --port=3000
+npm run dev -- --port=3000
 ```
 
 ### Start
@@ -59,7 +59,7 @@ npm run dev --port=3000
 # Start production process
 npm run start
 # or with options
-npm run dev --port=3000
+npm run start -- --port=3000
 ```
 
 ### Migration
@@ -68,6 +68,22 @@ npm run dev --port=3000
 npm run migration:up
 # or
 npm run migration:down
+# or exclude
+npm run migration:up -- --names-exclude=dummy,dummy_column_name
+# or only specific migrations
+npm run migration:up -- --names=dummy,dummy_column_name
+```
+
+### Seed
+
+``` bash
+npm run seed:up
+# or
+npm run seed:down
+# or exclude
+npm run seed:up -- --names-exclude=dummy
+# or only specific seeds
+npm run seed:up -- --names=dummy
 ```
 
 ### Lint

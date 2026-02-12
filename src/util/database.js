@@ -43,9 +43,7 @@ function formatSql(originalSql, options = {}) {
   }
 
   let sql = originalSql;
-  const sqlData = {
-    ...options,
-  };
+  const sqlData = Object.fromEntries(Object.entries(options).map(([k, v]) => [k, v || null]));
 
   // COLUMNS
   if (originalSql.includes(COLUMNS_KEY)) {
