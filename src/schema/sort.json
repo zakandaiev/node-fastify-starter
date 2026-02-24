@@ -1,0 +1,8 @@
+{
+  "#example": {
+    "sort": "name ASC, dateCreated DESC"
+  },
+  "sort": {
+    "type": "string"
+  }
+}

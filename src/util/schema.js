@@ -1,196 +1,326 @@
 import { absPath, resolvePath } from '#root/core/path.js';
-import { isObject } from '#src/util/is-object.js';
-import { getErrorSchema, getSuccessSchema } from '#src/util/response.js';
+import { isArray, isFunction, isObject } from '#src/util/misc.js';
 import { readFileSync } from 'node:fs';
 
-function generateSchema(schemaName, options = {}) {
-  const properties = generateSchemaProperties(schemaName);
-  if (!properties) {
-    return false;
-  }
+function loadSchemaFiles(schemaNames) {
+  const schemaNameList = isArray(schemaNames)
+    ? schemaNames
+    : [schemaNames];
 
-  const schema = {};
+  const properties = {};
+  const examples = {};
+  const exampleMap = {};
 
-  const payload = generateSchemaPayloadFromProperties(properties, options);
-  if (payload) {
-    Object.assign(schema, payload);
-  }
+  schemaNameList.forEach((schemaName) => {
+    const schemaPath = resolvePath(absPath.schema, `${schemaName}.json`);
+    const schema = JSON.parse(readFileSync(schemaPath, 'utf8'));
 
-  const response = generateSchemaResponseFromProperties(properties, options);
-  if (payload) {
-    schema.response = response;
-  }
+    if (schema['#example']) {
+      Object.assign(examples, schema['#example']);
+      exampleMap[schemaName] = schema['#example'];
+      delete schema['#example'];
+    }
+
+    Object.assign(properties, schema);
+  });
 
   return {
-    ...schema,
-    ...options.overwrite || {},
+    properties,
+    examples,
+    exampleMap,
   };
 }
 
-function generateSchemaProperties(schemaName) {
-  const schemaNameList = Array.isArray(schemaName)
-    ? [...schemaName]
-    : [schemaName];
-
-  if (!schemaNameList.length) {
-    return false;
+function createPayloadObject(properties, keys = [], required = []) {
+  if (!keys.length) {
+    return undefined;
   }
 
-  const properties = {};
-  try {
-    schemaNameList.forEach((sName) => {
-      const sPath = resolvePath(absPath.schema, `${sName}.json`);
-      const sText = readFileSync(sPath, 'utf8');
-      const sProps = JSON.parse(sText);
-      Object.keys(sProps).forEach((sProp) => {
-        if (sProp.startsWith('#') && sProp in properties) {
-          return Object.assign(properties[sProp], sProps[sProp]);
-        }
-        properties[sProp] = sProps[sProp];
-      });
-    });
-  } catch {
-    return false;
-  }
+  const schema = {
+    type: 'object',
+    properties: {},
+  };
 
-  if (!Object.keys(properties).length) {
-    return false;
-  }
-
-  return properties;
-}
-
-function generateSchemaPayloadFromProperties(properties, options = {}) {
-  if (!isObject(properties)) {
-    return false;
-  }
-
-  const payload = {};
-  const payloadList = ['cookie', 'body', 'param', 'query'];
-
-  payloadList.forEach((payloadKey) => {
-    const payloadKeys = options[`${payloadKey}Keys`] || [];
-    const payloadRequiredKeys = options[`${payloadKey}RequiredKeys`] || [];
-    if (!payloadKeys.length) {
-      return false;
-    }
-
-    const payloadSchema = {
-      type: 'object',
-      properties: {},
-      required: [...payloadRequiredKeys],
-    };
-    payloadKeys.forEach((pKey) => {
-      if (pKey in properties) {
-        payloadSchema.properties[pKey] = structuredClone(properties[pKey]);
-      }
-    });
-
-    if (payloadKey === 'cookie') {
-      payload.cookies = payloadSchema;
-    } else if (payloadKey === 'body') {
-      payload.body = payloadSchema;
-    } else if (payloadKey === 'param') {
-      payload.params = payloadSchema;
-    } else if (payloadKey === 'query') {
-      payload.querystring = payloadSchema;
+  keys.forEach((key) => {
+    if (key in properties) {
+      schema.properties[key] = properties[key];
     }
   });
 
-  return payload;
-}
-
-function generateSchemaResponseFromProperties(properties, options = {}) {
-  if (!isObject(properties) || options.responseCodeKeys === false || options.responseCodeKeys === null) {
-    return false;
+  if (required.length) {
+    schema.required = required;
   }
 
-  const response = {};
-  const responseList = Array.isArray(options.responseCodeKeys) && options.responseCodeKeys.length
-    ? [...options.responseCodeKeys]
-    : [200, 400, 401, 403, 500];
+  return schema;
+}
 
-  responseList.forEach((responseKey) => {
-    const responseDefaultBody = {};
-    const responseGeneratorFunction = responseKey === 200
-      ? getSuccessSchema
-      : getErrorSchema;
-    const responseOverwrite = 'responseCodeOverwrite' in options && responseKey in options.responseCodeOverwrite
-      ? options.responseCodeOverwrite[responseKey]
-      : {};
-    const responseOverwriteFull = 'responseCodeOverwriteFull' in options && responseKey in options.responseCodeOverwriteFull
-      ? options.responseCodeOverwriteFull[responseKey]
-      : {};
+function createExampleFromKeys(exampleSource, keys = [], format = 'object') {
+  if (!exampleSource || !keys.length) {
+    return undefined;
+  }
 
-    if (responseKey === 200) {
-      const exampleProperties = properties['#example'];
-      const dataExampleKeys = options.responseSuccessDataExample;
-      const dataExampleFormat = options.responseSuccessDataExampleFormat || 'object';
-      const isWildcard = Array.isArray(dataExampleKeys) && dataExampleKeys.length && dataExampleKeys[0] !== '*' ? false : true;
+  const exampleObject = keys.reduce((acc, key) => {
+    if (key in exampleSource) {
+      acc[key] = exampleSource[key];
+    }
+    return acc;
+  }, {});
 
-      /* eslint-disable no-nested-ternary */
-      const dateExampleObject = exampleProperties && dataExampleKeys
-        ? isWildcard
-          ? structuredClone(exampleProperties)
-          : Array.isArray(dataExampleKeys)
-            ? dataExampleKeys.reduce((acc, key) => {
-              acc[key] = exampleProperties[key];
-              return acc;
-            }, {})
-            : null
-        : null;
+  if (!Object.keys(exampleObject).length) {
+    return undefined;
+  }
 
-      let responseSuccessDataExample = dateExampleObject;
-      if (typeof dataExampleFormat === 'function') {
-        responseSuccessDataExample = dataExampleFormat(dateExampleObject);
-      } else if (dataExampleFormat === 'array') {
-        responseSuccessDataExample = [dateExampleObject];
-      } else if (dataExampleFormat === 'string') {
-        responseSuccessDataExample = Object.values(dateExampleObject || {}).join(', ');
-      }
+  if (isFunction(format)) {
+    return format(exampleObject);
+  }
 
-      if (responseSuccessDataExample) {
-        responseDefaultBody.dataExample = responseSuccessDataExample;
-      }
-    } else if (responseKey === 400) {
-      responseDefaultBody.properties = {
-        validation: {
-          type: ['array'],
-          description: 'Validation data if needed',
-          example: responseOverwrite.validationExample === undefined
-            ? []
-            : responseOverwrite.validationExample,
+  if (format === 'array') {
+    return [exampleObject];
+  }
+
+  if (format === 'string') {
+    return Object.values(exampleObject).join(', ');
+  }
+
+  return exampleObject;
+}
+
+function getBaseSuccessResponse() {
+  return {
+    description: 'Success response',
+    content: {
+      'application/json': {
+        schema: {
+          type: 'object',
+          required: ['status'],
+          properties: {
+            status: { type: 'string', enum: ['success'] },
+            data: { nullable: true },
+            filters: { type: 'array', nullable: true },
+            pagination: { type: 'object', nullable: true, additionalProperties: true },
+            sort: { type: 'string', nullable: true },
+          },
+          example: {
+            status: 'success',
+          },
         },
-      };
-    } else if (responseKey === 401) {
-      responseDefaultBody.description = 'Authentication error response';
-      responseDefaultBody.messageExample = 'Authentication Error';
-      responseDefaultBody.dataExample = 'AUTHENTICATION';
-    } else if (responseKey === 403) {
-      responseDefaultBody.description = 'Authorization error response';
-      responseDefaultBody.messageExample = 'Authorization Error';
-      responseDefaultBody.dataExample = 'AUTHORIZATION';
-    } else if (responseKey === 500) {
-      responseDefaultBody.description = 'Server error response';
-      responseDefaultBody.messageExample = 'Server Error';
-      responseDefaultBody.dataExample = 'SERVER';
+      },
+    },
+  };
+}
+
+function getBaseErrorResponse(code) {
+  let description = 'Error response';
+
+  const example = {
+    status: 'error',
+    message: 'Error details',
+  };
+
+  if (code === 400) {
+    description = 'Validation error response';
+    example.message = 'Validation Error';
+    example.data = 'VALIDATION_ERROR';
+    example.validation = [];
+  } else if (code === 401) {
+    description = 'Authentication error response';
+    example.message = 'Authentication error';
+    example.data = 'AUTHENTICATION_ERROR';
+  } else if (code === 403) {
+    description = 'Authorization error response';
+    example.message = 'Authorization error';
+    example.data = 'AUTHORIZATION_ERROR';
+  } else if (code === 500) {
+    description = 'Server error response';
+    example.message = 'Server error';
+    example.data = 'SERVER_ERROR';
+  }
+
+  return {
+    description,
+    content: {
+      'application/json': {
+        schema: {
+          type: 'object',
+          required: ['status'],
+          properties: {
+            status: { type: 'string', enum: ['error'] },
+            message: { type: 'string', nullable: true },
+            data: { nullable: true },
+            validation: { type: 'array', nullable: true },
+          },
+          example,
+        },
+      },
+    },
+  };
+}
+
+function createSchema(...schemaNames) {
+  // INIT
+  const schema = {};
+  const responses = {};
+
+  // LOAD SCHEMA FILES
+  const {
+    properties,
+    examples,
+    exampleMap,
+  } = loadSchemaFiles(schemaNames);
+
+  // PAYLOAD
+  function cookies(keys = [], required = []) {
+    const s = createPayloadObject(properties, keys, required);
+    if (s) schema.cookies = s;
+    return api;
+  }
+
+  function body(keys = [], required = []) {
+    const s = createPayloadObject(properties, keys, required);
+    if (s) schema.body = s;
+    return api;
+  }
+
+  function params(keys = [], required = []) {
+    const s = createPayloadObject(properties, keys, required);
+    if (s) schema.params = s;
+    return api;
+  }
+
+  function query(keys = [], required = []) {
+    const s = createPayloadObject(properties, keys, required);
+    if (s) schema.querystring = s;
+    return api;
+  }
+
+  // DEFAULT RESPONSES
+  function defaultResponses({
+    include = [200, 400, 401, 403, 500],
+    exclude = [],
+  } = {}) {
+    const finalCodes = include.filter((c) => !exclude.includes(c));
+
+    finalCodes.forEach((code) => {
+      if (responses[code]) {
+        return false;
+      }
+
+      if (code >= 200 && code < 300) {
+        responses[code] = getBaseSuccessResponse();
+      } else {
+        responses[code] = getBaseErrorResponse(code);
+      }
+    });
+
+    return api;
+  }
+
+  // RESPONSE
+  function response(code = 200, options = {}) {
+    const isSuccess = code >= 200 && code < 300;
+    const responceObject = isSuccess
+      ? getBaseSuccessResponse()
+      : getBaseErrorResponse();
+
+    // DESCRIPTION OVERRIDE
+    if (options.description) {
+      responceObject.description = options.description;
     }
 
-    response[responseKey] = responseGeneratorFunction(
-      {
-        ...responseDefaultBody,
-        ...responseOverwrite,
-      },
-      responseOverwriteFull,
-    );
-  });
+    // PROPERTIES & EXAMPLES PATCH
+    const schemaRef = responceObject.content['application/json'].schema;
 
-  return response;
+    Object.keys(options).forEach((prop) => {
+      if (!prop.includes('Example')) {
+        schemaRef.properties[prop] = options[prop];
+        return true;
+      }
+
+      if (prop.endsWith('ExampleKeysFormat')) {
+        return false;
+      }
+
+      const propRealName = prop.replace(/Example(.+)?/, '');
+      if (!isObject(schemaRef.properties[propRealName])) {
+        return false;
+      }
+
+      if (!isObject(schemaRef.example)) {
+        schemaRef.example = {
+          status: isSuccess
+            ? 'success'
+            : 'error',
+        };
+      }
+
+      if (prop.endsWith('Example')) {
+        schemaRef.example[propRealName] = options[prop];
+        return true;
+      }
+
+      if (!isArray(options[prop])) {
+        return false;
+      }
+
+      const keysFormat = options[`${prop}Format`];
+      const keys = options[prop][0] === '*' && isObject(exampleMap[propRealName])
+        ? Object.keys(exampleMap[propRealName])
+        : options[prop];
+      if (!keys.length) {
+        return false;
+      }
+
+      const exampleData = createExampleFromKeys(
+        examples,
+        keys,
+        keysFormat,
+      );
+
+      if (!exampleData) {
+        return false;
+      }
+
+      schemaRef.example[propRealName] = exampleData;
+    });
+
+    responses[code] = responceObject;
+
+    return api;
+  }
+
+  // META
+  function meta(obj = {}) {
+    Object.assign(schema, obj);
+    return api;
+  }
+
+  // BUILD
+  function build() {
+    if (Object.keys(responses).length) {
+      schema.response = responses;
+    }
+    return schema;
+  }
+
+  const api = {
+    cookies,
+    body,
+    params,
+    query,
+    defaultResponses,
+    response,
+    meta,
+    build,
+  };
+
+  return api;
 }
 
 export {
-  generateSchema,
-  generateSchemaPayloadFromProperties,
-  generateSchemaProperties,
-  generateSchemaResponseFromProperties,
+  createExampleFromKeys,
+  createPayloadObject,
+  createSchema,
+  getBaseErrorResponse,
+  getBaseSuccessResponse,
+  loadSchemaFiles,
 };

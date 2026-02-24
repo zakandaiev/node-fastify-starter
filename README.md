@@ -21,7 +21,7 @@ Node.js Fastify Starter is a boilerplate kit for building modern backend applica
 
 Prerequisites:
 * [Node.js](https://nodejs.org/) (`>=22`)
-* [MariaDB](https://mariadb.org/) (`>=10.5`)
+* [MariaDB](https://mariadb.org/) (`>=11.7`)
 
 ### Install
 

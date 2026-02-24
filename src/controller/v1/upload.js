@@ -1,6 +1,7 @@
 import { resolvePath } from '#core/path.js';
+import { toNumber } from '#src/util/misc.js';
 import { replyError, replySuccess } from '#src/util/response.js';
-import { generateSchema } from '#src/util/schema.js';
+import { createSchema } from '#src/util/schema.js';
 import { randomUUID } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
 import nodePath from 'node:path';
@@ -47,7 +48,7 @@ async function uploadFile(data) {
   }
 
   // CHECK SIZE
-  const maxSize = parseInt(process.env.APP_UPLOAD_MAX_SIZE, 10);
+  const maxSize = toNumber(process.env.APP_UPLOAD_MAX_SIZE);
   if (maxSize > 0 && data.bytes > maxSize) {
     return {
       status: 'error',
@@ -91,31 +92,28 @@ async function postUpload(request, reply) {
     data: result.uri,
   });
 }
-const postUploadSchema = generateSchema(
-  'upload',
-  {
-    bodyKeys: OUTPUT_COLUMNS,
-    bodyRequiredKeys: OUTPUT_COLUMNS,
-    responseSuccessDataExample: OUTPUT_COLUMNS,
-    responseSuccessDataExampleFormat: 'string',
-    responseCodeOverwrite: {
-      400: {
-        messageExample: 'File size is too big',
-        dataExample: 'FILE_SIZE_IS_INVALID',
-        validationExample: [{
-          column: 'size',
-          operator: 'maxSize',
-          operatorValue: 'number in bytes',
-        }],
-      },
-    },
-    overwrite: {
-      tags: ['Upload'],
-      summary: 'Upload a file',
-      description: 'Uploads a file and returns path to it',
-    },
-  },
-);
+const postUploadSchema = createSchema('upload')
+  .body(OUTPUT_COLUMNS, OUTPUT_COLUMNS)
+  .defaultResponses()
+  .response(200, {
+    dataExampleKeys: OUTPUT_COLUMNS,
+    dataExampleKeysFormat: 'string',
+  })
+  .response(400, {
+    messageExample: 'File size is too big',
+    dataExample: 'FILE_SIZE_IS_INVALID',
+    validationExample: [{
+      column: 'size',
+      operator: 'maxSize',
+      operatorValue: 'number in bytes',
+    }],
+  })
+  .meta({
+    tags: ['Upload', 'v1'],
+    summary: 'Upload a file',
+    description: 'Uploads a file and returns path to it',
+  })
+  .build();
 
 export {
   OUTPUT_COLUMNS,

@@ -1,29 +1,23 @@
+import {
+  isArray,
+  isNumber,
+  isObject,
+  toNumber,
+} from '#src/util/misc.js';
 import sleep from '#src/util/sleep.js';
 
 function getApiTimeout(timeout) {
-  if (typeof timeout === 'number') {
+  if (isNumber(timeout)) {
     return timeout;
   }
-
-  const timeoutMsFromEnv = process.env.APP_API_EXTERNAL_TIMEOUT_MS;
-  if (timeoutMsFromEnv) {
-    return parseFloat(timeoutMsFromEnv);
-  }
-
-  return 15000;
+  return toNumber(process.env.APP_API_EXTERNAL_TIMEOUT_MS) ?? 15000;
 }
 
 function getApiDelay(delay) {
-  if (typeof delay === 'number') {
+  if (isNumber(delay)) {
     return delay;
   }
-
-  const delayMsFromEnv = process.env.APP_API_EXTERNAL_DELAY_MS;
-  if (delayMsFromEnv) {
-    return parseFloat(delayMsFromEnv);
-  }
-
-  return 1000;
+  return toNumber(process.env.APP_API_EXTERNAL_DELAY_MS) ?? 500;
 }
 
 async function fetchWithTimeout(resource, options = {}, timeout = null) {
@@ -49,17 +43,17 @@ async function request(resource, opt = {}, timeout = null, delay = null) {
     method: opt.method || 'GET',
   };
 
-  if (options.headers.Authorization === undefined && process.env.APP_API_EXTERNAL_BEARER) {
-    options.headers.Authorization = process.env.APP_API_EXTERNAL_BEARER;
+  if (options.headers.Authorization === undefined && process.env.APP_API_EXTERNAL_KEY) {
+    options.headers.Authorization = process.env.APP_API_EXTERNAL_KEY;
   }
 
-  if (options.method.toUpperCase() === 'GET' && typeof options.body === 'object' && options.body !== null) {
+  if (options.method.toUpperCase() === 'GET' && isObject(options.body)) {
     const url = new URL(resource, window.location.origin);
     Object.entries(options.body).forEach(([key, value]) => {
       if (value === null || value === undefined) {
         return false;
       }
-      if (typeof value === 'object') {
+      if (isArray(value) || isObject(value)) {
         url.searchParams.append(key, JSON.stringify(value));
       } else {
         url.searchParams.append(key, value);
@@ -69,7 +63,7 @@ async function request(resource, opt = {}, timeout = null, delay = null) {
     delete options.body;
   }
 
-  if (typeof options.body === 'object' && !(options.body instanceof FormData)) {
+  if (isObject(options.body) && !(options.body instanceof FormData)) {
     options.body = JSON.stringify(options.body);
   }
 

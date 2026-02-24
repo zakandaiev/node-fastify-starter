@@ -1,11 +1,11 @@
 import '#root/bootstrap.js';
 // BOOTSTRAP FIRST IS REQUIRED
 
-import { fastify, start } from '#core/server.js';
+import { fastify, startServer } from '#core/server.js';
 
 // START THE SERVER
 try {
-  await start();
+  await startServer();
 } catch (err) {
   fastify.log.error(err);
   process.exit(1);

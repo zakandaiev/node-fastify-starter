@@ -1,5 +1,5 @@
 import { replySuccess } from '#src/util/response.js';
-import { generateSchema } from '#src/util/schema.js';
+import { createSchema } from '#src/util/schema.js';
 
 // NORMALIZATION
 const OUTPUT_COLUMNS = [
@@ -16,18 +16,19 @@ async function getHealthCheck(request, reply) {
     },
   });
 }
-const getHealthCheckSchema = generateSchema(
-  'healthcheck',
-  {
-    responseCodeKeys: [200, 500],
-    responseSuccessDataExample: OUTPUT_COLUMNS,
-    overwrite: {
-      tags: ['Healthcheck'],
-      summary: 'System health check',
-      description: 'Returns system health',
-    },
-  },
-);
+const getHealthCheckSchema = createSchema('healthcheck')
+  .defaultResponses({
+    include: [200, 500],
+  })
+  .response(200, {
+    dataExampleKeys: OUTPUT_COLUMNS,
+  })
+  .meta({
+    tags: ['Healthcheck'],
+    summary: 'System health check',
+    description: 'Returns system health',
+  })
+  .build();
 
 export {
   getHealthCheck,

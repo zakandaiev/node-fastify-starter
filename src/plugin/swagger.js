@@ -27,7 +27,7 @@ async function useSwagger(fastify) {
   });
 
   await fastify.register(fastifySwaggerUI, {
-    routePrefix: process.env.APP_API_DOCS_PREFIX,
+    routePrefix: process.env.APP_DOCS_PREFIX,
     uiConfig: {
       docExpansion: 'none',
       deepLinking: true,

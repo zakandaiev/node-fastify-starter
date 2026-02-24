@@ -1,11 +1,12 @@
 /* eslint-disable no-console */
 import { processArg } from '#root/core/app.js';
 import { absPath, joinPath } from '#root/core/path.js';
+import { toNumber } from '#src/util/misc.js';
 import mysql from 'mysql2/promise';
 import { readdirSync, readFileSync } from 'node:fs';
 
 const {
-  type,
+  type = 'migration',
   direction,
   names,
   'names-exclude': namesExclude,
@@ -60,8 +61,8 @@ try {
       return true;
     })
     .sort((a, b) => {
-      const numA = parseInt(a.split('_')[0], 10);
-      const numB = parseInt(b.split('_')[0], 10);
+      const numA = toNumber(a.split('_')[0]);
+      const numB = toNumber(b.split('_')[0]);
       return direction === 'down'
         ? numB - numA
         : numA - numB;

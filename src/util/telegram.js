@@ -1,7 +1,16 @@
 import { request } from '#src/util/request.js';
 
-// BOT UPDATES
-// https://api.telegram.org/bot${process.env.APP_TELEGRAM_BOT_TOKEN}/getUpdates
+async function getTelegramBotUpdates() {
+  const telegramBotApi = process.env.APP_TELEGRAM_BOT_API;
+  const telegramBotToken = process.env.APP_TELEGRAM_BOT_TOKEN;
+  if (!telegramBotApi || !telegramBotToken) {
+    return false;
+  }
+
+  const url = `${telegramBotApi}${telegramBotToken}/getUpdates`;
+  const result = await request(url);
+  return result.code === 200;
+}
 
 async function sendTelegramMessage(chatId, msgStringOrArray) {
   if (!chatId || !msgStringOrArray) {
@@ -52,6 +61,6 @@ async function sendTelegramMessage(chatId, msgStringOrArray) {
 }
 
 export {
-  // eslint-disable-next-line
-  sendTelegramMessage
+  getTelegramBotUpdates,
+  sendTelegramMessage,
 };

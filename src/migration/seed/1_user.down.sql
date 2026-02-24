@@ -1,3 +1,3 @@
-DELETE FROM `user`
-WHERE `id`
-LIKE 'seed_%';
+DELETE FROM `users`
+WHERE `name`
+LIKE '[SEED]%';

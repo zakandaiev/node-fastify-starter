@@ -1,5 +1,5 @@
 import { replyError, replySuccess } from '#src/util/response.js';
-import { generateSchema } from '#src/util/schema.js';
+import { createSchema } from '#src/util/schema.js';
 import { sendTelegramMessage } from '#src/util/telegram.js';
 
 // LOG UTIL
@@ -47,24 +47,20 @@ async function postLogError(request, reply) {
     data: result,
   });
 }
-const postLogErrorSchema = generateSchema(
-  'log',
-  {
-    bodyKeys: ['app', 'client', 'error', 'url'],
-    bodyRequiredKeys: ['error', 'url'],
-    responseCodeKeys: [200, 500],
-    responseCodeOverwrite: {
-      200: {
-        dataExample: true,
-      },
-    },
-    overwrite: {
-      tags: ['Log'],
-      summary: 'Log frontend error',
-      description: 'Notifies about frontend error to telegram group. Requires frontend origin in headers',
-    },
-  },
-);
+const postLogErrorSchema = createSchema('log')
+  .body(['error', 'url', 'app', 'client'], ['error', 'url'])
+  .defaultResponses({
+    include: [200, 500],
+  })
+  .response(200, {
+    dataExample: true,
+  })
+  .meta({
+    tags: ['Log', 'v1'],
+    summary: 'Log frontend error',
+    description: 'Notifies about frontend error to telegram group. Requires frontend origin in headers',
+  })
+  .build();
 
 export {
   logErrorToTelegram,

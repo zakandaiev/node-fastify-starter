@@ -19,7 +19,7 @@ const fastify = fastifyLib({
     : false,
 });
 
-async function start() {
+async function startServer() {
   fastify.setErrorHandler(setErrorHandler);
   fastify.setNotFoundHandler(setNotFoundHandler);
 
@@ -41,12 +41,12 @@ async function start() {
   });
 }
 
-async function stop() {
+async function stopServer() {
   await fastify.close();
 }
 
 export {
   fastify,
-  start,
-  stop,
+  startServer,
+  stopServer,
 };

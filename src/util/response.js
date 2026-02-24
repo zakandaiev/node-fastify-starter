@@ -1,4 +1,10 @@
+import { isArray, isObject, toString } from '#src/util/misc.js';
+
 function normalizeDataByColumns(data, columns) {
+  if (!isObject(data)) {
+    return data;
+  }
+
   if (Array.isArray(columns) && columns.length && columns[0] !== '*') {
     return columns.reduce((outputObject, columnKey) => {
       outputObject[columnKey] = data[columnKey] || null;
@@ -9,130 +15,96 @@ function normalizeDataByColumns(data, columns) {
   return structuredClone(data);
 }
 
-function replySuccess(reply, overwriteOptions = {}) {
-  reply.code(overwriteOptions.code || 200);
+function redirect(fastifyReply, url, code) {
+  if (code) fastifyReply.code(code);
+  return fastifyReply.redirect(url || '/');
+}
+
+function reply(fastifyReply, data = null, code = 200, contentType = 'text/plain') {
+  if (!data) {
+    return replyEmpty(fastifyReply, code, contentType);
+  }
+
+  if (isArray(data) || isObject(data)) {
+    contentType = 'application/json';
+  }
+
+  fastifyReply.code(code).type(contentType);
+  return fastifyReply.send(toString(data));
+}
+
+function replyEmpty(fastifyReply, code = 200, contentType = 'text/plain') {
+  fastifyReply.code(code).type(contentType);
+  return fastifyReply.send();
+}
+
+function replySuccess(fastifyReply, overwriteOptions = {}) {
+  fastifyReply.code(overwriteOptions.code || 200);
   delete overwriteOptions.code;
 
-  return reply.send({
+  return fastifyReply.send({
     status: 'success',
     data: overwriteOptions.data || null,
     ...overwriteOptions,
   });
 }
 
-function replyError(reply, overwriteOptions = {}) {
-  reply.code(overwriteOptions.code || 400);
+function replyError(fastifyReply, overwriteOptions = {}) {
+  fastifyReply.code(overwriteOptions.code || 400);
   delete overwriteOptions.code;
 
-  return reply.send({
+  return fastifyReply.send({
     status: 'error',
     message: overwriteOptions.message || null,
     ...overwriteOptions,
   });
 }
 
-function replyErrorAuthentication(reply, overwriteOptions = {}) {
-  return replyError(reply, {
+function replyErrorAuthentication(fastifyReply, overwriteOptions = {}) {
+  return replyError(fastifyReply, {
     code: 401,
     message: 'Authentication error',
-    data: 'AUTHENTICATION',
+    data: 'AUTHENTICATION_ERROR',
     ...overwriteOptions,
   });
 }
 
-function replyErrorAuthorization(reply, overwriteOptions = {}) {
-  return replyError(reply, {
+function replyErrorAuthorization(fastifyReply, overwriteOptions = {}) {
+  return replyError(fastifyReply, {
     code: 403,
     message: 'Authorization error',
-    data: 'AUTHORIZATION',
+    data: 'AUTHORIZATION_ERROR',
     ...overwriteOptions,
   });
 }
 
-function getSuccessSchema(options = {}, overwriteOptions = {}) {
-  return {
-    description: options.description || 'Success response',
-    content: {
-      'application/json': {
-        schema: {
-          type: 'object',
-          required: ['status', 'data'],
-          properties: {
-            status: {
-              type: 'string',
-              enum: ['success'],
-              description: 'Response status',
-            },
-            data: {
-              schema: options.dataSchema || undefined,
-              description: options.dataDescription || 'Additional data if needed',
-              example: options.dataExample === undefined
-                ? 'Additional data if needed'
-                : options.dataExample,
-            },
-            ...options.properties || {},
-          },
-        },
-      },
-    },
-    ...overwriteOptions,
-  };
-}
-
-function getErrorSchema(options = {}, overwriteOptions = {}) {
-  return {
-    description: options.description || 'Error response',
-    content: {
-      'application/json': {
-        schema: {
-          type: 'object',
-          required: ['status', 'message'],
-          properties: {
-            status: {
-              type: 'string',
-              enum: ['error'],
-              description: 'Response status',
-            },
-            message: {
-              type: ['string', 'null'],
-              description: options.messageDescription || 'Error details message',
-              example: options.messageExample || undefined,
-            },
-            data: {
-              schema: options.dataSchema || undefined,
-              description: options.dataDescription || 'Additional data if needed',
-              example: options.dataExample === undefined
-                ? 'Additional data if needed'
-                : options.dataExample,
-            },
-            ...options.properties || {},
-          },
-        },
-      },
-    },
-    ...overwriteOptions,
-  };
-}
-
-function setNotFoundHandler(request, reply) {
-  return replyError(reply, {
+function replyErrorNotFound(request, fastifyReply, overwriteOptions = {}) {
+  return replyError(fastifyReply, {
     code: 404,
     message: `Route ${request.method} ${request.url} not found`,
-    data: 'ROUTE_NOT_FOUND',
+    data: 'NOT_FOUND_ERROR',
+    ...overwriteOptions,
   });
 }
 
-function setErrorHandler(error, request, reply) {
+function setNotFoundHandler(request, fastifyReply) {
+  return replyErrorNotFound(request, fastifyReply);
+}
+
+function setErrorHandler(error, request, fastifyReply) {
   const responseErrorObj = {
     code: error.statusCode || 500,
     message: 'Server error',
-    data: error.message,
+    data: process.env.APP_MODE === 'dev'
+      ? error.message
+      : 'SERVER_ERROR',
   };
 
   // AJV validation
   if (error.validation) {
     responseErrorObj.code = 400;
     responseErrorObj.message = 'Validation Error';
+    responseErrorObj.data = 'VALIDATION_ERROR';
     responseErrorObj.validation = formatValidationErrors(error.validation, error.validationContext, request) || [];
   }
 
@@ -140,13 +112,14 @@ function setErrorHandler(error, request, reply) {
   if (['ER_DUP_ENTRY'].includes(error.code)) {
     responseErrorObj.code = 400;
     responseErrorObj.message = 'Validation Error';
+    responseErrorObj.data = 'VALIDATION_ERROR';
     const mysqlValidationErrors = formatMysqlValidationErrors(error, request) || [];
     responseErrorObj.validation = Array.isArray(responseErrorObj.validation)
       ? responseErrorObj.validation.concat(mysqlValidationErrors)
       : mysqlValidationErrors;
   }
 
-  return replyError(reply, responseErrorObj);
+  return replyError(fastifyReply, responseErrorObj);
 }
 
 function formatValidationErrors(errors, validationContext, request) {
@@ -190,7 +163,7 @@ function formatValidationErrors(errors, validationContext, request) {
 }
 
 function formatMysqlValidationErrors(error) {
-  if (typeof error !== 'object') {
+  if (!isObject(error)) {
     return false;
   }
 
@@ -212,12 +185,14 @@ function formatMysqlValidationErrors(error) {
 }
 
 export {
-  getErrorSchema,
-  getSuccessSchema,
   normalizeDataByColumns,
+  redirect,
+  reply,
+  replyEmpty,
   replyError,
   replyErrorAuthentication,
   replyErrorAuthorization,
+  replyErrorNotFound,
   replySuccess,
   setErrorHandler,
   setNotFoundHandler,

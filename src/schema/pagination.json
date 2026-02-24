@@ -1,5 +1,12 @@
 {
-  "#example": {},
+  "#example": {
+    "limit": 10,
+    "offset": 0,
+    "total": 10,
+    "totalPages": 1,
+    "currentPage": 1,
+    "canLoadMore": false
+  },
   "limit": {
     "type": "number",
     "format": "int32",
@@ -9,5 +16,20 @@
     "type": "number",
     "format": "int32",
     "minimum": 0
+  },
+  "total": {
+    "type": "number",
+    "format": "int32"
+  },
+  "totalPages": {
+    "type": "number",
+    "format": "int32"
+  },
+  "currentPage": {
+    "type": "number",
+    "format": "int32"
+  },
+  "canLoadMore": {
+    "type": "boolean"
   }
 }

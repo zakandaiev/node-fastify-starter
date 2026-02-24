@@ -4,6 +4,9 @@ WORKDIR /app
 
 COPY . .
 
-RUN apk update && apk add --no-cache bash curl mc netcat-openbsd && npm install --ignore-scripts && npm run build && rm -rf /etc/apk/cache
+RUN --mount=type=secret,id=env_file,target=/app/.env \
+    apk update && apk add --no-cache bash curl mc netcat-openbsd \
+    && npm install --ignore-scripts \
+    && rm -rf /etc/apk/cache
 
 CMD ["npm", "run", "start"]

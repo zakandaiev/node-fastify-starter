@@ -1,8 +1,8 @@
-import { checkOriginAuth } from '#src/controller/auth.js';
+import { checkOriginAuth } from '#root/src/controller/v1/auth.js';
 import {
   postLogError,
   postLogErrorSchema,
-} from '#src/controller/log.js';
+} from '#root/src/controller/v1/log.js';
 
 async function useUploadRoutes(fastify) {
   fastify.post('/log/error', {
