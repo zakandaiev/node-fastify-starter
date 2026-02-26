@@ -207,7 +207,7 @@ function convertStringToSeconds(string) {
     return null;
   }
 
-  const match = string.trim().match(/^(\d+(?:\.\d+)?)(s|sec|m|min|h|d|w|mo|y)$/i);
+  const match = string.trim().match(/^(\d+(?:\.\d+)?)(s|sec|m|min|h|d|w|mo|mon|y)$/i);
   if (!match) {
     return null;
   }
@@ -228,13 +228,13 @@ function convertStringToSeconds(string) {
     future.setDate(future.getDate() + value);
   } else if (unit === 'w') {
     future.setDate(future.getDate() + (value * 7));
-  } else if (unit === 'mo') {
+  } else if (unit === 'mo' || unit === 'mon') {
     future.setMonth(future.getMonth() + value);
   } else if (unit === 'y') {
     future.setFullYear(future.getFullYear() + value);
   }
 
-  return future.getTime() - now.getTime();
+  return (future.getTime() - now.getTime()) / 1000;
 }
 
 function addToDate(input, {

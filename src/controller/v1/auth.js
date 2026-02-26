@@ -12,10 +12,6 @@ import {
 import { createSchema } from '#src/util/schema.js';
 import bcrypt from 'bcryptjs';
 
-// TODO
-// 1. JWT ROTATION
-// 2. JWT REVOKE
-
 // CONST
 const AUTH_API_PATH = '/api/v1';
 

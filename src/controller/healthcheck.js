@@ -1,9 +1,11 @@
 import { replySuccess } from '#src/util/response.js';
-import { createSchema } from '#src/util/schema.js';
+import { createSchema, loadSchemaFiles } from '#src/util/schema.js';
 
 // NORMALIZATION
 const OUTPUT_COLUMNS = [
   'health',
+  'mysqlStatus',
+  'redisStatus',
   'requestDate',
 ];
 
@@ -12,6 +14,8 @@ async function getHealthCheck(request, reply) {
   return replySuccess(reply, {
     data: {
       health: 'healthy',
+      mysqlStatus: request.server.mysql ? 'ready' : 'uninstalled',
+      redisStatus: request.server?.redis?.status || 'uninstalled',
       requestDate: new Date().toISOString(),
     },
   });
@@ -21,6 +25,10 @@ const getHealthCheckSchema = createSchema('healthcheck')
     include: [200, 500],
   })
   .response(200, {
+    data: {
+      type: 'object',
+      properties: loadSchemaFiles('healthcheck').properties,
+    },
     dataExampleKeys: OUTPUT_COLUMNS,
   })
   .meta({

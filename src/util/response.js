@@ -1,3 +1,4 @@
+import { fastify } from '#core/server.js';
 import { isArray, isObject, toString } from '#src/util/misc.js';
 
 function normalizeDataByColumns(data, columns) {
@@ -96,7 +97,7 @@ function setErrorHandler(error, request, fastifyReply) {
     code: error.statusCode || 500,
     message: 'Server error',
     data: process.env.APP_MODE === 'dev'
-      ? error.message
+      ? (error.stack || error.message)
       : 'SERVER_ERROR',
   };
 
@@ -118,6 +119,8 @@ function setErrorHandler(error, request, fastifyReply) {
       ? responseErrorObj.validation.concat(mysqlValidationErrors)
       : mysqlValidationErrors;
   }
+
+  fastify.log.error(error);
 
   return replyError(fastifyReply, responseErrorObj);
 }

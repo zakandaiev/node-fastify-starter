@@ -1,10 +1,35 @@
 {
   "#example": {
     "health": "healthy",
+    "mysqlStatus": "ready",
+    "redisStatus": "ready",
     "requestDate": "2001-01-01T01:01:01.000Z"
   },
   "health": {
-    "type": "string"
+    "type": "string",
+    "enum": [
+      "healthy"
+    ]
+  },
+  "mysqlStatus": {
+    "type": "string",
+    "enum": [
+      "uninstalled",
+      "ready"
+    ]
+  },
+  "redisStatus": {
+    "type": "string",
+    "enum": [
+      "uninstalled",
+      "wait",
+      "reconnecting",
+      "connecting",
+      "connect",
+      "ready",
+      "close",
+      "end"
+    ]
   },
   "requestDate": {
     "type": "string",

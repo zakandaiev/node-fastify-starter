@@ -1,10 +1,12 @@
 import { fastify } from '#core/server.js';
+import { convertStringToSeconds } from '#src/util/datetime.js';
 import {
-  isArray,
   isFunction,
+  isNumber,
   isObject,
   isString,
   toNumber,
+  toString,
 } from '#src/util/misc.js';
 import {
   createSqlContext,
@@ -12,6 +14,7 @@ import {
   getSubstitutedSql,
   normalizeOrderBy,
 } from '#src/util/sql.js';
+import { createHash } from 'node:crypto';
 
 async function getConnection() {
   if (!isFunction(fastify.mysql?.getConnection)) {
@@ -22,17 +25,36 @@ async function getConnection() {
 }
 
 async function isTableExists(table) {
-  const connection = await getConnection();
-  if (!connection) {
+  if (!table) {
     return false;
   }
 
-  try {
-    await connection.query(`SELECT 1 FROM ${table} LIMIT 1`);
-    return true;
-  } catch {
-    return false;
-  }
+  const sql = 'SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = :table';
+  const binding = { table };
+
+  const query = createQuery(sql, binding);
+  await query.execute();
+
+  return !!query.fetchColumn();
+}
+
+function createCache({
+  key,
+  ttl,
+  tables = [],
+} = {}) {
+  const envTtl = process.env.APP_DATABASE_CACHE_TTL || '1h';
+  const rawTtl = ttl ?? envTtl;
+
+  const safeTtl = isNumber(rawTtl)
+    ? rawTtl
+    : convertStringToSeconds(envTtl);
+
+  return {
+    key,
+    ttl: safeTtl,
+    tables,
+  };
 }
 
 function createPagination(
@@ -105,11 +127,8 @@ function createQuery(initialSql = '', initialBinding = {}) {
   let isResultFetched = false;
 
   // MUTATIONS
-  function cache() {
-    if (!isSelect) {
-      return api;
-    }
-    cacheData = 'TODO';
+  function cache(payload = {}) {
+    cacheData = createCache(payload);
     return api;
   }
 
@@ -158,14 +177,16 @@ function createQuery(initialSql = '', initialBinding = {}) {
   }
 
   // EXECUTE
-  async function execute() {
-    if (cacheData) {
+  async function execute(skipCache = false) {
+    if (cacheData && skipCache !== true) {
+      await runCacheExtract();
       return api;
     }
 
-    await updatePaginationTotal();
     normalizeBindValues();
     await runQuery();
+    await updateCacheTableVersions();
+    await updatePaginationTotal();
 
     return api;
   }
@@ -183,10 +204,10 @@ function createQuery(initialSql = '', initialBinding = {}) {
 
       if (key in allowedKeys === false) {
         delete binding[key];
-      } else if (isArray(value) || isObject(value)) {
-        binding[key] = JSON.stringify(value);
-      } else if (value === undefined) {
+      } else if (value === null || value === undefined) {
         binding[key] = null;
+      } else {
+        binding[key] = toString(value);
       }
     });
 
@@ -204,8 +225,6 @@ function createQuery(initialSql = '', initialBinding = {}) {
       const [rows] = await connection.execute(sql, binding);
       const endTime = performance.now();
 
-      connection.release();
-
       fastify.log.info({
         substitutedSql: getSubstitutedSql(sql, binding),
         sql,
@@ -216,7 +235,83 @@ function createQuery(initialSql = '', initialBinding = {}) {
       result = rows;
     } catch (error) {
       throw new Error(error.message);
+    } finally {
+      if (isFunction(connection.release)) {
+        await connection.release();
+      }
     }
+
+    return true;
+  }
+
+  async function runCacheExtract() {
+    if (!isSelect || !cacheData || !cacheData.ttl || !fastify.isRedisReady) {
+      await execute(true);
+      return false;
+    }
+
+    if (!cacheData.key) {
+      const tables = cacheData.tables || [];
+      const tablePromises = tables.map((table) => fastify.redis.get(`table_version:${table}`));
+      const tableRawList = await Promise.all(tablePromises);
+      const tableVersions = tableRawList.map((version, index) => `${tables[index]}:${version ?? 0}`);
+
+      const hash = createHash('sha256')
+        .update(JSON.stringify({
+          sql,
+          binding,
+          filterData,
+          paginationData,
+          sortData,
+          tableVersions,
+        }))
+        .digest('hex');
+
+      cacheData.key = `db_query:${hash}`;
+    }
+
+    const dataFromCacheRaw = await fastify.redis.get(cacheData.key);
+    if (dataFromCacheRaw) {
+      const dataFromCache = JSON.parse(dataFromCacheRaw) || {};
+      cacheData = dataFromCache.cacheData;
+      filterData = dataFromCache.filterData;
+      paginationData = dataFromCache.paginationData;
+      sortData = dataFromCache.sortData;
+      result = dataFromCache.result;
+      isResultFetched = true;
+      return true;
+    }
+
+    await execute(true);
+
+    const dataToCache = {
+      cacheData,
+      filterData,
+      paginationData,
+      sortData,
+      result,
+    };
+
+    await fastify.redis.set(
+      cacheData.key,
+      JSON.stringify(dataToCache),
+      'EX',
+      cacheData.ttl,
+    );
+  }
+
+  async function updateCacheTableVersions() {
+    if (isSelect || !cacheData || !fastify.isRedisReady) {
+      return false;
+    }
+
+    const tables = cacheData.tables || [];
+    if (!tables.length) {
+      return false;
+    }
+
+    const updatePromises = tables.map((table) => fastify.redis.set(`table_version:${table}`, Date.now()));
+    await Promise.all(updatePromises);
 
     return true;
   }
@@ -272,10 +367,6 @@ function createQuery(initialSql = '', initialBinding = {}) {
       return result;
     }
 
-    if (cacheData) {
-      return 'TODO';
-    }
-
     if (type === 'affectedRows') {
       result = result?.affectedRows ?? null;
     } else if (type === 'insertId') {
@@ -286,7 +377,7 @@ function createQuery(initialSql = '', initialBinding = {}) {
       result = result[0] ?? null;
     } else if (type === 'fetchColumn') {
       const row = result[0];
-      const values = Object.values(row);
+      const values = isObject(row) ? Object.values(row) : {};
       result = values[data ?? 0] ?? null;
     }
 
@@ -338,6 +429,7 @@ function createQuery(initialSql = '', initialBinding = {}) {
 }
 
 export {
+  createCache,
   createPagination,
   createQuery,
   createSort,
