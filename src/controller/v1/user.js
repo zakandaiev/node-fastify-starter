@@ -7,6 +7,15 @@ import { normalizeDataByColumns, replyError, replySuccess } from '#src/util/resp
 import { createSchema } from '#src/util/schema.js';
 
 // NORMALIZATION
+const FILTER_COLUMNS = [
+  'email',
+  'name',
+  'phone',
+  'role',
+  'limit',
+  'offset',
+  'sort',
+];
 const OUTPUT_COLUMNS = [
   'id',
   'email',
@@ -17,18 +26,13 @@ const OUTPUT_COLUMNS = [
 
 // GET ALL USERS
 async function getAllUsers(request, reply) {
-  const {
-    limit,
-    offset,
-    sort,
-  } = request.query;
-
   const payload = {
-    limit,
-    offset,
-    sort,
     sortAllowedColumns: OUTPUT_COLUMNS,
   };
+
+  FILTER_COLUMNS.forEach((filterColumnKey) => {
+    payload[filterColumnKey] = request.query[filterColumnKey];
+  });
 
   const data = await modelGetAllUsers(payload);
 
@@ -41,13 +45,14 @@ async function getAllUsers(request, reply) {
   });
 }
 const getAllUsersSchema = createSchema('user', 'pagination', 'sort')
-  .query(['limit', 'offset', 'sort'])
+  .query(FILTER_COLUMNS)
   .defaultResponses()
   .response(200, {
     dataExampleKeys: OUTPUT_COLUMNS,
     dataExampleKeysFormat: 'array',
     paginationExampleKeys: ['*'],
     sortExampleKeys: ['*'],
+    sortExampleKeysFormat: (example) => example.sort,
   })
   .meta({
     tags: ['User', 'v1'],
@@ -114,6 +119,7 @@ const deleteUserByIdSchema = createSchema('user')
 export {
   deleteUserById,
   deleteUserByIdSchema,
+  FILTER_COLUMNS,
   getAllUsers,
   getAllUsersSchema,
   getUserById,

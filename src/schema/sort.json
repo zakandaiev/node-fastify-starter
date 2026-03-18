@@ -3,6 +3,7 @@
     "sort": "name ASC, dateCreated DESC"
   },
   "sort": {
-    "type": "string"
+    "type": "string",
+    "description": "Sort columns"
   }
 }

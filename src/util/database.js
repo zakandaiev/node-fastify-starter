@@ -1,13 +1,17 @@
 import { fastify } from '#core/server.js';
-import { convertStringToSeconds } from '#src/util/datetime.js';
+import { convertStringToSeconds, toDate } from '#src/util/datetime.js';
 import {
+  isArray,
+  isBoolean,
   isFunction,
   isNumber,
   isObject,
   isString,
+  isStringBoolean,
   toNumber,
   toString,
 } from '#src/util/misc.js';
+import { loadSchemaFiles } from '#src/util/schema.js';
 import {
   createSqlContext,
   cutSelectionPartFromSqlTokens,
@@ -54,6 +58,112 @@ function createCache({
     key,
     ttl: safeTtl,
     tables,
+  };
+}
+
+function createFilter(schemaNames, payload = {}) {
+  const { filters: filterDefinition, properties: filterProperties } = loadSchemaFiles(schemaNames);
+  if (!isObject(filterDefinition) || !Object.keys(filterDefinition).length) {
+    return {
+      sql: '',
+      binding: {},
+      filters: [],
+    };
+  }
+
+  const conditions = [];
+  const binding = {};
+  const filters = [];
+  const filterDefinitionKeys = Object.keys(filterDefinition);
+  const filterPayload = isObject(payload)
+    ? payload
+    : {};
+
+  const allowedColumnOperators = ['=', '>', '>=', '<', '<=', 'range'];
+  const defaultColumnOperator = '=';
+
+  for (let i = 0; i < filterDefinitionKeys.length; i += 1) {
+    const columnName = filterDefinitionKeys[i];
+    const columnDefinition = filterDefinition[columnName];
+    const columnProperties = filterProperties[columnName];
+    const columnType = columnDefinition.type;
+    const columnLabel = columnDefinition.label ?? columnProperties?.description ?? columnName;
+    const columnValue = filterPayload[columnName];
+    const columnBindingKey = `filter_${columnName}`;
+    const columnOperator = allowedColumnOperators.includes(columnDefinition.operator)
+      ? columnDefinition.operator
+      : '=';
+
+    const group = {
+      name: columnName,
+      type: columnType,
+      label: columnLabel,
+    };
+
+    // TEXT
+    if (columnType === 'text' && isString(columnValue) && columnValue.length) {
+      if (columnDefinition.isExact) {
+        conditions.push(`${columnName} = :${columnBindingKey}`);
+        binding[columnBindingKey] = columnValue;
+      } else {
+        conditions.push(`${columnName} LIKE :${columnBindingKey}`);
+        binding[columnBindingKey] = `%${columnValue}%`;
+      }
+
+      group.value = columnValue;
+    }
+
+    // BOOLEAN
+    if (columnType === 'boolean' && (isBoolean(columnValue) || isStringBoolean(columnValue))) {
+      conditions.push(`${columnName} = :${columnBindingKey}`);
+      binding[columnBindingKey] = columnValue ? 1 : 0;
+
+      group.value = columnValue;
+    }
+
+    // NUMBER
+    if (columnType === 'number' && columnOperator === 'range' && isArray(columnValue) && columnValue.length === 2 && isNumber(columnValue[0]) && isNumber(columnValue[1])) {
+      const [valueFrom, valueTo] = columnValue;
+
+      conditions.push(`${columnName} BETWEEN :${columnBindingKey}_from AND :${columnBindingKey}_to`);
+      binding[`${columnBindingKey}_from`] = valueFrom;
+      binding[`${columnBindingKey}_to`] = valueTo;
+
+      group.value = columnValue;
+    } else if (columnType === 'number' && isNumber(columnValue)) {
+      conditions.push(`${columnName} ${defaultColumnOperator} :${columnBindingKey}`);
+      binding[columnBindingKey] = columnValue;
+
+      group.value = columnValue;
+    }
+
+    // DATE OR DATETIME
+    if (['date', 'datetime'].includes(columnType) && columnOperator === 'range' && isArray(columnValue) && columnValue.length === 2 && toDate(columnValue[0]) && toDate(columnValue[1])) {
+      const [valueFrom, valueTo] = columnValue;
+
+      conditions.push(`${columnName} BETWEEN :${columnBindingKey}_from AND :${columnBindingKey}_to`);
+      binding[`${columnBindingKey}_from`] = columnType === 'date' ? `${valueFrom} 00:00:00` : valueFrom;
+      binding[`${columnBindingKey}_to`] = columnType === 'date' ? `${valueTo} 23:59:59` : valueTo;
+
+      group.value = columnValue;
+    } else if (columnType === 'date' && isString(columnValue) && columnValue.length && toDate(columnValue)) {
+      conditions.push(`${columnName} ${defaultColumnOperator} :${columnBindingKey}`);
+      binding[columnBindingKey] = columnValue;
+
+      group.value = columnValue;
+    }
+
+    filters.push(group);
+  }
+
+  const sql = conditions.length
+    ? conditions.join(' AND ')
+    : null;
+
+  return {
+    sql,
+    binding,
+    filters,
   };
 }
 
@@ -132,12 +242,21 @@ function createQuery(initialSql = '', initialBinding = {}) {
     return api;
   }
 
-  function filter() {
+  function filter(schemaNames, payload = {}) {
     if (!isSelect) {
       return api;
     }
 
-    filterData = 'TODO';
+    filterData = createFilter(schemaNames, payload);
+    if (!isString(filterData.sql) || !filterData.sql.length) {
+      return api;
+    }
+
+    sql = sqlContext
+      .appendToWhere(filterData.sql)
+      .getSql();
+
+    Object.assign(binding, filterData.binding);
 
     return api;
   }
@@ -388,7 +507,7 @@ function createQuery(initialSql = '', initialBinding = {}) {
 
   // GETTERS
   function getFilters() {
-    return filterData;
+    return filterData?.filters || [];
   }
 
   function getPagination() {
@@ -430,6 +549,7 @@ function createQuery(initialSql = '', initialBinding = {}) {
 
 export {
   createCache,
+  createFilter,
   createPagination,
   createQuery,
   createSort,

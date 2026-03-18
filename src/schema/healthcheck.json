@@ -9,14 +9,16 @@
     "type": "string",
     "enum": [
       "healthy"
-    ]
+    ],
+    "description": "App status"
   },
   "mysqlStatus": {
     "type": "string",
     "enum": [
       "uninstalled",
       "ready"
-    ]
+    ],
+    "description": "MySQL status"
   },
   "redisStatus": {
     "type": "string",
@@ -29,10 +31,12 @@
       "ready",
       "close",
       "end"
-    ]
+    ],
+    "description": "Redis status"
   },
   "requestDate": {
     "type": "string",
-    "format": "date-time"
+    "format": "date-time",
+    "description": "Request date"
   }
 }

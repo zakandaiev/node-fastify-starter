@@ -7,13 +7,19 @@ function loadSchemaFiles(schemaNames) {
     ? schemaNames
     : [schemaNames];
 
-  const properties = {};
+  const filters = {};
   const examples = {};
   const exampleMap = {};
+  const properties = {};
 
   schemaNameList.forEach((schemaName) => {
     const schemaPath = resolvePath(absPath.schema, `${schemaName}.json`);
     const schema = JSON.parse(readFileSync(schemaPath, 'utf8'));
+
+    if (schema['#filter']) {
+      Object.assign(filters, schema['#filter']);
+      delete schema['#filter'];
+    }
 
     if (schema['#example']) {
       Object.assign(examples, schema['#example']);
@@ -25,9 +31,10 @@ function loadSchemaFiles(schemaNames) {
   });
 
   return {
-    properties,
+    filters,
     examples,
     exampleMap,
+    properties,
   };
 }
 

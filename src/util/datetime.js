@@ -108,12 +108,6 @@ function getRelativeDateLabel(input, format = 'DD.MM.YYYY') {
   const now = new Date();
 
   const today = isDatesEqual(date, now);
-
-  const yesterdayDate = new Date(now);
-  yesterdayDate.setDate(now.getDate() - 1);
-
-  const yesterday = isDatesEqual(date, yesterdayDate);
-
   if (today) {
     return {
       label: 'today',
@@ -121,9 +115,22 @@ function getRelativeDateLabel(input, format = 'DD.MM.YYYY') {
     };
   }
 
+  const yesterdayDate = new Date(now);
+  yesterdayDate.setDate(now.getDate() - 1);
+  const yesterday = isDatesEqual(date, yesterdayDate);
   if (yesterday) {
     return {
       label: 'yesterday',
+      value: formatDate(date, 'HH:mm'),
+    };
+  }
+
+  const tomorrowDate = new Date(now);
+  tomorrowDate.setDate(now.getDate() + 1);
+  const tomorrow = isDatesEqual(date, tomorrowDate);
+  if (tomorrow) {
+    return {
+      label: 'tomorrow',
       value: formatDate(date, 'HH:mm'),
     };
   }

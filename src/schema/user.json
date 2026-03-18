@@ -6,41 +6,66 @@
     "phone": null,
     "role": "user"
   },
+  "#filter": {
+    "email": {
+      "type": "text",
+      "isExact": true
+    },
+    "name": {
+      "type": "text"
+    },
+    "phone": {
+      "type": "text",
+      "isExact": true
+    },
+    "role": {
+      "type": "text",
+      "isExact": true
+    }
+  },
   "id": {
     "type": "string",
+    "description": "User identifier",
     "minLength": 16,
     "maxLength": 64
   },
   "email": {
     "type": "string",
     "format": "email",
+    "description": "User email",
     "maxLength": 256
   },
   "password": {
     "type": "string",
     "format": "password",
+    "description": "User password",
     "minLength": 8,
     "maxLength": 256
   },
   "name": {
     "type": "string",
+    "description": "User name",
     "minLength": 2,
     "maxLength": 256
   },
   "phone": {
     "type": "string",
+    "description": "User phone",
     "minLength": 8,
     "maxLength": 128
   },
   "isEnabled": {
-    "type": "boolean"
+    "type": "boolean",
+    "description": "Is user enabled"
   },
   "dateCreated": {
     "type": "string",
-    "format": "date-time"
+    "format": "date-time",
+    "description": "User create date"
   },
   "dateEdited": {
     "type": "string",
-    "format": "date-time"
+    "format": "date-time",
+    "description": "User last edit date"
   }
 }

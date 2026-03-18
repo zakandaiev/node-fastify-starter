@@ -1,15 +1,19 @@
 {
   "#example": {},
   "app": {
-    "type": "object"
+    "type": "object",
+    "description": "App data object"
   },
   "client": {
-    "type": "object"
+    "type": "object",
+    "description": "Client data object"
   },
   "error": {
-    "type": "object"
+    "type": "object",
+    "description": "Error data object"
   },
   "url": {
-    "type": "string"
+    "type": "string",
+    "description": "Error URL"
   }
 }

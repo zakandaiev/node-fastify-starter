@@ -1,5 +1,6 @@
 import { OUTPUT_COLUMNS as USER_OUTPUT_COLUMNS } from '#root/src/controller/v1/user.js';
 import { createUser, getUserByEmail, getUserById } from '#root/src/model/v1/user.js';
+import { convertStringToSeconds } from '#src/util/datetime.js';
 import { generateAccessToken, generateRefreshToken } from '#src/util/jwt.js';
 import {
   normalizeDataByColumns,
@@ -100,15 +101,17 @@ function setTokenToCookie(reply, { accessToken, refreshToken } = {}) {
   const options = {
     path: AUTH_API_PATH,
     httpOnly: true,
-    secure: !isDev,
     sameSite: isDev ? 'lax' : 'strict',
+    secure: !isDev,
   };
 
   if (accessToken) {
+    options.maxAge = convertStringToSeconds(process.env.APP_JWT_ACCESS_TTL) || 600;
     reply.setCookie('accessToken', accessToken, options);
   }
 
   if (refreshToken) {
+    options.maxAge = convertStringToSeconds(process.env.APP_JWT_REFRESH_TTL) || 1209600; // fallback to 14 days
     reply.setCookie('refreshToken', refreshToken, options);
   }
 

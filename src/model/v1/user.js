@@ -47,7 +47,11 @@ async function getAllUsers(payload = {}) {
   const sql = 'SELECT * FROM users ORDER BY id DESC';
   const binding = { ...payload };
 
-  const query = createQuery(sql, binding).paginate(payload).sort(payload);
+  const query = createQuery(sql, binding)
+    .filter('user', payload)
+    .paginate(payload)
+    .sort(payload);
+
   await query.execute();
 
   return query.getAll();

@@ -10,26 +10,32 @@
   "limit": {
     "type": "number",
     "format": "int32",
+    "description": "Pagination limit",
     "minimum": 1
   },
   "offset": {
     "type": "number",
     "format": "int32",
+    "description": "Pagination offset",
     "minimum": 0
   },
   "total": {
     "type": "number",
-    "format": "int32"
+    "format": "int32",
+    "description": "Total rows"
   },
   "totalPages": {
     "type": "number",
-    "format": "int32"
+    "format": "int32",
+    "description": "Total pages"
   },
   "currentPage": {
     "type": "number",
-    "format": "int32"
+    "format": "int32",
+    "description": "Current page"
   },
   "canLoadMore": {
-    "type": "boolean"
+    "type": "boolean",
+    "description": "Can load more"
   }
 }

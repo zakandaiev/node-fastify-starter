@@ -216,6 +216,82 @@ function tokenizeSql(sql) {
   return tokens;
 }
 
+function appendToWhereFromSqlTokens(sql, tokens, newCondition) {
+  if (!isString(newCondition) || !newCondition.trim()) {
+    return sql;
+  }
+
+  let whereStart = -1;
+  let whereEnd = -1;
+  let insertPosition = -1;
+  let lastUnionIndex = -1;
+
+  for (let i = 0; i < tokens.length; i += 1) {
+    const t = tokens[i];
+
+    if (t.depth === 0 && t.type === 'keyword' && t.upper === 'UNION') {
+      lastUnionIndex = i;
+    }
+  }
+
+  const startIndex = lastUnionIndex !== -1 ? lastUnionIndex + 1 : 0;
+  const keywordsBeforeStart = ['GROUP', 'HAVING', 'ORDER', 'LIMIT'];
+
+  for (let i = startIndex; i < tokens.length; i += 1) {
+    const t = tokens[i];
+
+    if (t.depth !== 0 || t.type !== 'keyword') {
+      continue;
+    }
+
+    if (t.upper === 'WHERE') {
+      whereStart = t.start;
+
+      for (let j = i + 1; j < tokens.length; j += 1) {
+        const n = tokens[j];
+
+        if (
+          n.depth === 0
+          && n.type === 'keyword'
+          && keywordsBeforeStart.includes(n.upper)
+        ) {
+          whereEnd = n.start;
+          break;
+        }
+      }
+
+      if (whereEnd === -1) {
+        whereEnd = sql.length;
+      }
+
+      break;
+    }
+
+    if (
+      insertPosition === -1
+      && keywordsBeforeStart.includes(t.upper)
+    ) {
+      insertPosition = t.start;
+    }
+  }
+
+  if (whereStart !== -1) {
+    const before = sql.slice(0, whereEnd).trimEnd();
+    const after = sql.slice(whereEnd);
+
+    return `${before} AND (${newCondition}) ${after}`;
+  }
+
+  if (insertPosition !== -1) {
+    const before = sql.slice(0, insertPosition).trimEnd();
+    const after = sql.slice(insertPosition);
+
+    return `${before} WHERE ${newCondition} ${after}`;
+  }
+
+  return `${sql.trimEnd()} WHERE ${newCondition}`;
+}
+
 function cutSelectionPartFromSqlTokens(sql, tokens) {
   let selectFound = false;
 
@@ -367,6 +443,12 @@ function createSqlContext(sql) {
       return currentTokens;
     },
 
+    appendToWhere(newCondition) {
+      currentSql = appendToWhereFromSqlTokens(currentSql, currentTokens, newCondition);
+      currentTokens = tokenizeSql(currentSql);
+      return context;
+    },
+
     replaceOrderBy(newOrderBy) {
       currentSql = replaceOrderByFromSqlTokens(currentSql, currentTokens, newOrderBy);
       currentTokens = tokenizeSql(currentSql);
@@ -384,6 +466,7 @@ function createSqlContext(sql) {
 }
 
 export {
+  appendToWhereFromSqlTokens,
   createSqlContext,
   cutSelectionPartFromSqlTokens,
   getSubstitutedSql,
