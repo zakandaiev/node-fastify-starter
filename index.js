@@ -1,12 +1,11 @@
-import '#root/bootstrap.js';
-// BOOTSTRAP FIRST IS REQUIRED
+import { fastify, startServer, stopServer } from '#core/server.js';
 
-import { fastify, startServer } from '#core/server.js';
-
-// START THE SERVER
 try {
   await startServer();
-} catch (err) {
-  fastify.log.error(err);
+} catch (error) {
+  fastify.log.error(error);
   process.exit(1);
 }
+
+process.on('SIGTERM', () => stopServer('SIGTERM', 0));
+process.on('SIGINT', () => stopServer('SIGINT', 0));

@@ -1,10 +1,10 @@
 import { processArg } from '#core/app.js';
 import { absPath } from '#core/path.js';
-import { setErrorHandler, setNotFoundHandler } from '#root/src/util/response.js';
+import { setErrorHandler, setNotFoundHandler } from '#src/util/response.js';
 import fastifyAutoLoad from '@fastify/autoload';
 import fastifyLib from 'fastify';
 
-const fastify = fastifyLib({
+export const fastify = fastifyLib({
   ajv: {
     customOptions: {
       allErrors: true,
@@ -19,7 +19,7 @@ const fastify = fastifyLib({
     : false,
 });
 
-async function startServer() {
+export async function startServer() {
   fastify.setErrorHandler(setErrorHandler);
   fastify.setNotFoundHandler(setNotFoundHandler);
 
@@ -38,15 +38,20 @@ async function startServer() {
 
   await fastify.listen({
     port: processArg.port || 4173,
+    host: processArg.host || '0.0.0.0',
   });
 }
 
-async function stopServer() {
-  await fastify.close();
-}
+export async function stopServer(reason, code = 0) {
+  if (reason) {
+    fastify.log.warn({ reason }, 'shutdown');
+  }
 
-export {
-  fastify,
-  startServer,
-  stopServer,
-};
+  try {
+    await fastify.close();
+    process.exit(code);
+  } catch (error) {
+    fastify.log.error(error);
+    process.exit(1);
+  }
+}

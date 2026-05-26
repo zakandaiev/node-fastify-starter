@@ -2,14 +2,18 @@ import fastifyMysql from '@fastify/mysql';
 
 async function useMysql(fastify) {
   const host = process.env.APP_DATABASE_HOST;
+  const port = process.env.APP_DATABASE_PORT;
   const database = process.env.APP_DATABASE_NAME;
   const user = process.env.APP_DATABASE_USER;
   const password = process.env.APP_DATABASE_PASSWORD;
 
-  const connectionString = `mysql://${user}:${password}@${host}/${database}?charset=utf8mb4`;
-
   await fastify.register(fastifyMysql, {
-    uri: connectionString,
+    host,
+    port,
+    database,
+    user,
+    password,
+    charset: 'utf8mb4',
     namedPlaceholders: true,
     promise: true,
     typeCast(field, useDefaultTypeCasting) {

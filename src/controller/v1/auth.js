@@ -1,5 +1,5 @@
-import { OUTPUT_COLUMNS as USER_OUTPUT_COLUMNS } from '#root/src/controller/v1/user.js';
-import { createUser, getUserByEmail, getUserById } from '#root/src/model/v1/user.js';
+import { OUTPUT_COLUMNS as USER_OUTPUT_COLUMNS } from '#src/controller/v1/user.js';
+import { createUser, getUserByEmail, getUserById } from '#src/model/v1/user.js';
 import { convertStringToSeconds } from '#src/util/datetime.js';
 import { generateAccessToken, generateRefreshToken } from '#src/util/jwt.js';
 import {
@@ -64,7 +64,8 @@ async function tryRefreshJwtToken(request, reply) {
 
 // CHECK ORIGIN AUTH
 async function checkOriginAuth(request, reply) {
-  if (!request.headers.origin) {
+  const { origin } = request.headers;
+  if (!origin) {
     return replyErrorAuthentication(reply);
   }
 
@@ -72,7 +73,7 @@ async function checkOriginAuth(request, reply) {
     ? process.env.APP_CORS_ALLOWED_DOMAINS.split(',')
     : false;
 
-  if (!frontendDomainList || !frontendDomainList.includes(request.headers.origin)) {
+  if (!frontendDomainList || !frontendDomainList.includes(origin)) {
     return replyErrorAuthentication(reply);
   }
 }

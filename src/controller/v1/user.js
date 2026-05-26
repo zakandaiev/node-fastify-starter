@@ -2,7 +2,7 @@ import {
   deleteUserById as modelDeleteUserById,
   getAllUsers as modelGetAllUsers,
   getUserById as modelGetUserById,
-} from '#root/src/model/v1/user.js';
+} from '#src/model/v1/user.js';
 import { normalizeDataByColumns, replyError, replySuccess } from '#src/util/response.js';
 import { createSchema } from '#src/util/schema.js';
 

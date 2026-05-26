@@ -1,29 +1,26 @@
-import { toNumber } from '#src/util/misc.js';
+/* eslint-disable no-bitwise */
 import { getRandomValues } from 'node:crypto';
 
-function randomInt(mi, ma) {
-  const min = toNumber(mi);
-  const max = toNumber(ma);
+export function randomInt(min = 0, max = 100) {
   return Math.floor(Math.random() * (max - min + 1) + min);
 }
 
-function randomFloat(mi, ma) {
-  const min = toNumber(mi);
-  const max = toNumber(ma);
+export function randomFloat(min = 0, max = 100) {
   return Math.random() * (max - min) + min;
 }
 
-function randomString() {
-  return Math.random().toString(32).replace('0.', '');
+export function randomString(length = 16) {
+  return [...getRandomValues(new Uint8Array(length))]
+    .map((x) => (x % 36).toString(36))
+    .join('');
 }
 
-function randomUUIDv7(returnBytes = false) {
+export function randomUUIDv7(returnBytes = false) {
   const value = new Uint8Array(16);
   getRandomValues(value);
 
   const timestamp = BigInt(Date.now());
 
-  /* eslint-disable no-bitwise */
   value[0] = Number((timestamp >> 40n) & 0xffn);
   value[1] = Number((timestamp >> 32n) & 0xffn);
   value[2] = Number((timestamp >> 24n) & 0xffn);
@@ -37,13 +34,6 @@ function randomUUIDv7(returnBytes = false) {
   return returnBytes
     ? value
     : Array.from(value)
-      .map((b) => b.toString(16).padStart(2, '0'))
+      .map((b, i) => (i === 4 || i === 6 || i === 8 || i === 10 ? '-' : '') + b.toString(16).padStart(2, '0'))
       .join('');
 }
-
-export {
-  randomFloat,
-  randomInt,
-  randomString,
-  randomUUIDv7,
-};

@@ -1,6 +1,6 @@
 import { request } from '#src/util/request.js';
 
-async function getTelegramBotUpdates() {
+export async function getTelegramBotUpdates() {
   const telegramBotApi = process.env.APP_TELEGRAM_BOT_API;
   const telegramBotToken = process.env.APP_TELEGRAM_BOT_TOKEN;
   if (!telegramBotApi || !telegramBotToken) {
@@ -12,7 +12,7 @@ async function getTelegramBotUpdates() {
   return result.code === 200;
 }
 
-async function sendTelegramMessage(chatId, msgStringOrArray) {
+export async function sendTelegramMessage(chatId, msgStringOrArray, options = {}) {
   if (!chatId || !msgStringOrArray) {
     return false;
   }
@@ -45,22 +45,18 @@ async function sendTelegramMessage(chatId, msgStringOrArray) {
   }
 
   const url = `${telegramBotApi}${telegramBotToken}/sendMessage`;
-  const options = {
+  const opt = {
     method: 'POST',
     body: {
       chat_id: chatId,
       disable_web_page_preview: true,
       parse_mode: 'markdownv2',
       text: message,
+      ...options,
     },
   };
 
-  const result = await request(url, options);
+  const result = await request(url, opt);
 
   return result.code === 200;
 }
-
-export {
-  getTelegramBotUpdates,
-  sendTelegramMessage,
-};

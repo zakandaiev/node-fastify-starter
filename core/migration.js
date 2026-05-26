@@ -1,6 +1,6 @@
 /* eslint-disable no-console */
-import { processArg } from '#root/core/app.js';
-import { absPath, joinPath } from '#root/core/path.js';
+import { processArg } from '#core/app.js';
+import { absPath, joinPath } from '#core/path.js';
 import { toNumber } from '#src/util/misc.js';
 import mysql from 'mysql2/promise';
 import { readdirSync, readFileSync } from 'node:fs';
@@ -15,15 +15,19 @@ const {
 const isSeed = type === 'seed'
   ? true
   : false;
+
 const filesDirectory = isSeed
   ? absPath.seed
   : absPath.migration;
+
 const typeName = isSeed
   ? 'Seed'
   : 'Migration';
+
 const excludedNames = namesExclude
   ? namesExclude.split(',')
   : null;
+
 const selectedNames = names
   ? names.split(',')
   : null;
@@ -35,6 +39,7 @@ if (!['up', 'down'].includes(direction)) {
 
 const connection = await mysql.createConnection({
   host: process.env.APP_DATABASE_HOST,
+  port: process.env.APP_DATABASE_PORT,
   database: process.env.APP_DATABASE_NAME,
   user: process.env.APP_DATABASE_USER,
   password: process.env.APP_DATABASE_PASSWORD,

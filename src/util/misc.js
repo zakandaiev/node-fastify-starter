@@ -1,56 +1,56 @@
-function isArray(value) {
+export function isArray(value) {
   return (!!value) && (value.constructor === Array);
 }
 
-function isObject(value) {
+export function isObject(value) {
   return (!!value) && (value.constructor === Object);
 }
 
-function isBoolean(value) {
+export function isBoolean(value) {
   return value === true || value === false ? true : false;
 }
 
-function isFunction(value) {
+export function isFunction(value) {
   return typeof value === 'function';
 }
 
-function isNumber(value) {
+export function isNumber(value) {
   return typeof value === 'number' && !Number.isNaN(value);
 }
 
-function isNumeric(value) {
+export function isNumeric(value) {
   return /^-?\d+(\.\d+)?$/.test(value);
 }
 
-function isNumberInRange(number, min, max) {
+export function isNumberInRange(number, min, max) {
   return number >= min && number < max;
 }
 
-function isString(value) {
+export function isString(value) {
   return typeof value === 'string';
 }
 
-function isStringBoolean(value) {
+export function isStringBoolean(value) {
   if (!isString(value)) {
     return false;
   }
   return value === 'true' || value === 'false' ? true : false;
 }
 
-function isStringValidJson(value) {
+export function isStringValidJson(value) {
   if (!isString(value)) {
     return false;
   }
 
   try {
     const parsed = JSON.parse(value);
-    return isObject(parsed);
+    return isArray(parsed) || isObject(parsed);
   } catch {
     return false;
   }
 }
 
-function toNumber(value) {
+export function toNumber(value) {
   if (isNumber(value)) {
     return value;
   }
@@ -63,7 +63,7 @@ function toNumber(value) {
   return Number.isNaN(number) ? null : number;
 }
 
-function toString(value) {
+export function toString(value) {
   if (isString(value)) {
     return value;
   }
@@ -74,18 +74,3 @@ function toString(value) {
 
   return String(value);
 }
-
-export {
-  isArray,
-  isBoolean,
-  isFunction,
-  isNumber,
-  isNumberInRange,
-  isNumeric,
-  isObject,
-  isString,
-  isStringBoolean,
-  isStringValidJson,
-  toNumber,
-  toString,
-};

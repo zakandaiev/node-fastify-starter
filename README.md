@@ -20,7 +20,7 @@ Node.js Fastify Starter is a boilerplate kit for building modern backend applica
 ## How to use
 
 Prerequisites:
-* [Node.js](https://nodejs.org/) (`>=22`)
+* [Node.js](https://nodejs.org/) (`>=24`)
 * [MariaDB](https://mariadb.org/) (`>=11.7`)
 
 ### Install
@@ -56,7 +56,7 @@ npm run dev -- --port=3000
 ### Start
 
 ``` bash
-# Start production process
+# Start prod process
 npm run start
 # or with options
 npm run start -- --port=3000
@@ -86,10 +86,9 @@ npm run seed:up -- --names-exclude=dummy
 npm run seed:up -- --names=dummy
 ```
 
-### Lint
+### ESLint
 
 ``` bash
-# ESLint
 npm run lint
 # or
 npm run lint:fix

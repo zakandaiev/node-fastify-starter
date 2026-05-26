@@ -3,9 +3,11 @@ import dotenv from 'dotenv';
 import minimist from 'minimist';
 import { argv, env } from 'node:process';
 
-const packageData = { ...packageDataJson };
-const processArg = minimist(argv.slice(2));
-const appData = {
+export const packageData = { ...packageDataJson };
+
+export const processArg = minimist(argv.slice(2));
+
+export const appData = {
   APP_MODE: 'dev',
 
   APP_NAME: packageData.name,
@@ -34,8 +36,4 @@ Object.keys(env).forEach((key) => {
   }
 });
 
-export {
-  appData,
-  packageData,
-  processArg,
-};
+Object.assign(env, appData);

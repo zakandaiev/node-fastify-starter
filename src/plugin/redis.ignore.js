@@ -65,7 +65,7 @@ async function useRedis(fastify) {
   redis.on('error', (error) => {
     redis.isReady = false;
     fastify.isRedisReady = false;
-    fastify.log.error({ error }, 'redis error');
+    fastify.log.error(error, 'redis error');
   });
 }
 

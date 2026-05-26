@@ -8,7 +8,7 @@ async function useCors(fastify) {
   await fastify.register(fastifyCors, {
     credentials: true,
     origin: frontendDomainList,
-    methods: ['DELETE', 'GET', 'HEAD', 'OPTIONS', 'PATCH', 'POST'],
+    methods: ['DELETE', 'GET', 'HEAD', 'OPTIONS', 'PATCH', 'POST', 'PUT'],
   });
 }
 

@@ -1,10 +1,6 @@
 import { isNumber, isString, toNumber } from '#src/util/misc.js';
 
-function toDate(input) {
-  if (input === null) {
-    return new Date();
-  }
-
+export function toDate(input) {
   if (input instanceof Date) {
     return new Date(input.valueOf());
   }
@@ -24,12 +20,15 @@ function toDate(input) {
   return null;
 }
 
-function toTimestamp(input) {
+export function toTimestamp(input) {
   const date = toDate(input);
-  return date ? date.getTime() : null;
+  if (!date) {
+    return null;
+  }
+  return date.getTime();
 }
 
-function formatDate(input, format = 'DD.MM.YYYY') {
+export function formatDate(input, format = 'DD.MM.YYYY') {
   const date = toDate(input);
   if (!date) {
     return null;
@@ -48,7 +47,7 @@ function formatDate(input, format = 'DD.MM.YYYY') {
   return format.replace(new RegExp(tokens, 'g'), (t) => map[t]);
 }
 
-function formatISODate(input) {
+export function formatISODate(input) {
   const date = toDate(input);
   if (!date) {
     return null;
@@ -61,7 +60,7 @@ function formatISODate(input) {
   return `${y}-${m}-${d}`;
 }
 
-function isDatesEqual(a, b) {
+export function isDatesEqual(a, b) {
   const d1 = toDate(a);
   const d2 = toDate(b);
   if (!d1 || !d2) {
@@ -75,31 +74,27 @@ function isDatesEqual(a, b) {
   );
 }
 
-function isToday(input) {
+export function isToday(input) {
   return isDatesEqual(input, new Date());
 }
 
-function isPast(input) {
+export function isPast(input) {
   const date = toDate(input);
-
   if (!date) {
     return null;
   }
-
   return date.getTime() < Date.now();
 }
 
-function isFuture(input) {
+export function isFuture(input) {
   const date = toDate(input);
-
   if (!date) {
     return null;
   }
-
   return date.getTime() > Date.now();
 }
 
-function getRelativeDateLabel(input, format = 'DD.MM.YYYY') {
+export function getRelativeDateLabel(input, format = 'DD.MM.YYYY') {
   const date = toDate(input);
   if (!date) {
     return null;
@@ -141,7 +136,7 @@ function getRelativeDateLabel(input, format = 'DD.MM.YYYY') {
   };
 }
 
-function getTimeRemaining(input) {
+export function getTimeRemaining(input) {
   const target = toDate(input);
   if (!target) {
     return null;
@@ -209,7 +204,7 @@ function getTimeRemaining(input) {
   return { label: 'seconds', value: seconds };
 }
 
-function convertStringToSeconds(string) {
+export function convertStringToSeconds(string) {
   if (!isString(string)) {
     return null;
   }
@@ -244,8 +239,11 @@ function convertStringToSeconds(string) {
   return (future.getTime() - now.getTime()) / 1000;
 }
 
-function addToDate(input, {
-  days = 0, hours = 0, minutes = 0, seconds = 0,
+export function addToDate(input, {
+  days = 0,
+  hours = 0,
+  minutes = 0,
+  seconds = 0,
 } = {}) {
   const date = toDate(input);
   if (!date) {
@@ -262,7 +260,7 @@ function addToDate(input, {
   return result;
 }
 
-function getStartOfDay(input) {
+export function getStartOfDay(input) {
   const date = toDate(input);
   if (!date) {
     return null;
@@ -273,7 +271,7 @@ function getStartOfDay(input) {
   return result;
 }
 
-function getEndOfDay(input) {
+export function getEndOfDay(input) {
   const date = toDate(input);
   if (!date) {
     return null;
@@ -284,7 +282,7 @@ function getEndOfDay(input) {
   return result;
 }
 
-function differenceInDays(a, b) {
+export function differenceInDays(a, b) {
   const d1 = getStartOfDay(a);
   const d2 = getStartOfDay(b);
 
@@ -308,7 +306,7 @@ function differenceInDays(a, b) {
   return count;
 }
 
-function getCurrentWeekdayIndex(input) {
+export function getCurrentWeekdayIndex(input) {
   const date = toDate(input);
   if (!date) {
     return null;
@@ -318,7 +316,7 @@ function getCurrentWeekdayIndex(input) {
   return day === 0 ? 6 : day - 1; // 0..6 (Mon..Sun)
 }
 
-function getStartOfWeek(input) {
+export function getStartOfWeek(input) {
   const date = toDate(input);
   if (!date) {
     return null;
@@ -333,7 +331,7 @@ function getStartOfWeek(input) {
   return result;
 }
 
-function getEndOfWeek(input) {
+export function getEndOfWeek(input) {
   const date = toDate(input);
   if (!date) {
     return null;
@@ -347,24 +345,3 @@ function getEndOfWeek(input) {
 
   return result;
 }
-
-export {
-  addToDate,
-  convertStringToSeconds,
-  differenceInDays,
-  formatDate,
-  formatISODate,
-  getCurrentWeekdayIndex,
-  getEndOfDay,
-  getEndOfWeek,
-  getRelativeDateLabel,
-  getStartOfDay,
-  getStartOfWeek,
-  getTimeRemaining,
-  isDatesEqual,
-  isFuture,
-  isPast,
-  isToday,
-  toDate,
-  toTimestamp,
-};

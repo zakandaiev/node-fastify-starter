@@ -1,14 +1,14 @@
 import { isArray, isObject, isStringValidJson } from '#src/util/misc.js';
 
-function encodeToBase64(data) {
+export function encodeToBase64(data) {
   if (isArray(data) || isObject(data)) {
     data = JSON.stringify(data);
   }
-  return window.btoa(encodeURIComponent(data));
+  return btoa(encodeURIComponent(data));
 }
 
-function decodeFromBase64(data) {
-  data = decodeURIComponent(window.atob(data));
+export function decodeFromBase64(data) {
+  data = decodeURIComponent(atob(data));
 
   if (data.charAt(0) === '[' || data.charAt(0) === '{') {
     if (isStringValidJson(data)) {
@@ -22,8 +22,3 @@ function decodeFromBase64(data) {
 
   return data;
 }
-
-export {
-  decodeFromBase64,
-  encodeToBase64,
-};

@@ -10,7 +10,7 @@ import {
   postLogoutSchema,
   postRegister,
   postRegisterSchema,
-} from '#root/src/controller/v1/auth.js';
+} from '#src/controller/v1/auth.js';
 
 async function useAuthRoutes(fastify) {
   fastify.get('/auth/me', {

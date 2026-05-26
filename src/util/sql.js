@@ -1,8 +1,7 @@
+/* eslint-disable no-continue */
 import { isNumber, isString, toString } from '#src/util/misc.js';
 
-/* eslint-disable no-continue */
-
-function getSubstitutedSql(sql, binding = {}) {
+export function getSubstitutedSql(sql, binding = {}) {
   return sql.replace(/:\w+/g, (match) => {
     const key = match.slice(1);
     const value = binding[key];
@@ -19,7 +18,7 @@ function getSubstitutedSql(sql, binding = {}) {
   });
 }
 
-function normalizeOrderBy(orderBy, allowedColumns = []) {
+export function normalizeOrderBy(orderBy, allowedColumns = []) {
   if (!isString(orderBy)) {
     return false;
   }
@@ -47,7 +46,7 @@ function normalizeOrderBy(orderBy, allowedColumns = []) {
   return result.length ? result.join(', ') : false;
 }
 
-function tokenizeSql(sql) {
+export function tokenizeSql(sql) {
   const tokens = [];
   const len = sql.length;
 
@@ -216,7 +215,7 @@ function tokenizeSql(sql) {
   return tokens;
 }
 
-function appendToWhereFromSqlTokens(sql, tokens, newCondition) {
+export function appendToWhereFromSqlTokens(sql, tokens, newCondition) {
   if (!isString(newCondition) || !newCondition.trim()) {
     return sql;
   }
@@ -292,7 +291,7 @@ function appendToWhereFromSqlTokens(sql, tokens, newCondition) {
   return `${sql.trimEnd()} WHERE ${newCondition}`;
 }
 
-function cutSelectionPartFromSqlTokens(sql, tokens) {
+export function cutSelectionPartFromSqlTokens(sql, tokens) {
   let selectFound = false;
 
   for (let i = 0; i < tokens.length; i += 1) {
@@ -314,7 +313,7 @@ function cutSelectionPartFromSqlTokens(sql, tokens) {
   return sql;
 }
 
-function replaceOrderByFromSqlTokens(sql, tokens, newOrderBy) {
+export function replaceOrderByFromSqlTokens(sql, tokens, newOrderBy) {
   let orderStart = -1;
   let orderEnd = -1;
   let limitStart = -1;
@@ -387,7 +386,7 @@ function replaceOrderByFromSqlTokens(sql, tokens, newOrderBy) {
   return `${sql.trimEnd()} ${newOrderBy}`;
 }
 
-function replacePaginationFromSqlTokens(sql, tokens, newPagination) {
+export function replacePaginationFromSqlTokens(sql, tokens, newPagination) {
   let limitStart = -1;
   let lastUnionIndex = -1;
 
@@ -430,7 +429,7 @@ function replacePaginationFromSqlTokens(sql, tokens, newPagination) {
   return `${sql.trimEnd()} ${newPagination}`;
 }
 
-function createSqlContext(sql) {
+export function createSqlContext(sql) {
   let currentSql = sql;
   let currentTokens = tokenizeSql(sql);
 
@@ -464,14 +463,3 @@ function createSqlContext(sql) {
 
   return context;
 }
-
-export {
-  appendToWhereFromSqlTokens,
-  createSqlContext,
-  cutSelectionPartFromSqlTokens,
-  getSubstitutedSql,
-  normalizeOrderBy,
-  replaceOrderByFromSqlTokens,
-  replacePaginationFromSqlTokens,
-  tokenizeSql,
-};

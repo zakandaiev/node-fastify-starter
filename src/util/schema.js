@@ -1,8 +1,8 @@
-import { absPath, resolvePath } from '#root/core/path.js';
+import { absPath, resolvePath } from '#core/path.js';
 import { isArray, isFunction, isObject } from '#src/util/misc.js';
 import { readFileSync } from 'node:fs';
 
-function loadSchemaFiles(schemaNames) {
+export function loadSchemaFiles(schemaNames) {
   const schemaNameList = isArray(schemaNames)
     ? schemaNames
     : [schemaNames];
@@ -38,7 +38,7 @@ function loadSchemaFiles(schemaNames) {
   };
 }
 
-function createPayloadObject(properties, keys = [], required = []) {
+export function createPayloadObject(properties, keys = [], required = []) {
   if (!keys.length) {
     return undefined;
   }
@@ -61,7 +61,7 @@ function createPayloadObject(properties, keys = [], required = []) {
   return schema;
 }
 
-function createExampleFromKeys(exampleSource, keys = [], format = 'object') {
+export function createExampleFromKeys(exampleSource, keys = [], format = 'object') {
   if (!exampleSource || !keys.length) {
     return undefined;
   }
@@ -92,7 +92,7 @@ function createExampleFromKeys(exampleSource, keys = [], format = 'object') {
   return exampleObject;
 }
 
-function getBaseSuccessResponse() {
+export function getBaseSuccessResponse() {
   return {
     description: 'Success response',
     content: {
@@ -116,7 +116,7 @@ function getBaseSuccessResponse() {
   };
 }
 
-function getBaseErrorResponse(code) {
+export function getBaseErrorResponse(code) {
   let description = 'Error response';
 
   const example = {
@@ -163,7 +163,7 @@ function getBaseErrorResponse(code) {
   };
 }
 
-function createSchema(...schemaNames) {
+export function createSchema(...schemaNames) {
   // INIT
   const schema = {};
   const responses = {};
@@ -225,17 +225,17 @@ function createSchema(...schemaNames) {
   // RESPONSE
   function response(code = 200, options = {}) {
     const isSuccess = code >= 200 && code < 300;
-    const responceObject = isSuccess
+    const responseObject = isSuccess
       ? getBaseSuccessResponse()
       : getBaseErrorResponse();
 
     // DESCRIPTION OVERRIDE
     if (options.description) {
-      responceObject.description = options.description;
+      responseObject.description = options.description;
     }
 
     // PROPERTIES & EXAMPLES PATCH
-    const schemaRef = responceObject.content['application/json'].schema;
+    const schemaRef = responseObject.content['application/json'].schema;
 
     Object.keys(options).forEach((prop) => {
       if (!prop.includes('Example')) {
@@ -290,7 +290,7 @@ function createSchema(...schemaNames) {
       schemaRef.example[propRealName] = exampleData;
     });
 
-    responses[code] = responceObject;
+    responses[code] = responseObject;
 
     return api;
   }
@@ -322,12 +322,3 @@ function createSchema(...schemaNames) {
 
   return api;
 }
-
-export {
-  createExampleFromKeys,
-  createPayloadObject,
-  createSchema,
-  getBaseErrorResponse,
-  getBaseSuccessResponse,
-  loadSchemaFiles,
-};

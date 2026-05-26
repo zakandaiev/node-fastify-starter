@@ -1,17 +1,19 @@
 import nodePath from 'node:path';
 import { cwd } from 'node:process';
 
-const pathCore = './core';
-const pathNodeModules = './node_modules';
-const pathPublic = './public';
-const pathSrc = './src';
+export const pathCore = './core';
+export const pathNodeModules = './node_modules';
+export const pathPublic = './public';
+export const pathSrc = './src';
+export const pathUpload = './upload';
 
-const absPath = {
+export const absPath = {
   root: nodePath.resolve(cwd()),
   core: nodePath.resolve(cwd(), pathCore),
   nodeModules: nodePath.resolve(cwd(), pathNodeModules),
   public: nodePath.resolve(cwd(), pathPublic),
   src: nodePath.resolve(cwd(), pathSrc),
+  upload: nodePath.resolve(cwd(), pathUpload),
   controller: nodePath.resolve(cwd(), pathSrc, 'controller'),
   migration: nodePath.resolve(cwd(), pathSrc, 'migration'),
   model: nodePath.resolve(cwd(), pathSrc, 'model'),
@@ -22,20 +24,10 @@ const absPath = {
   util: nodePath.resolve(cwd(), pathSrc, 'util'),
 };
 
-function joinPath(...args) {
+export function joinPath(...args) {
   return nodePath.join(...args);
 }
 
-function resolvePath(...args) {
+export function resolvePath(...args) {
   return nodePath.resolve(cwd(), ...args);
 }
-
-export {
-  absPath,
-  joinPath,
-  pathCore,
-  pathNodeModules,
-  pathPublic,
-  pathSrc,
-  resolvePath,
-};

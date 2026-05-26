@@ -1,13 +1,12 @@
-function debounce(callback, delay = 100) {
+export function debounce(callback, delay = 100) {
   let timeoutId = null;
 
-  return (...args) => {
-    window.clearTimeout(timeoutId);
+  return (...args) => new Promise((resolve) => {
+    clearTimeout(timeoutId);
 
-    timeoutId = window.setTimeout(() => {
-      callback(...args);
+    timeoutId = setTimeout(async () => {
+      const result = await callback(...args);
+      resolve(result);
     }, delay);
-  };
+  });
 }
-
-export default debounce;

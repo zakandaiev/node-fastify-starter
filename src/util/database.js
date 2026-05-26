@@ -20,7 +20,7 @@ import {
 } from '#src/util/sql.js';
 import { createHash } from 'node:crypto';
 
-async function getConnection() {
+export async function getConnection() {
   if (!isFunction(fastify.mysql?.getConnection)) {
     return null;
   }
@@ -28,7 +28,7 @@ async function getConnection() {
   return connection;
 }
 
-async function isTableExists(table) {
+export async function isTableExists(table) {
   if (!table) {
     return false;
   }
@@ -42,7 +42,7 @@ async function isTableExists(table) {
   return !!query.fetchColumn();
 }
 
-function createCache({
+export function createCache({
   key,
   ttl,
   tables = [],
@@ -61,7 +61,7 @@ function createCache({
   };
 }
 
-function createFilter(schemaNames, payload = {}) {
+export function createFilter(schemaNames, payload = {}) {
   const { filters: filterDefinition, properties: filterProperties } = loadSchemaFiles(schemaNames);
   if (!isObject(filterDefinition) || !Object.keys(filterDefinition).length) {
     return {
@@ -167,7 +167,7 @@ function createFilter(schemaNames, payload = {}) {
   };
 }
 
-function createPagination(
+export function createPagination(
   {
     limit,
     offset = 0,
@@ -205,7 +205,7 @@ function createPagination(
   };
 }
 
-function createSort({
+export function createSort({
   sort,
   sortAllowedColumns = [],
 } = {}) {
@@ -220,7 +220,7 @@ function createSort({
   };
 }
 
-function createQuery(initialSql = '', initialBinding = {}) {
+export function createQuery(initialSql = '', initialBinding = {}) {
   // INIT
   let sql = initialSql.trim();
   const binding = structuredClone(initialBinding);
@@ -348,6 +348,7 @@ function createQuery(initialSql = '', initialBinding = {}) {
         substitutedSql: getSubstitutedSql(sql, binding),
         sql,
         binding,
+        rowsCount: rows.length,
         resultTime: endTime - startTime,
       }, 'database query');
 
@@ -546,13 +547,3 @@ function createQuery(initialSql = '', initialBinding = {}) {
 
   return api;
 }
-
-export {
-  createCache,
-  createFilter,
-  createPagination,
-  createQuery,
-  createSort,
-  getConnection,
-  isTableExists,
-};

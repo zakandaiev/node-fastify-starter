@@ -4,23 +4,9 @@ import {
   isObject,
   toNumber,
 } from '#src/util/misc.js';
-import sleep from '#src/util/sleep.js';
+import { sleep } from '#src/util/sleep.js';
 
-function getApiTimeout(timeout) {
-  if (isNumber(timeout)) {
-    return timeout;
-  }
-  return toNumber(process.env.APP_API_EXTERNAL_TIMEOUT_MS) ?? 15000;
-}
-
-function getApiDelay(delay) {
-  if (isNumber(delay)) {
-    return delay;
-  }
-  return toNumber(process.env.APP_API_EXTERNAL_DELAY_MS) ?? 500;
-}
-
-async function fetchWithTimeout(resource, options = {}, timeout = null) {
+export async function fetchWithTimeout(resource, options = {}, { timeout = undefined } = {}) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), getApiTimeout(timeout));
 
@@ -34,22 +20,22 @@ async function fetchWithTimeout(resource, options = {}, timeout = null) {
   return response;
 }
 
-async function request(resource, opt = {}, timeout = null, delay = null) {
+export async function request(resource, options = {}, { delay = undefined, timeout = undefined } = {}) {
   const startTime = performance.now();
 
-  const options = {
-    ...opt,
-    headers: opt.headers || { 'Content-Type': 'application/json' },
-    method: opt.method || 'GET',
+  const opt = {
+    ...options,
+    headers: options.headers || { 'Content-Type': 'application/json' },
+    method: options.method || 'GET',
   };
 
-  if (options.headers.Authorization === undefined && process.env.APP_API_EXTERNAL_KEY) {
-    options.headers.Authorization = process.env.APP_API_EXTERNAL_KEY;
+  if (opt.headers.Authorization === undefined && process.env.APP_API_EXTERNAL_KEY) {
+    opt.headers.Authorization = process.env.APP_API_EXTERNAL_KEY;
   }
 
-  if (options.method.toUpperCase() === 'GET' && isObject(options.body)) {
-    const url = new URL(resource, window.location.origin);
-    Object.entries(options.body).forEach(([key, value]) => {
+  if (opt.method.toUpperCase() === 'GET' && isObject(opt.body)) {
+    const url = new URL(resource);
+    Object.entries(opt.body).forEach(([key, value]) => {
       if (value === null || value === undefined) {
         return false;
       }
@@ -60,11 +46,14 @@ async function request(resource, opt = {}, timeout = null, delay = null) {
       }
     });
     resource = url.toString();
-    delete options.body;
+    delete opt.body;
   }
 
-  if (isObject(options.body) && !(options.body instanceof FormData)) {
-    options.body = JSON.stringify(options.body);
+  if (
+    (isArray(opt.body) || isObject(opt.body))
+    && opt.body instanceof FormData !== true
+  ) {
+    opt.body = JSON.stringify(opt.body);
   }
 
   const result = {
@@ -75,36 +64,43 @@ async function request(resource, opt = {}, timeout = null, delay = null) {
     error: null,
   };
 
-  let response = {};
+  let response;
+  let responseJson;
+  let responseText;
 
   try {
-    response = await fetchWithTimeout(resource, options, getApiTimeout(timeout));
+    response = await fetchWithTimeout(resource, opt, { timeout: getApiTimeout(timeout) });
     result.code = response.status;
-  } catch {
+  } catch (error) {
     result.status = 'error';
     result.message = 'Request failed: resource is not reachable or response time was exceeded';
+    result.error = normalizeError(error);
     return result;
   }
 
   try {
-    const responseData = await response.json() || {};
-    if (responseData.constructor.name === 'Object') {
-      Object.assign(result, responseData);
-    }
+    responseText = await response.text();
+  } catch (error) {
+    result.status = 'error';
+    result.message = `Request failed: ${error.message.toLowerCase()}`;
+    result.error = normalizeError(error);
+    return result;
+  }
 
-    result.status = responseData.status || null;
-    result.message = responseData.message || null;
-    result.data = responseData.data || responseData.payload || responseData || null;
-  } catch {
+  try {
+    responseJson = JSON.parse(responseText);
+    Object.assign(result, responseJson);
+  } catch (error) {
     result.status = 'error';
     result.message = 'Request failed: the response is not valid JSON';
+    result.data = responseText;
+    result.error = normalizeError(error);
     return result;
   }
 
   const endTime = performance.now();
   const differenceTime = endTime - startTime;
   const delayTime = getApiDelay(delay);
-
   if (differenceTime < delayTime) {
     await sleep(delayTime - differenceTime);
   }
@@ -112,9 +108,22 @@ async function request(resource, opt = {}, timeout = null, delay = null) {
   return result;
 }
 
-export {
-  fetchWithTimeout,
-  request,
-};
+function getApiTimeout(timeout) {
+  return isNumber(timeout) ? timeout : (toNumber(process.env.APP_API_EXTERNAL_TIMEOUT_MS) ?? 15000);
+}
 
-export default request;
+function getApiDelay(delay) {
+  return isNumber(delay) ? delay : (toNumber(process.env.APP_API_EXTERNAL_DELAY_MS) ?? 500);
+}
+
+function normalizeError(error) {
+  if (!error) {
+    return null;
+  }
+
+  return {
+    name: error.name,
+    message: error.message,
+    stack: error.stack,
+  };
+}

@@ -1,8 +1,8 @@
 import { resolvePath } from '#core/path.js';
 import { toNumber } from '#src/util/misc.js';
+import { randomUUIDv7 } from '#src/util/random.js';
 import { replyError, replySuccess } from '#src/util/response.js';
 import { createSchema } from '#src/util/schema.js';
-import { randomUUID } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
 import nodePath from 'node:path';
 import { pipeline } from 'node:stream/promises';
@@ -64,8 +64,8 @@ async function uploadFile(data) {
   }
 
   // GENERATE NAME&PATHS
-  const name = randomUUID();
-  const path = resolvePath('public', 'upload', name);
+  const name = randomUUIDv7();
+  const path = resolvePath('upload', name);
   const uri = `/upload/${name}`;
 
   // SAVE FILE ON DISK

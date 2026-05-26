@@ -1,7 +1,6 @@
-import { fastify } from '#core/server.js';
 import { isArray, isObject, toString } from '#src/util/misc.js';
 
-function normalizeDataByColumns(data, columns) {
+export function normalizeDataByColumns(data, columns) {
   if (!isObject(data)) {
     return data;
   }
@@ -13,15 +12,15 @@ function normalizeDataByColumns(data, columns) {
     }, {});
   }
 
-  return structuredClone(data);
+  return data;
 }
 
-function redirect(fastifyReply, url, code) {
+export function redirect(fastifyReply, url, code) {
   if (code) fastifyReply.code(code);
   return fastifyReply.redirect(url || '/');
 }
 
-function reply(fastifyReply, data = null, code = 200, contentType = 'text/plain') {
+export function reply(fastifyReply, data = null, code = 200, contentType = 'text/plain') {
   if (!data) {
     return replyEmpty(fastifyReply, code, contentType);
   }
@@ -34,12 +33,12 @@ function reply(fastifyReply, data = null, code = 200, contentType = 'text/plain'
   return fastifyReply.send(toString(data));
 }
 
-function replyEmpty(fastifyReply, code = 200, contentType = 'text/plain') {
+export function replyEmpty(fastifyReply, code = 200, contentType = 'text/plain') {
   fastifyReply.code(code).type(contentType);
   return fastifyReply.send();
 }
 
-function replySuccess(fastifyReply, overwriteOptions = {}) {
+export function replySuccess(fastifyReply, overwriteOptions = {}) {
   fastifyReply.code(overwriteOptions.code || 200);
   delete overwriteOptions.code;
 
@@ -50,7 +49,7 @@ function replySuccess(fastifyReply, overwriteOptions = {}) {
   });
 }
 
-function replyError(fastifyReply, overwriteOptions = {}) {
+export function replyError(fastifyReply, overwriteOptions = {}) {
   fastifyReply.code(overwriteOptions.code || 400);
   delete overwriteOptions.code;
 
@@ -61,7 +60,7 @@ function replyError(fastifyReply, overwriteOptions = {}) {
   });
 }
 
-function replyErrorAuthentication(fastifyReply, overwriteOptions = {}) {
+export function replyErrorAuthentication(fastifyReply, overwriteOptions = {}) {
   return replyError(fastifyReply, {
     code: 401,
     message: 'Authentication error',
@@ -70,7 +69,7 @@ function replyErrorAuthentication(fastifyReply, overwriteOptions = {}) {
   });
 }
 
-function replyErrorAuthorization(fastifyReply, overwriteOptions = {}) {
+export function replyErrorAuthorization(fastifyReply, overwriteOptions = {}) {
   return replyError(fastifyReply, {
     code: 403,
     message: 'Authorization error',
@@ -79,7 +78,7 @@ function replyErrorAuthorization(fastifyReply, overwriteOptions = {}) {
   });
 }
 
-function replyErrorNotFound(request, fastifyReply, overwriteOptions = {}) {
+export function replyErrorNotFound(request, fastifyReply, overwriteOptions = {}) {
   return replyError(fastifyReply, {
     code: 404,
     message: `Route ${request.method} ${request.url} not found`,
@@ -88,11 +87,11 @@ function replyErrorNotFound(request, fastifyReply, overwriteOptions = {}) {
   });
 }
 
-function setNotFoundHandler(request, fastifyReply) {
+export function setNotFoundHandler(request, fastifyReply) {
   return replyErrorNotFound(request, fastifyReply);
 }
 
-function setErrorHandler(error, request, fastifyReply) {
+export function setErrorHandler(error, request, fastifyReply) {
   const responseErrorObj = {
     code: error.statusCode || 500,
     message: 'Server error',
@@ -120,12 +119,19 @@ function setErrorHandler(error, request, fastifyReply) {
       : mysqlValidationErrors;
   }
 
-  fastify.log.error(error);
+  // Rate limit
+  if (error.statusCode === 429) {
+    responseErrorObj.code = 429;
+    responseErrorObj.message = 'Rate Limit Error';
+    responseErrorObj.data = 'RATE_LIMIT_ERROR';
+  }
+
+  request.server.log.error({ error });
 
   return replyError(fastifyReply, responseErrorObj);
 }
 
-function formatValidationErrors(errors, validationContext, request) {
+export function formatValidationErrors(errors, validationContext, request) {
   if (!Array.isArray(errors) || !errors.length) {
     return false;
   }
@@ -165,7 +171,7 @@ function formatValidationErrors(errors, validationContext, request) {
   });
 }
 
-function formatMysqlValidationErrors(error) {
+export function formatMysqlValidationErrors(error) {
   if (!isObject(error)) {
     return false;
   }
@@ -186,17 +192,3 @@ function formatMysqlValidationErrors(error) {
 
   return false;
 }
-
-export {
-  normalizeDataByColumns,
-  redirect,
-  reply,
-  replyEmpty,
-  replyError,
-  replyErrorAuthentication,
-  replyErrorAuthorization,
-  replyErrorNotFound,
-  replySuccess,
-  setErrorHandler,
-  setNotFoundHandler,
-};

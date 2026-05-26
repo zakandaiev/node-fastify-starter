@@ -77,13 +77,13 @@ const CYR_TO_LAT_MAP = {
   Є: 'E',
 };
 
-function cyrToLat(text = '') {
+export function cyrToLat(text = '') {
   return text.split('')
     .map((ch) => CYR_TO_LAT_MAP[ch] ?? ch)
     .join('');
 }
 
-function escapeHtml(text = '') {
+export function escapeHtml(text = '') {
   const map = {
     '&': '&amp;',
     '<': '&lt;',
@@ -95,15 +95,15 @@ function escapeHtml(text = '') {
   return text.replace(/[&<>"']/g, (m) => map[m]);
 }
 
-function encodeUrl(url = '') {
+export function encodeUrl(url = '') {
   return encodeURIComponent(url);
 }
 
-function normalizePhone(phone = '') {
-  return phone.replace(/[^\d+]+/g, '');
+export function normalizePhone(phone = '') {
+  return phone.replace(/[^\d]+/g, '');
 }
 
-function slugify(text = '', delimiter = '-') {
+export function slugify(text = '', delimiter = '-') {
   let slug = cyrToLat(text);
 
   slug = slug.replace(new RegExp(`[^A-Za-z0-9${delimiter} ]+`, 'g'), '')
@@ -114,13 +114,13 @@ function slugify(text = '', delimiter = '-') {
   return slug;
 }
 
-function sanitizeWords(text = '') {
+export function sanitizeWords(text = '') {
   return text.replace(/[^\p{L}\d ]+/gu, '')
     .replace(/\s+/g, ' ')
     .trim();
 }
 
-function getExcerpt(text = '', maxChars = 100, end = '...') {
+export function getExcerpt(text = '', maxChars = 100, end = '...') {
   const chars = [...text];
 
   if (chars.length <= maxChars) {
@@ -141,10 +141,10 @@ function getExcerpt(text = '', maxChars = 100, end = '...') {
   return output + end;
 }
 
-function getPluralForm(number, values = []) {
-  // 'one' - 1 комментарий
-  // 'few' - 4 комментария
-  // 'many' - 5 комментариев
+export function getPluralForm(number, values = []) {
+  // 'one' - 1 коментар
+  // 'few' - 4 коментарі
+  // 'many' - 5 коментарів
 
   const n = Math.abs(toNumber(number));
   const hasValues = Array.isArray(values) && values.length === 3;
@@ -167,14 +167,3 @@ function getPluralForm(number, values = []) {
 
   return hasValues ? values[2] : 'many';
 }
-
-export {
-  cyrToLat,
-  encodeUrl,
-  escapeHtml,
-  getExcerpt,
-  getPluralForm,
-  normalizePhone,
-  sanitizeWords,
-  slugify,
-};

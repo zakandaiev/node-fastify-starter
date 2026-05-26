@@ -1,4 +1,4 @@
-function generateAccessToken(fastify, payload = {}, options = {}) {
+export function generateAccessToken(fastify, payload = {}, options = {}) {
   return fastify.jwt.sign(
     {
       tokenType: 'access',
@@ -11,7 +11,7 @@ function generateAccessToken(fastify, payload = {}, options = {}) {
   );
 }
 
-function generateRefreshToken(fastify, payload = {}, options = {}) {
+export function generateRefreshToken(fastify, payload = {}, options = {}) {
   return fastify.jwt.refresh.sign(
     {
       tokenType: 'refresh',
@@ -23,8 +23,3 @@ function generateRefreshToken(fastify, payload = {}, options = {}) {
     },
   );
 }
-
-export {
-  generateAccessToken,
-  generateRefreshToken,
-};

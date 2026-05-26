@@ -1,4 +1,4 @@
-import { checkJwtAuth, checkUserRole } from '#root/src/controller/v1/auth.js';
+import { checkJwtAuth, checkUserRole } from '#src/controller/v1/auth.js';
 import {
   deleteUserById,
   deleteUserByIdSchema,
@@ -6,7 +6,7 @@ import {
   getAllUsersSchema,
   getUserById,
   getUserByIdSchema,
-} from '#root/src/controller/v1/user.js';
+} from '#src/controller/v1/user.js';
 
 async function useUserRoutes(fastify) {
   fastify.get('/users', {
