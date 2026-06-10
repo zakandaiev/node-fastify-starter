@@ -1,17 +1,17 @@
 import { resolvePath } from '#core/path.js';
+import { replyError, replySuccess } from '#src/service/response.js';
+import { createSchema } from '#src/service/schema.js';
 import { toNumber } from '#src/util/misc.js';
 import { randomUUIDv7 } from '#src/util/random.js';
-import { replyError, replySuccess } from '#src/util/response.js';
-import { createSchema } from '#src/util/schema.js';
 import { createWriteStream } from 'node:fs';
 import nodePath from 'node:path';
 import { pipeline } from 'node:stream/promises';
 
 // NORMALIZATION
-const OUTPUT_COLUMNS = ['file'];
+export const OUTPUT_COLUMNS = ['file'];
 
 // UPLOAD UTIL
-async function uploadFile(data) {
+export async function uploadFile(data) {
   if (!data) {
     return {
       status: 'error',
@@ -79,7 +79,7 @@ async function uploadFile(data) {
 }
 
 // UPLOAD ROUTE
-async function postUpload(request, reply) {
+export async function postUpload(request, reply) {
   const data = await request.file();
 
   const result = await uploadFile(data);
@@ -92,7 +92,8 @@ async function postUpload(request, reply) {
     data: result.uri,
   });
 }
-const postUploadSchema = createSchema('upload')
+
+export const postUploadSchema = createSchema('upload')
   .body(OUTPUT_COLUMNS, OUTPUT_COLUMNS)
   .defaultResponses()
   .response(200, {
@@ -114,10 +115,3 @@ const postUploadSchema = createSchema('upload')
     description: 'Uploads a file and returns path to it',
   })
   .build();
-
-export {
-  OUTPUT_COLUMNS,
-  postUpload,
-  postUploadSchema,
-  uploadFile,
-};

@@ -1,6 +1,6 @@
 import { processArg } from '#core/app.js';
 import { absPath } from '#core/path.js';
-import { setErrorHandler, setNotFoundHandler } from '#src/util/response.js';
+import { setErrorHandler, setNotFoundHandler } from '#src/service/response.js';
 import fastifyAutoLoad from '@fastify/autoload';
 import fastifyLib from 'fastify';
 
@@ -27,13 +27,13 @@ export async function startServer() {
     dir: absPath.plugin,
     encapsulate: false,
     forceESM: true,
-    ignoreFilter: (path) => path.endsWith('.ignore.js'),
+    ignoreFilter: (path) => path.startsWith('/_'),
   });
 
   await fastify.register(fastifyAutoLoad, {
     dir: absPath.router,
     forceESM: true,
-    ignoreFilter: (path) => path.endsWith('.ignore.js'),
+    ignoreFilter: (path) => path.startsWith('/_'),
   });
 
   await fastify.listen({
@@ -44,7 +44,7 @@ export async function startServer() {
 
 export async function stopServer(reason, code = 0) {
   if (reason) {
-    fastify.log.warn({ reason }, 'shutdown');
+    fastify.log.warn({ reason }, 'Shutdown');
   }
 
   try {

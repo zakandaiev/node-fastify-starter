@@ -23,7 +23,6 @@ export default [
   },
   ...compat.extends('airbnb-base'),
   {
-
     languageOptions: {
       globals: {
         ...globals.browser,

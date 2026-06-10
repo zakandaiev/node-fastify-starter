@@ -1,6 +1,6 @@
-import { reply } from '#src/util/response.js';
+import { reply } from '#src/service/response.js';
 
-async function useDummyRoutes(fastify) {
+export default async function useDummyRoutes(fastify) {
   fastify.get('/dummy', {
     handler: (request, fastifyReply) => reply(fastifyReply, 'Dummy handler for api v2'),
     schema: {
@@ -10,5 +10,3 @@ async function useDummyRoutes(fastify) {
     },
   });
 }
-
-export default useDummyRoutes;

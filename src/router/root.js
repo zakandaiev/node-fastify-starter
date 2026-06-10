@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 
 const INDEX_HTML = readFileSync(resolvePath('public', 'index.html'), 'utf8');
 
-async function useRootRoutes(fastify) {
+export default async function useRootRoutes(fastify) {
   fastify.get('/', {
     handler: (request, reply) => reply.type('text/html').send(INDEX_HTML),
     schema: {
@@ -11,5 +11,3 @@ async function useRootRoutes(fastify) {
     },
   });
 }
-
-export default useRootRoutes;

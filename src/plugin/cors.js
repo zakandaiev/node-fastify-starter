@@ -1,6 +1,6 @@
 import fastifyCors from '@fastify/cors';
 
-async function useCors(fastify) {
+export default async function useCors(fastify) {
   const frontendDomainList = process.env.APP_CORS_ALLOWED_DOMAINS
     ? process.env.APP_CORS_ALLOWED_DOMAINS.split(',')
     : false;
@@ -11,5 +11,3 @@ async function useCors(fastify) {
     methods: ['DELETE', 'GET', 'HEAD', 'OPTIONS', 'PATCH', 'POST', 'PUT'],
   });
 }
-
-export default useCors;

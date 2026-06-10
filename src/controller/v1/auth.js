@@ -1,7 +1,6 @@
 import { OUTPUT_COLUMNS as USER_OUTPUT_COLUMNS } from '#src/controller/v1/user.js';
 import { createUser, getUserByEmail, getUserById } from '#src/model/v1/user.js';
-import { convertStringToSeconds } from '#src/util/datetime.js';
-import { generateAccessToken, generateRefreshToken } from '#src/util/jwt.js';
+import { generateAccessToken, generateRefreshToken } from '#src/service/auth.js';
 import {
   normalizeDataByColumns,
   replyError,
@@ -9,18 +8,19 @@ import {
   replyErrorAuthorization,
   replyErrorNotFound,
   replySuccess,
-} from '#src/util/response.js';
-import { createSchema } from '#src/util/schema.js';
+} from '#src/service/response.js';
+import { createSchema } from '#src/service/schema.js';
+import { convertStringToSeconds } from '#src/util/datetime.js';
 import bcrypt from 'bcryptjs';
 
 // CONST
 const AUTH_API_PATH = '/api/v1';
 
 // NORMALIZATION
-const OUTPUT_COLUMNS = ['accessToken'];
+export const OUTPUT_COLUMNS = ['accessToken'];
 
 // CHECK JWT AUTH
-async function checkJwtAuth(request, reply) {
+export async function checkJwtAuth(request, reply) {
   try {
     const payload = await request.jwtVerify();
 
@@ -34,7 +34,7 @@ async function checkJwtAuth(request, reply) {
   }
 }
 
-async function tryRefreshJwtToken(request, reply) {
+export async function tryRefreshJwtToken(request, reply) {
   try {
     const payload = await request.refreshJwtVerify({
       onlyCookie: true,
@@ -53,7 +53,7 @@ async function tryRefreshJwtToken(request, reply) {
     }
 
     const normalizedUser = normalizeDataByColumns(user, USER_OUTPUT_COLUMNS);
-    const accessToken = generateAccessToken(request.server, normalizedUser);
+    const accessToken = generateAccessToken(normalizedUser);
     setTokenToCookie(reply, { accessToken });
 
     request.user = user;
@@ -63,7 +63,7 @@ async function tryRefreshJwtToken(request, reply) {
 }
 
 // CHECK ORIGIN AUTH
-async function checkOriginAuth(request, reply) {
+export async function checkOriginAuth(request, reply) {
   const { origin } = request.headers;
   if (!origin) {
     return replyErrorAuthentication(reply);
@@ -79,7 +79,7 @@ async function checkOriginAuth(request, reply) {
 }
 
 // CHECK ROLE
-function checkUserRole(allowedRolesOneOrMany) {
+export function checkUserRole(allowedRolesOneOrMany) {
   const allowedRoles = Array.isArray(allowedRolesOneOrMany)
     ? allowedRolesOneOrMany
     : [allowedRolesOneOrMany];
@@ -96,7 +96,7 @@ function checkUserRole(allowedRolesOneOrMany) {
 }
 
 // SET/UNSET JWT TOKENS TO COOKIE
-function setTokenToCookie(reply, { accessToken, refreshToken } = {}) {
+export function setTokenToCookie(reply, { accessToken, refreshToken } = {}) {
   const isDev = process.env.APP_MODE === 'dev';
 
   const options = {
@@ -118,7 +118,8 @@ function setTokenToCookie(reply, { accessToken, refreshToken } = {}) {
 
   return true;
 }
-function unsetTokenFromCookie(reply, { accessToken, refreshToken } = {}) {
+
+export function unsetTokenFromCookie(reply, { accessToken, refreshToken } = {}) {
   if (accessToken) {
     reply.clearCookie('accessToken', {
       path: AUTH_API_PATH,
@@ -135,7 +136,7 @@ function unsetTokenFromCookie(reply, { accessToken, refreshToken } = {}) {
 }
 
 // GET CURRENT USER
-async function getCurrentUser(request, reply) {
+export async function getCurrentUser(request, reply) {
   const { id } = request.user;
 
   const user = await getUserById(id);
@@ -150,7 +151,8 @@ async function getCurrentUser(request, reply) {
     data: normalizeDataByColumns(user, USER_OUTPUT_COLUMNS),
   });
 }
-const getCurrentUserSchema = createSchema('auth', 'user')
+
+export const getCurrentUserSchema = createSchema('auth', 'user')
   .cookies(['accessToken'])
   .defaultResponses()
   .response(200, {
@@ -164,7 +166,7 @@ const getCurrentUserSchema = createSchema('auth', 'user')
   .build();
 
 // POST LOGIN
-async function postLogin(request, reply) {
+export async function postLogin(request, reply) {
   const { email, password } = request.body;
 
   const user = await getUserByEmail(email);
@@ -184,15 +186,16 @@ async function postLogin(request, reply) {
   }
 
   const normalizedUser = normalizeDataByColumns(user, USER_OUTPUT_COLUMNS);
-  const accessToken = generateAccessToken(request.server, normalizedUser);
-  const refreshToken = generateRefreshToken(request.server, normalizedUser);
+  const accessToken = generateAccessToken(normalizedUser);
+  const refreshToken = generateRefreshToken(normalizedUser);
   setTokenToCookie(reply, { accessToken, refreshToken });
 
   return replySuccess(reply, {
     data: normalizedUser,
   });
 }
-const postLoginSchema = createSchema('user')
+
+export const postLoginSchema = createSchema('user')
   .body(['email', 'password'], ['email', 'password'])
   .defaultResponses({
     include: [200, 400, 500],
@@ -208,7 +211,7 @@ const postLoginSchema = createSchema('user')
   .build();
 
 // POST LOGIN DEV
-async function postLoginDev(request, reply) {
+export async function postLoginDev(request, reply) {
   if (process.env.APP_MODE !== 'dev') {
     return replyErrorNotFound(request, reply);
   }
@@ -232,7 +235,7 @@ async function postLoginDev(request, reply) {
   }
 
   const normalizedUser = normalizeDataByColumns(user, USER_OUTPUT_COLUMNS);
-  const accessToken = generateAccessToken(request.server, normalizedUser, { expiresIn: '1d' });
+  const accessToken = generateAccessToken(normalizedUser, { expiresIn: '1d' });
 
   return replySuccess(reply, {
     data: {
@@ -241,7 +244,8 @@ async function postLoginDev(request, reply) {
     },
   });
 }
-const postLoginDevSchema = createSchema('auth', 'user')
+
+export const postLoginDevSchema = createSchema('auth', 'user')
   .body(['email', 'password'], ['email', 'password'])
   .defaultResponses({
     include: [200, 400, 500],
@@ -265,7 +269,7 @@ const postLoginDevSchema = createSchema('auth', 'user')
   .build();
 
 // POST LOGOUT
-async function postLogout(_request, reply) {
+export async function postLogout(_request, reply) {
   unsetTokenFromCookie(reply, {
     accessToken: true,
     refreshToken: true,
@@ -275,7 +279,8 @@ async function postLogout(_request, reply) {
     data: true,
   });
 }
-const postLogoutSchema = createSchema('user')
+
+export const postLogoutSchema = createSchema('user')
   .defaultResponses({
     include: [200, 500],
   })
@@ -290,7 +295,7 @@ const postLogoutSchema = createSchema('user')
   .build();
 
 // POST REGISTER
-async function postRegister(request, reply) {
+export async function postRegister(request, reply) {
   const {
     email,
     password,
@@ -307,15 +312,16 @@ async function postRegister(request, reply) {
   });
 
   const normalizedUser = normalizeDataByColumns(user, USER_OUTPUT_COLUMNS);
-  const accessToken = generateAccessToken(request.server, normalizedUser);
-  const refreshToken = generateRefreshToken(request.server, normalizedUser);
+  const accessToken = generateAccessToken(normalizedUser);
+  const refreshToken = generateRefreshToken(normalizedUser);
   setTokenToCookie(reply, { accessToken, refreshToken });
 
   return replySuccess(reply, {
     data: normalizedUser,
   });
 }
-const postRegisterSchema = createSchema('user')
+
+export const postRegisterSchema = createSchema('user')
   .body(['email', 'password', 'name', 'phone'], ['email', 'password', 'name'])
   .defaultResponses()
   .response(200, {
@@ -327,21 +333,3 @@ const postRegisterSchema = createSchema('user')
     description: 'Returns created user',
   })
   .build();
-
-export {
-  checkJwtAuth,
-  checkOriginAuth,
-  checkUserRole,
-  getCurrentUser,
-  getCurrentUserSchema,
-  OUTPUT_COLUMNS,
-  postLogin,
-  postLoginDev,
-  postLoginDevSchema,
-  postLoginSchema,
-  postLogout,
-  postLogoutSchema,
-  postRegister,
-  postRegisterSchema,
-  setTokenToCookie,
-};

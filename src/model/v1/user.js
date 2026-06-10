@@ -1,6 +1,6 @@
-import { createQuery } from '#src/util/database.js';
+import { createQuery } from '#src/service/database.js';
 
-async function createUser(payload = {}) {
+export async function createUser(payload = {}) {
   const columns = Object.keys(payload).join(', ');
   const values = Object.keys(payload).map((v) => `:${v}`).join(', ');
 
@@ -13,7 +13,7 @@ async function createUser(payload = {}) {
   return query.fetch();
 }
 
-async function getUserById(id) {
+export async function getUserById(id) {
   const sql = 'SELECT * FROM users WHERE id = :id LIMIT 1';
   const binding = { id };
 
@@ -23,7 +23,7 @@ async function getUserById(id) {
   return query.fetch();
 }
 
-async function getUserByEmail(email) {
+export async function getUserByEmail(email) {
   const sql = 'SELECT * FROM users WHERE email = :email LIMIT 1';
   const binding = { email };
 
@@ -33,7 +33,7 @@ async function getUserByEmail(email) {
   return query.fetch();
 }
 
-async function deleteUserById(id) {
+export async function deleteUserById(id) {
   const sql = 'DELETE FROM users WHERE id = :id';
   const binding = { id };
 
@@ -43,7 +43,7 @@ async function deleteUserById(id) {
   return query.affectedRows();
 }
 
-async function getAllUsers(payload = {}) {
+export async function getAllUsers(payload = {}) {
   const sql = 'SELECT * FROM users ORDER BY id DESC';
   const binding = { ...payload };
 
@@ -56,11 +56,3 @@ async function getAllUsers(payload = {}) {
 
   return query.getAll();
 }
-
-export {
-  createUser,
-  deleteUserById,
-  getAllUsers,
-  getUserByEmail,
-  getUserById,
-};

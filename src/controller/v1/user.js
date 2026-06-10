@@ -3,11 +3,11 @@ import {
   getAllUsers as modelGetAllUsers,
   getUserById as modelGetUserById,
 } from '#src/model/v1/user.js';
-import { normalizeDataByColumns, replyError, replySuccess } from '#src/util/response.js';
-import { createSchema } from '#src/util/schema.js';
+import { normalizeDataByColumns, replyError, replySuccess } from '#src/service/response.js';
+import { createSchema } from '#src/service/schema.js';
 
 // NORMALIZATION
-const FILTER_COLUMNS = [
+export const FILTER_COLUMNS = [
   'email',
   'name',
   'phone',
@@ -16,7 +16,7 @@ const FILTER_COLUMNS = [
   'offset',
   'sort',
 ];
-const OUTPUT_COLUMNS = [
+export const OUTPUT_COLUMNS = [
   'id',
   'email',
   'name',
@@ -25,7 +25,7 @@ const OUTPUT_COLUMNS = [
 ];
 
 // GET ALL USERS
-async function getAllUsers(request, reply) {
+export async function getAllUsers(request, reply) {
   const payload = {
     sortAllowedColumns: OUTPUT_COLUMNS,
   };
@@ -44,7 +44,8 @@ async function getAllUsers(request, reply) {
     ...data,
   });
 }
-const getAllUsersSchema = createSchema('user', 'pagination', 'sort')
+
+export const getAllUsersSchema = createSchema('user', 'pagination', 'sort')
   .query(FILTER_COLUMNS)
   .defaultResponses()
   .response(200, {
@@ -62,7 +63,7 @@ const getAllUsersSchema = createSchema('user', 'pagination', 'sort')
   .build();
 
 // GET USER BY ID
-async function getUserById(request, reply) {
+export async function getUserById(request, reply) {
   const { id } = request.params;
 
   let user = await modelGetUserById(id);
@@ -74,7 +75,8 @@ async function getUserById(request, reply) {
     data: normalizeDataByColumns(user, OUTPUT_COLUMNS),
   });
 }
-const getUserByIdSchema = createSchema('user')
+
+export const getUserByIdSchema = createSchema('user')
   .params(['id'], ['id'])
   .defaultResponses()
   .response(200, {
@@ -88,7 +90,7 @@ const getUserByIdSchema = createSchema('user')
   .build();
 
 // DELETE USER BY ID
-async function deleteUserById(request, reply) {
+export async function deleteUserById(request, reply) {
   const { id } = request.params;
 
   const data = await modelDeleteUserById(id);
@@ -103,7 +105,8 @@ async function deleteUserById(request, reply) {
     data,
   });
 }
-const deleteUserByIdSchema = createSchema('user')
+
+export const deleteUserByIdSchema = createSchema('user')
   .params(['id'], ['id'])
   .defaultResponses()
   .response(200, {
@@ -115,14 +118,3 @@ const deleteUserByIdSchema = createSchema('user')
     description: 'Deletes the user',
   })
   .build();
-
-export {
-  deleteUserById,
-  deleteUserByIdSchema,
-  FILTER_COLUMNS,
-  getAllUsers,
-  getAllUsersSchema,
-  getUserById,
-  getUserByIdSchema,
-  OUTPUT_COLUMNS,
-};

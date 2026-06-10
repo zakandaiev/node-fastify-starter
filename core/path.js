@@ -20,6 +20,7 @@ export const absPath = {
   plugin: nodePath.resolve(cwd(), pathSrc, 'plugin'),
   router: nodePath.resolve(cwd(), pathSrc, 'router'),
   schema: nodePath.resolve(cwd(), pathSrc, 'schema'),
+  service: nodePath.resolve(cwd(), pathSrc, 'service'),
   seed: nodePath.resolve(cwd(), pathSrc, 'migration', 'seed'),
   util: nodePath.resolve(cwd(), pathSrc, 'util'),
 };

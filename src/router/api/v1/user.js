@@ -8,7 +8,7 @@ import {
   getUserByIdSchema,
 } from '#src/controller/v1/user.js';
 
-async function useUserRoutes(fastify) {
+export default async function useUserRoutes(fastify) {
   fastify.get('/users', {
     preHandler: [checkJwtAuth, checkUserRole('admin')],
     handler: getAllUsers,
@@ -27,5 +27,3 @@ async function useUserRoutes(fastify) {
     schema: deleteUserByIdSchema,
   });
 }
-
-export default useUserRoutes;

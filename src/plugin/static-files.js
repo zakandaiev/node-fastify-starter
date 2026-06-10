@@ -1,7 +1,7 @@
 import { absPath } from '#core/path.js';
 import fastifyStatic from '@fastify/static';
 
-async function useStaticFiles(fastify) {
+export default async function useStaticFiles(fastify) {
   await fastify.register(fastifyStatic, {
     root: absPath.public,
     index: false,
@@ -23,5 +23,3 @@ async function useStaticFiles(fastify) {
     },
   });
 }
-
-export default useStaticFiles;

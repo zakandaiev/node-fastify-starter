@@ -7,23 +7,25 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-node_modules
-.DS_Store
-__MACOSX
-cache
-coverage
-*.local
-
-# Editor directories and files
+# IDEs
 .vscode/*
 !.vscode/extensions.json
 !.vscode/settings.json
 .idea
-*.suo
-*.ntvs*
 *.njsproj
+*.ntvs*
 *.sln
+*.suo
 *.sw?
 
+# Misc
+__MACOSX
+.DS_Store
+.eslintcache
+cache
+coverage
+node_modules
+upload
+*.local
 *.tsbuildinfo
 +.*

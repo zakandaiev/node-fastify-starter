@@ -1,8 +1,8 @@
-import { replySuccess } from '#src/util/response.js';
-import { createSchema, loadSchemaFiles } from '#src/util/schema.js';
+import { replySuccess } from '#src/service/response.js';
+import { createSchema, loadSchemaFiles } from '#src/service/schema.js';
 
 // NORMALIZATION
-const OUTPUT_COLUMNS = [
+export const OUTPUT_COLUMNS = [
   'health',
   'mysqlStatus',
   'redisStatus',
@@ -10,7 +10,7 @@ const OUTPUT_COLUMNS = [
 ];
 
 // GET HEALTH CHECK
-async function getHealthCheck(request, reply) {
+export async function getHealthCheck(request, reply) {
   return replySuccess(reply, {
     data: {
       health: 'healthy',
@@ -20,7 +20,8 @@ async function getHealthCheck(request, reply) {
     },
   });
 }
-const getHealthCheckSchema = createSchema('healthcheck')
+
+export const getHealthCheckSchema = createSchema('healthcheck')
   .defaultResponses({
     include: [200, 500],
   })
@@ -37,9 +38,3 @@ const getHealthCheckSchema = createSchema('healthcheck')
     description: 'Returns system health',
   })
   .build();
-
-export {
-  getHealthCheck,
-  getHealthCheckSchema,
-  OUTPUT_COLUMNS,
-};

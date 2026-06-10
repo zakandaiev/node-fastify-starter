@@ -1,6 +1,6 @@
 import fastifyJwt from '@fastify/jwt';
 
-async function useJwt(fastify) {
+export default async function useJwt(fastify) {
   await fastify.register(fastifyJwt, {
     cookie: {
       cookieName: 'accessToken',
@@ -16,5 +16,3 @@ async function useJwt(fastify) {
     secret: process.env.APP_JWT_REFRESH_SECRET,
   });
 }
-
-export default useJwt;

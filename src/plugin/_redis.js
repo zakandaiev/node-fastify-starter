@@ -1,7 +1,7 @@
 import { convertStringToSeconds } from '#src/util/datetime.js';
 import Redis from 'ioredis';
 
-async function useRedis(fastify) {
+export default async function useRedis(fastify) {
   const host = process.env.APP_REDIS_HOST;
   const port = process.env.APP_REDIS_PORT;
   const username = process.env.APP_REDIS_USER;
@@ -47,26 +47,24 @@ async function useRedis(fastify) {
   redis.on('ready', () => {
     redis.isReady = true;
     fastify.isRedisReady = true;
-    fastify.log.info('redis ready');
+    fastify.log.info('Redis ready');
   });
 
   redis.on('close', () => {
     redis.isReady = false;
     fastify.isRedisReady = false;
-    fastify.log.warn('redis connection closed');
+    fastify.log.warn('Redis connection closed');
   });
 
   redis.on('end', () => {
     redis.isReady = false;
     fastify.isRedisReady = false;
-    fastify.log.warn('redis connection ended');
+    fastify.log.warn('Redis connection ended');
   });
 
   redis.on('error', (error) => {
     redis.isReady = false;
     fastify.isRedisReady = false;
-    fastify.log.error(error, 'redis error');
+    fastify.log.error(error, 'Redis error');
   });
 }
-
-export default useRedis;

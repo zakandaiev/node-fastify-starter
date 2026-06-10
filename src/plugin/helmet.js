@@ -1,6 +1,6 @@
 import fastifyHelmet from '@fastify/helmet';
 
-async function useHelmet(fastify) {
+export default async function useHelmet(fastify) {
   await fastify.register(fastifyHelmet, {
     contentSecurityPolicy: process.env.APP_MODE === 'dev'
       ? false
@@ -16,5 +16,3 @@ async function useHelmet(fastify) {
     global: true,
   });
 }
-
-export default useHelmet;

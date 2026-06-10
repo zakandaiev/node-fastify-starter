@@ -1,4 +1,11 @@
 import { fastify } from '#core/server.js';
+import { loadSchemaFiles } from '#src/service/schema.js';
+import {
+  createSqlContext,
+  cutSelectionPartFromSqlTokens,
+  getSubstitutedSql,
+  normalizeOrderBy,
+} from '#src/service/sql.js';
 import { convertStringToSeconds, toDate } from '#src/util/datetime.js';
 import {
   isArray,
@@ -11,19 +18,13 @@ import {
   toNumber,
   toString,
 } from '#src/util/misc.js';
-import { loadSchemaFiles } from '#src/util/schema.js';
-import {
-  createSqlContext,
-  cutSelectionPartFromSqlTokens,
-  getSubstitutedSql,
-  normalizeOrderBy,
-} from '#src/util/sql.js';
 import { createHash } from 'node:crypto';
 
 export async function getConnection() {
   if (!isFunction(fastify.mysql?.getConnection)) {
     return null;
   }
+
   const connection = await fastify.mysql.getConnection();
   return connection;
 }
@@ -350,7 +351,7 @@ export function createQuery(initialSql = '', initialBinding = {}) {
         binding,
         rowsCount: rows.length,
         resultTime: endTime - startTime,
-      }, 'database query');
+      }, 'Database query');
 
       result = rows;
     } catch (error) {
@@ -372,7 +373,7 @@ export function createQuery(initialSql = '', initialBinding = {}) {
 
     if (!cacheData.key) {
       const tables = cacheData.tables || [];
-      const tablePromises = tables.map((table) => fastify.redis.get(`table_version:${table}`));
+      const tablePromises = tables.map((table) => fastify.redis.get(`table-version:${table}`));
       const tableRawList = await Promise.all(tablePromises);
       const tableVersions = tableRawList.map((version, index) => `${tables[index]}:${version ?? 0}`);
 
@@ -430,7 +431,7 @@ export function createQuery(initialSql = '', initialBinding = {}) {
       return false;
     }
 
-    const updatePromises = tables.map((table) => fastify.redis.set(`table_version:${table}`, Date.now()));
+    const updatePromises = tables.map((table) => fastify.redis.set(`table-version:${table}`, Date.now()));
     await Promise.all(updatePromises);
 
     return true;

@@ -1,7 +1,7 @@
 import fastifySwagger from '@fastify/swagger';
 import fastifySwaggerUI from '@fastify/swagger-ui';
 
-async function useSwagger(fastify) {
+export default async function useSwagger(fastify) {
   if (process.env.APP_MODE !== 'dev') {
     return fastify;
   }
@@ -49,5 +49,3 @@ async function useSwagger(fastify) {
 
   return fastify;
 }
-
-export default useSwagger;

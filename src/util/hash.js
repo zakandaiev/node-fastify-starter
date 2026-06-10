@@ -1,7 +1,7 @@
 /* eslint-disable no-bitwise */
 import { isString } from '#src/util/misc.js';
 
-function hashFnv32(input, seed = 0x811c9dc5) {
+export function hashFnv32(input, seed = 0x811c9dc5) {
   const str = isString(input)
     ? input
     : JSON.stringify(input);
@@ -16,7 +16,7 @@ function hashFnv32(input, seed = 0x811c9dc5) {
   return h >>> 0;
 }
 
-function hash(input, length = 16) {
+export function hash(input, length = 16) {
   const str = isString(input)
     ? input
     : JSON.stringify(input);
@@ -31,8 +31,3 @@ function hash(input, length = 16) {
 
   return result.slice(0, length);
 }
-
-export {
-  hash,
-  hashFnv32,
-};

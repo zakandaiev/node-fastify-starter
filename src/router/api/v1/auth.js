@@ -12,7 +12,7 @@ import {
   postRegisterSchema,
 } from '#src/controller/v1/auth.js';
 
-async function useAuthRoutes(fastify) {
+export default async function useAuthRoutes(fastify) {
   fastify.get('/auth/me', {
     preHandler: [checkJwtAuth],
     handler: getCurrentUser,
@@ -41,5 +41,3 @@ async function useAuthRoutes(fastify) {
     schema: postRegisterSchema,
   });
 }
-
-export default useAuthRoutes;

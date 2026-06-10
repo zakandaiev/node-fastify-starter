@@ -13,7 +13,7 @@ Node.js Fastify Starter is a boilerplate kit for building modern backend applica
 * User authentication and authorization ready
 * Well thought-out and convenient project structure
 * Live-server with hot-reload
-* Useful utils
+* Useful services & utils
 * index html page
 * And many more...
 
@@ -86,10 +86,10 @@ npm run seed:up -- --names-exclude=dummy
 npm run seed:up -- --names=dummy
 ```
 
-### ESLint
+### Lint
 
 ``` bash
-npm run lint
+npm run lint:js
 # or
-npm run lint:fix
+npm run lint:js:fix
 ```

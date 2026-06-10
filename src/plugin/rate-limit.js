@@ -1,19 +1,17 @@
 import fastifyRateLimit from '@fastify/rate-limit';
 
-async function useRateLimit(fastify) {
+export default async function useRateLimit(fastify) {
   const redis = fastify.isRedisReady
     ? fastify.redis
     : undefined;
 
   await fastify.register(fastifyRateLimit, {
     global: true,
-    max: 100,
     timeWindow: '1m',
+    max: 1000,
     cache: 10000,
     nameSpace: 'rate-limit:',
     skipOnError: true,
     redis,
   });
 }
-
-export default useRateLimit;

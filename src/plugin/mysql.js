@@ -1,6 +1,6 @@
 import fastifyMysql from '@fastify/mysql';
 
-async function useMysql(fastify) {
+export default async function useMysql(fastify) {
   const host = process.env.APP_DATABASE_HOST;
   const port = process.env.APP_DATABASE_PORT;
   const database = process.env.APP_DATABASE_NAME;
@@ -25,5 +25,3 @@ async function useMysql(fastify) {
     },
   });
 }
-
-export default useMysql;
