@@ -18,34 +18,6 @@ export function getSubstitutedSql(sql, binding = {}) {
   });
 }
 
-export function normalizeOrderBy(orderBy, allowedColumns = []) {
-  if (!isString(orderBy)) {
-    return false;
-  }
-
-  const parts = orderBy.split(',');
-  const result = [];
-
-  for (let i = 0; i < parts.length; i += 1) {
-    const value = parts[i];
-
-    const [column, directionRaw = 'ASC'] = value.trim().split(' ');
-    let direction = directionRaw.toUpperCase();
-
-    if (!allowedColumns.includes(column)) {
-      continue;
-    }
-
-    if (!['ASC', 'DESC'].includes(direction)) {
-      direction = 'ASC';
-    }
-
-    result.push(`${column} ${direction}`);
-  }
-
-  return result.length ? result.join(', ') : false;
-}
-
 export function tokenizeSql(sql) {
   const tokens = [];
   const len = sql.length;

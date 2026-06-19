@@ -1,4 +1,27 @@
+/*
+  Run SQL migrations/seeds against the database configured in env.
+  Files live in ./src/migration (migrations) or ./src/migration/seed (seeds)
+  and must be named <order>_<name>.<up|down>.sql,
+  e.g. 001_users.up.sql / 001_users.down.sql.
+  Files run inside a single transaction, ordered by <order> (reversed on down).
+
+  Usage:
+    npm run migration:up                            -> apply all migrations
+    npm run migration:down                          -> roll back all migrations
+    npm run seed:up                                 -> apply all seeds
+    npm run seed:down                               -> roll back all seeds
+    npm run migration:up -- --names=users,products  -> only these
+    npm run migration:up -- --names-exclude=logs    -> all but these
+
+  Flags:
+    --direction      up | down                          (required)
+    --type           migration | seed                   (default: migration)
+    --names          comma-separated names to include
+    --names-exclude  comma-separated names to skip
+*/
+
 /* eslint-disable no-console */
+
 import { processArg } from '#core/app.js';
 import { absPath, joinPath } from '#core/path.js';
 import { toNumber } from '#src/util/misc.js';

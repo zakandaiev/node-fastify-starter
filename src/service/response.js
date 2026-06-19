@@ -1,13 +1,18 @@
-import { isArray, isObject, toString } from '#src/util/misc.js';
+import {
+  isArray,
+  isObject,
+  isString,
+  toString,
+} from '#src/util/misc.js';
 
 export function normalizeDataByColumns(data, columns) {
   if (!isObject(data)) {
     return data;
   }
 
-  if (Array.isArray(columns) && columns.length && columns[0] !== '*') {
+  if (isArray(columns) && columns.length && columns[0] !== '*') {
     return columns.reduce((outputObject, columnKey) => {
-      outputObject[columnKey] = data[columnKey] || null;
+      outputObject[columnKey] = data[columnKey] ?? null;
       return outputObject;
     }, {});
   }
@@ -39,24 +44,28 @@ export function replyEmpty(fastifyReply, code = 200, contentType = 'text/plain')
 }
 
 export function replySuccess(fastifyReply, overwriteOptions = {}) {
-  fastifyReply.code(overwriteOptions.code || 200);
-  delete overwriteOptions.code;
+  const options = { ...overwriteOptions };
+
+  fastifyReply.code(options.code || 200);
+  delete options.code;
 
   return fastifyReply.send({
     status: 'success',
-    data: overwriteOptions.data || null,
-    ...overwriteOptions,
+    data: options.data ?? null,
+    ...options,
   });
 }
 
 export function replyError(fastifyReply, overwriteOptions = {}) {
-  fastifyReply.code(overwriteOptions.code || 400);
-  delete overwriteOptions.code;
+  const options = { ...overwriteOptions };
+
+  fastifyReply.code(options.code || 400);
+  delete options.code;
 
   return fastifyReply.send({
     status: 'error',
-    message: overwriteOptions.message || null,
-    ...overwriteOptions,
+    message: options.message || null,
+    ...options,
   });
 }
 
@@ -103,7 +112,7 @@ export function setErrorHandler(error, request, fastifyReply) {
   // AJV validation
   if (error.validation) {
     responseErrorObj.code = 400;
-    responseErrorObj.message = 'Validation Error';
+    responseErrorObj.message = 'Validation error';
     responseErrorObj.data = 'VALIDATION_ERROR';
     responseErrorObj.validation = formatValidationErrors(error.validation, error.validationContext, request) || [];
   }
@@ -111,10 +120,10 @@ export function setErrorHandler(error, request, fastifyReply) {
   // MYSQL validation
   if (['ER_DUP_ENTRY'].includes(error.code)) {
     responseErrorObj.code = 400;
-    responseErrorObj.message = 'Validation Error';
+    responseErrorObj.message = 'Validation error';
     responseErrorObj.data = 'VALIDATION_ERROR';
     const mysqlValidationErrors = formatMysqlValidationErrors(error, request) || [];
-    responseErrorObj.validation = Array.isArray(responseErrorObj.validation)
+    responseErrorObj.validation = isArray(responseErrorObj.validation)
       ? responseErrorObj.validation.concat(mysqlValidationErrors)
       : mysqlValidationErrors;
   }
@@ -122,17 +131,26 @@ export function setErrorHandler(error, request, fastifyReply) {
   // Rate limit
   if (error.statusCode === 429) {
     responseErrorObj.code = 429;
-    responseErrorObj.message = 'Rate Limit Error';
+    responseErrorObj.message = 'Rate limit error';
     responseErrorObj.data = 'RATE_LIMIT_ERROR';
+  }
+
+  // Under pressure
+  if (error.statusCode === 503) {
+    responseErrorObj.code = 503;
+    responseErrorObj.message = 'Service unavailable';
+    responseErrorObj.data = 'SERVICE_UNAVAILABLE_ERROR';
   }
 
   request.server.log.error({ error });
 
-  return replyError(fastifyReply, responseErrorObj);
+  if (!fastifyReply.sent) {
+    return replyError(fastifyReply, responseErrorObj);
+  }
 }
 
 export function formatValidationErrors(errors, validationContext, request) {
-  if (!Array.isArray(errors) || !errors.length) {
+  if (!isArray(errors) || !errors.length) {
     return false;
   }
 
@@ -159,20 +177,18 @@ export function formatValidationErrors(errors, validationContext, request) {
     const operator = errorSchema.keyword || '';
     const operatorValue = errorSchema.params?.limit || null;
 
-    const schema = { ...errorSchema };
-
     return {
       column,
       columnValue,
       operator,
       operatorValue,
-      schema,
+      ...(process.env.APP_MODE === 'dev' && { schema: { ...errorSchema } }),
     };
   });
 }
 
 export function formatMysqlValidationErrors(error) {
-  if (!isObject(error)) {
+  if (!error || !isString(error.message)) {
     return false;
   }
 

@@ -1,13 +1,10 @@
+import { ALLOWED_DOMAINS, ALLOWED_METHODS } from '#src/service/auth.js';
 import fastifyCors from '@fastify/cors';
 
 export default async function useCors(fastify) {
-  const frontendDomainList = process.env.APP_CORS_ALLOWED_DOMAINS
-    ? process.env.APP_CORS_ALLOWED_DOMAINS.split(',')
-    : false;
-
   await fastify.register(fastifyCors, {
     credentials: true,
-    origin: frontendDomainList,
-    methods: ['DELETE', 'GET', 'HEAD', 'OPTIONS', 'PATCH', 'POST', 'PUT'],
+    origin: ALLOWED_DOMAINS.length ? ALLOWED_DOMAINS : false,
+    methods: ALLOWED_METHODS,
   });
 }

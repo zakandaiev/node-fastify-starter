@@ -8,7 +8,7 @@ export const packageData = { ...packageDataJson };
 export const processArg = minimist(argv.slice(2));
 
 export const appData = {
-  APP_MODE: 'dev',
+  APP_MODE: 'prod',
 
   APP_NAME: packageData.name,
   APP_NAME_FORMATTED: packageData.name

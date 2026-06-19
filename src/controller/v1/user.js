@@ -2,9 +2,22 @@ import {
   deleteUserById as modelDeleteUserById,
   getAllUsers as modelGetAllUsers,
   getUserById as modelGetUserById,
+  patchUserById as modelPatchUserById,
 } from '#src/model/v1/user.js';
 import { normalizeDataByColumns, replyError, replySuccess } from '#src/service/response.js';
 import { createSchema } from '#src/service/schema.js';
+import {
+  deleteUploadedFile,
+  getPublicFileUrl,
+  parseFormDataRequest,
+} from '#src/service/upload.js';
+import {
+  isArray,
+  isBoolean,
+  isString,
+  isStringBoolean,
+} from '#src/util/misc.js';
+import bcrypt from 'bcrypt';
 
 // NORMALIZATION
 export const FILTER_COLUMNS = [
@@ -21,14 +34,35 @@ export const OUTPUT_COLUMNS = [
   'email',
   'name',
   'phone',
+  'avatar',
   'role',
 ];
+export const PATCH_COLUMNS = [
+  'email',
+  'name',
+  'phone',
+  'role',
+  'isEnabled',
+  'password',
+];
+
+export const AVATAR_UPLOAD_OPTIONS = {
+  allowedExtensions: ['jpg', 'jpeg', 'png', 'webp', 'gif'],
+  maxSize: 2 * 1024 * 1024, // 2MB
+};
+
+export function normalizeUser(user) {
+  const data = normalizeDataByColumns(user, OUTPUT_COLUMNS);
+  if (data) {
+    data.avatar = getPublicFileUrl(data.avatar);
+  }
+
+  return data;
+}
 
 // GET ALL USERS
 export async function getAllUsers(request, reply) {
-  const payload = {
-    sortAllowedColumns: OUTPUT_COLUMNS,
-  };
+  const payload = {};
 
   FILTER_COLUMNS.forEach((filterColumnKey) => {
     payload[filterColumnKey] = request.query[filterColumnKey];
@@ -36,8 +70,8 @@ export async function getAllUsers(request, reply) {
 
   const data = await modelGetAllUsers(payload);
 
-  if (Array.isArray(data.data) && data.data.length) {
-    data.data = data.data.map((user) => normalizeDataByColumns(user, OUTPUT_COLUMNS));
+  if (isArray(data.data) && data.data.length) {
+    data.data = data.data.map((user) => normalizeUser(user));
   }
 
   return replySuccess(reply, {
@@ -72,7 +106,7 @@ export async function getUserById(request, reply) {
   }
 
   return replySuccess(reply, {
-    data: normalizeDataByColumns(user, OUTPUT_COLUMNS),
+    data: normalizeUser(user),
   });
 }
 
@@ -86,6 +120,118 @@ export const getUserByIdSchema = createSchema('user')
     tags: ['User', 'v1'],
     summary: 'Get user by ID',
     description: 'Returns one user by ID',
+  })
+  .build();
+
+// PATCH USER BY ID
+export async function patchUserById(request, reply) {
+  const { id } = request.params;
+
+  const existingUser = await modelGetUserById(id);
+  if (!existingUser) {
+    return replyError(reply, {
+      message: 'Invalid user ID',
+      data: 'INVALID_USER_ID',
+    });
+  }
+
+  const { fields, files, validation } = await parseFormDataRequest(request, {
+    fileFields: {
+      avatar: AVATAR_UPLOAD_OPTIONS,
+    },
+    limits: {
+      fileSize: AVATAR_UPLOAD_OPTIONS.maxSize,
+    },
+  });
+
+  if (validation.length) {
+    return replyError(reply, {
+      message: 'Validation Error',
+      data: 'VALIDATION_ERROR',
+      validation,
+    });
+  }
+
+  const payload = {};
+  PATCH_COLUMNS.forEach((columnKey) => {
+    if (fields[columnKey] !== undefined) {
+      payload[columnKey] = fields[columnKey];
+    }
+  });
+
+  if (payload.phone === '') {
+    payload.phone = null;
+  }
+
+  if (payload.isEnabled !== undefined) {
+    if (isBoolean(payload.isEnabled) || isStringBoolean(payload.isEnabled)) {
+      payload.isEnabled = payload.isEnabled === true || payload.isEnabled === 'true' ? 1 : 0;
+    } else {
+      delete payload.isEnabled;
+    }
+  }
+
+  ['email', 'name', 'role'].forEach((columnKey) => {
+    if (payload[columnKey] !== undefined && (!isString(payload[columnKey]) || !payload[columnKey].length)) {
+      delete payload[columnKey];
+    }
+  });
+
+  if (payload.password !== undefined) {
+    if (!isString(payload.password) || payload.password.length < 8) {
+      return replyError(reply, {
+        message: 'Validation Error',
+        data: 'VALIDATION_ERROR',
+        validation: [{
+          column: 'password',
+          columnValue: undefined,
+          operator: 'minLength',
+          operatorValue: 8,
+        }],
+      });
+    }
+
+    payload.password = await bcrypt.hash(payload.password, 10);
+  }
+
+  if (files.avatar) {
+    payload.avatar = files.avatar;
+  } else if (fields.avatar === '') {
+    payload.avatar = null;
+  }
+
+  if (!Object.keys(payload).length) {
+    return replyError(reply, {
+      message: 'No fields to update',
+      data: 'NO_FIELDS_TO_UPDATE',
+    });
+  }
+
+  await modelPatchUserById(id, payload);
+
+  if ('avatar' in payload && payload.avatar !== existingUser.avatar) {
+    await deleteUploadedFile(existingUser.avatar);
+  }
+
+  const updatedUser = await modelGetUserById(id);
+
+  return replySuccess(reply, {
+    data: normalizeUser(updatedUser),
+  });
+}
+
+export const patchUserByIdSchema = createSchema('user')
+  .params(['id'], ['id'])
+  .body([...PATCH_COLUMNS, 'avatar'])
+  .defaultResponses()
+  .response(200, {
+    dataExampleKeys: OUTPUT_COLUMNS,
+  })
+  .meta({
+    consumes: ['multipart/form-data', 'application/json'],
+    tags: ['User', 'v1'],
+    summary: 'Patch user by ID',
+    description: 'Patches the user',
   })
   .build();
 

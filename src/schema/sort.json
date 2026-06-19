@@ -1,9 +1,32 @@
 {
   "#example": {
-    "sort": "name ASC, dateCreated DESC"
+    "sort": [
+      {
+        "value": "name:asc",
+        "label": "User name (A-Z)",
+        "isChecked": true,
+        "order": 2
+      },
+      {
+        "value": "name:desc",
+        "label": "User name (Z-A)",
+        "isChecked": false
+      },
+      {
+        "value": "dateCreated:asc",
+        "label": "Oldest first",
+        "isChecked": false
+      },
+      {
+        "value": "dateCreated:desc",
+        "label": "Newest first",
+        "isChecked": true,
+        "order": 1
+      }
+    ]
   },
   "sort": {
     "type": "string",
-    "description": "Sort columns"
+    "description": "Sort values"
   }
 }

@@ -2,6 +2,7 @@ import fastifyHelmet from '@fastify/helmet';
 
 export default async function useHelmet(fastify) {
   await fastify.register(fastifyHelmet, {
+    global: true,
     contentSecurityPolicy: process.env.APP_MODE === 'dev'
       ? false
       : {
@@ -13,6 +14,11 @@ export default async function useHelmet(fastify) {
         },
       },
     crossOriginEmbedderPolicy: false,
-    global: true,
+    frameguard: { action: 'sameorigin' },
+    hsts: {
+      maxAge: 31536000,
+      includeSubDomains: true,
+    },
+    referrerPolicy: { policy: 'same-origin' },
   });
 }

@@ -9,5 +9,6 @@ export default async function useUploadRoutes(fastify) {
     preHandler: checkJwtAuth,
     handler: postUpload,
     schema: postUploadSchema,
+    validatorCompiler: () => () => true,
   });
 }

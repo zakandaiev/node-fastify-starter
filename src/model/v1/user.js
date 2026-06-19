@@ -33,6 +33,23 @@ export async function getUserByEmail(email) {
   return query.fetch();
 }
 
+export async function patchUserById(id, payload = {}) {
+  const columns = Object.keys(payload);
+  if (!columns.length) {
+    return null;
+  }
+
+  const assignments = columns.map((column) => `${column} = :${column}`).join(', ');
+
+  const sql = `UPDATE users SET ${assignments} WHERE id = :id`;
+  const binding = { ...payload, id };
+
+  const query = createQuery(sql, binding);
+  await query.execute();
+
+  return query.affectedRows();
+}
+
 export async function deleteUserById(id) {
   const sql = 'DELETE FROM users WHERE id = :id';
   const binding = { id };
@@ -50,7 +67,7 @@ export async function getAllUsers(payload = {}) {
   const query = createQuery(sql, binding)
     .filter('user', payload)
     .paginate(payload)
-    .sort(payload);
+    .sort('user', payload);
 
   await query.execute();
 

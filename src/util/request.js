@@ -29,10 +29,6 @@ export async function request(resource, options = {}, { delay = undefined, timeo
     method: options.method || 'GET',
   };
 
-  if (opt.headers.Authorization === undefined && process.env.APP_API_EXTERNAL_KEY) {
-    opt.headers.Authorization = process.env.APP_API_EXTERNAL_KEY;
-  }
-
   if (opt.method.toUpperCase() === 'GET' && isObject(opt.body)) {
     const url = new URL(resource);
     Object.entries(opt.body).forEach(([key, value]) => {
@@ -89,7 +85,11 @@ export async function request(resource, options = {}, { delay = undefined, timeo
 
   try {
     responseJson = JSON.parse(responseText);
-    Object.assign(result, responseJson);
+    if (isObject(responseJson)) {
+      Object.assign(result, responseJson);
+    } else {
+      result.data = responseJson;
+    }
   } catch (error) {
     result.status = 'error';
     result.message = 'Request failed: the response is not valid JSON';
@@ -109,11 +109,11 @@ export async function request(resource, options = {}, { delay = undefined, timeo
 }
 
 function getApiTimeout(timeout) {
-  return isNumber(timeout) ? timeout : (toNumber(process.env.APP_API_EXTERNAL_TIMEOUT_MS) ?? 15000);
+  return isNumber(timeout) ? timeout : (toNumber(process.env.APP_REQUEST_TIMEOUT_MS) ?? 15000);
 }
 
 function getApiDelay(delay) {
-  return isNumber(delay) ? delay : (toNumber(process.env.APP_API_EXTERNAL_DELAY_MS) ?? 500);
+  return isNumber(delay) ? delay : (toNumber(process.env.APP_REQUEST_DELAY_MS) ?? 500);
 }
 
 function normalizeError(error) {

@@ -1,6 +1,6 @@
 {
   "#example": {
-    "file": "/upload/id-file-hash.file-extension"
+    "file": "APP_HOST/upload/id-file-hash"
   },
   "file": {
     "type": "string",

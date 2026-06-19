@@ -93,3 +93,13 @@ npm run lint:js
 # or
 npm run lint:js:fix
 ```
+
+### Generate cryptographically-strong random secret keys
+
+``` bash
+npm run generate:key
+# or
+npm run generate:key -- --bytes=64
+# or
+npm run generate:key -- --bytes=64 --count=3
+```

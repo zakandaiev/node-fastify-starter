@@ -1,4 +1,4 @@
-import { toNumber } from '#src/util/misc.js';
+import { isArray, toNumber } from '#src/util/misc.js';
 
 const CYR_TO_LAT_MAP = {
   а: 'a',
@@ -147,7 +147,7 @@ export function getPluralForm(number, values = []) {
   // 'many' - 5 коментарів
 
   const n = Math.abs(toNumber(number));
-  const hasValues = Array.isArray(values) && values.length === 3;
+  const hasValues = isArray(values) && values.length === 3;
 
   const ratioHundreds = (n % 100) / 10;
 

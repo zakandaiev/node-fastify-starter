@@ -8,7 +8,8 @@
   "health": {
     "type": "string",
     "enum": [
-      "healthy"
+      "healthy",
+      "unhealthy"
     ],
     "description": "App status"
   },
@@ -16,7 +17,8 @@
     "type": "string",
     "enum": [
       "uninstalled",
-      "ready"
+      "ready",
+      "down"
     ],
     "description": "MySQL status"
   },

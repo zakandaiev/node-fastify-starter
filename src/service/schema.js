@@ -2,43 +2,61 @@ import { absPath, resolvePath } from '#core/path.js';
 import { isArray, isFunction, isObject } from '#src/util/misc.js';
 import { readFileSync } from 'node:fs';
 
+const schemaFileCache = new Map();
+
 export function loadSchemaFiles(schemaNames) {
   const schemaNameList = isArray(schemaNames)
     ? schemaNames
     : [schemaNames];
 
-  const filters = {};
-  const examples = {};
+  const example = {};
   const exampleMap = {};
-  const properties = {};
+  const filter = {};
+  const sort = [];
+  const property = {};
 
   schemaNameList.forEach((schemaName) => {
     const schemaPath = resolvePath(absPath.schema, `${schemaName}.json`);
-    const schema = JSON.parse(readFileSync(schemaPath, 'utf8'));
 
-    if (schema['#filter']) {
-      Object.assign(filters, schema['#filter']);
-      delete schema['#filter'];
+    let cachedSchema = schemaFileCache.get(schemaPath);
+    if (!cachedSchema) {
+      cachedSchema = JSON.parse(readFileSync(schemaPath, 'utf8'));
+      schemaFileCache.set(schemaPath, cachedSchema);
     }
 
+    const schema = structuredClone(cachedSchema);
+
     if (schema['#example']) {
-      Object.assign(examples, schema['#example']);
+      Object.assign(example, schema['#example']);
       exampleMap[schemaName] = schema['#example'];
       delete schema['#example'];
     }
 
-    Object.assign(properties, schema);
+    if (schema['#filter']) {
+      Object.assign(filter, schema['#filter']);
+      delete schema['#filter'];
+    }
+
+    if (schema['#sort']) {
+      if (isArray(schema['#sort'])) {
+        sort.push(...schema['#sort']);
+      }
+      delete schema['#sort'];
+    }
+
+    Object.assign(property, schema);
   });
 
   return {
-    filters,
-    examples,
+    example,
     exampleMap,
-    properties,
+    filter,
+    sort,
+    property,
   };
 }
 
-export function createPayloadObject(properties, keys = [], required = []) {
+export function createPayloadObject(property, keys = [], required = []) {
   if (!keys.length) {
     return undefined;
   }
@@ -49,8 +67,8 @@ export function createPayloadObject(properties, keys = [], required = []) {
   };
 
   keys.forEach((key) => {
-    if (key in properties) {
-      schema.properties[key] = properties[key];
+    if (key in property) {
+      schema.properties[key] = property[key];
     }
   });
 
@@ -105,7 +123,7 @@ export function getBaseSuccessResponse() {
             data: { nullable: true },
             filters: { type: 'array', nullable: true },
             pagination: { type: 'object', nullable: true, additionalProperties: true },
-            sort: { type: 'string', nullable: true },
+            sort: { type: 'array', nullable: true },
           },
           example: {
             status: 'success',
@@ -126,7 +144,7 @@ export function getBaseErrorResponse(code) {
 
   if (code === 400) {
     description = 'Validation error response';
-    example.message = 'Validation Error';
+    example.message = 'Validation error';
     example.data = 'VALIDATION_ERROR';
     example.validation = [];
   } else if (code === 401) {
@@ -137,10 +155,18 @@ export function getBaseErrorResponse(code) {
     description = 'Authorization error response';
     example.message = 'Authorization error';
     example.data = 'AUTHORIZATION_ERROR';
+  } else if (code === 429) {
+    description = 'Rate limit error response';
+    example.message = 'Rate limit error';
+    example.data = 'RATE_LIMIT_ERROR';
   } else if (code === 500) {
     description = 'Server error response';
     example.message = 'Server error';
     example.data = 'SERVER_ERROR';
+  } else if (code === 503) {
+    description = 'Service unavailable response';
+    example.message = 'Service unavailable';
+    example.data = 'SERVICE_UNAVAILABLE_ERROR';
   }
 
   return {
@@ -170,39 +196,39 @@ export function createSchema(...schemaNames) {
 
   // LOAD SCHEMA FILES
   const {
-    properties,
-    examples,
+    property,
+    example,
     exampleMap,
   } = loadSchemaFiles(schemaNames);
 
   // PAYLOAD
   function cookies(keys = [], required = []) {
-    const s = createPayloadObject(properties, keys, required);
+    const s = createPayloadObject(property, keys, required);
     if (s) schema.cookies = s;
     return api;
   }
 
   function body(keys = [], required = []) {
-    const s = createPayloadObject(properties, keys, required);
+    const s = createPayloadObject(property, keys, required);
     if (s) schema.body = s;
     return api;
   }
 
   function params(keys = [], required = []) {
-    const s = createPayloadObject(properties, keys, required);
+    const s = createPayloadObject(property, keys, required);
     if (s) schema.params = s;
     return api;
   }
 
   function query(keys = [], required = []) {
-    const s = createPayloadObject(properties, keys, required);
+    const s = createPayloadObject(property, keys, required);
     if (s) schema.querystring = s;
     return api;
   }
 
   // DEFAULT RESPONSES
   function defaultResponses({
-    include = [200, 400, 401, 403, 500],
+    include = [200, 400, 401, 403, 429, 500, 503],
     exclude = [],
   } = {}) {
     const finalCodes = include.filter((c) => !exclude.includes(c));
@@ -278,7 +304,7 @@ export function createSchema(...schemaNames) {
       }
 
       const exampleData = createExampleFromKeys(
-        examples,
+        example,
         keys,
         keysFormat,
       );

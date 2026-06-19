@@ -1,60 +1,95 @@
-import { replyError, replySuccess } from '#src/service/response.js';
+import { formatTelegramLogMessage, isLogCached } from '#src/service/log.js';
+import { replySuccess } from '#src/service/response.js';
 import { createSchema } from '#src/service/schema.js';
 import { sendTelegramMessage } from '#src/service/telegram.js';
 
-// LOG UTIL
-export async function logErrorToTelegram(payload = {}) {
-  const telegramLoggerChatId = process.env.APP_TELEGRAM_LOGGER_CHAT_ID;
-  const isLoggerEnabled = process.env.APP_TELEGRAM_LOGGER_ENABLE === 'true';
-  if (!telegramLoggerChatId || !isLoggerEnabled) {
-    return false;
-  }
-
-  const {
-    url,
-    error,
-    app,
-    client,
-  } = payload;
-  if (!url || !error) {
-    return false;
-  }
-
-  const titleRow = '⁉️ *Error*\n';
-  const fromRow = '*From:* `FrontEnd`';
-  const urlRow = `*Url:* \`${url}\``;
-  const errorRow = `*Error:*\n\`${JSON.stringify(error, null, 2)}\``;
-  const appRow = app ? `*App:*\n\`${JSON.stringify(app, null, 2)}\`` : false;
-  const clientRow = client ? `*Client:*\n\`${JSON.stringify(client, null, 2)}\`` : false;
-
-  const messageRows = [titleRow, fromRow, urlRow, appRow, errorRow, clientRow];
-  const result = await sendTelegramMessage(telegramLoggerChatId, messageRows);
-  return result.code === 200;
-}
+// NORMALIZATION
+const INPUT_COLUMNS = [
+  'url',
+  'error',
+  'app',
+  'client',
+  'storage',
+];
 
 // LOG  ROUTE
 export async function postLogError(request, reply) {
-  const result = await logErrorToTelegram(request.body);
-  if (!result) {
-    return replyError(reply, {
-      code: 502,
-      message: 'Telegram API failed',
-      data: 'TELEGRAM_API_FAILED',
-    });
+  const payload = {
+    title: '⁉️ *Frontend error*',
+    ...request.body,
+  };
+
+  const isLogAlreadyCached = await isLogCached(payload);
+  if (isLogAlreadyCached) {
+    const dedupeResult = {
+      data: {
+        isDeduped: true,
+      },
+    };
+
+    return reply
+      ? replySuccess(reply, dedupeResult)
+      : dedupeResult;
   }
 
-  return replySuccess(reply, {
-    data: result,
+  // INIT SERVICE LIST
+  const service = {};
+
+  // TELEGRAM
+  const telegramLoggerToken = process.env.APP_LOGGER_TELEGRAM_TOKEN;
+  const telegramLoggerChatId = process.env.APP_LOGGER_TELEGRAM_CHAT_ID;
+  const isTelegramLoggerEnabled = process.env.APP_LOGGER_TELEGRAM_ENABLE === 'true';
+  if (isTelegramLoggerEnabled) {
+    service.telegram = {
+      send: () => sendTelegramMessage({
+        token: telegramLoggerToken,
+        chatId: telegramLoggerChatId,
+        messageStringOrArray: formatTelegramLogMessage(payload),
+      }),
+      isSuccess: (result) => result?.ok === true,
+    };
+  }
+
+  // ANOTHER SERVICE
+  // service.anotherService = {
+  //   send: () => ({ status: 'success', data: true }),
+  //   isSuccess: (result) => result?.status === 'success',
+  // };
+
+  // SEND LOGS
+  const serviceNames = Object.keys(service);
+
+  const sendResults = await Promise.all(
+    serviceNames.map((name) => service[name].send()),
+  );
+
+  const result = {
+    data: {
+      isDeduped: false,
+      error: {},
+    },
+  };
+
+  serviceNames.forEach((name, index) => {
+    const sendResult = sendResults[index];
+    const isSuccess = service[name].isSuccess(sendResult);
+
+    result.data[name] = isSuccess;
+    result.data.error[name] = isSuccess ? undefined : sendResult;
   });
+
+  return reply
+    ? replySuccess(reply, result)
+    : result;
 }
 
 export const postLogErrorSchema = createSchema('log')
-  .body(['error', 'url', 'app', 'client'], ['error', 'url'])
+  .body(INPUT_COLUMNS, ['url', 'error', 'app'])
   .defaultResponses({
-    include: [200, 500],
+    exclude: [401, 403],
   })
   .response(200, {
-    dataExample: true,
+    dataExampleKeys: ['isDeduped', 'telegram', 'anotherService'],
   })
   .meta({
     tags: ['Log', 'v1'],

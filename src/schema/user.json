@@ -4,6 +4,7 @@
     "email": "dummy@email.com",
     "name": "Dummy Name",
     "phone": null,
+    "avatar": "APP_HOST/upload/id-file-hash",
     "role": "user"
   },
   "#filter": {
@@ -19,10 +20,44 @@
       "isExact": true
     },
     "role": {
-      "type": "text",
-      "isExact": true
+      "type": "options",
+      "isMultiple": false,
+      "options": [
+        {
+          "value": "admin",
+          "label": "Admin",
+          "isChecked": false
+        },
+        {
+          "value": "user",
+          "label": "User",
+          "isChecked": false
+        }
+      ]
     }
   },
+  "#sort": [
+    {
+      "value": "name:asc",
+      "label": "User name (A-Z)",
+      "isChecked": false
+    },
+    {
+      "value": "name:desc",
+      "label": "User name (Z-A)",
+      "isChecked": false
+    },
+    {
+      "value": "dateCreated:asc",
+      "label": "Oldest first",
+      "isChecked": false
+    },
+    {
+      "value": "dateCreated:desc",
+      "label": "Newest first",
+      "isChecked": false
+    }
+  ],
   "id": {
     "type": "string",
     "description": "User identifier",
@@ -53,6 +88,16 @@
     "description": "User phone",
     "minLength": 8,
     "maxLength": 128
+  },
+  "avatar": {
+    "type": "string",
+    "format": "binary",
+    "description": "File binary"
+  },
+  "role": {
+    "type": "string",
+    "description": "User role",
+    "maxLength": 64
   },
   "isEnabled": {
     "type": "boolean",

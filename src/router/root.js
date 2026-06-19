@@ -1,11 +1,6 @@
-import { resolvePath } from '#core/path.js';
-import { readFileSync } from 'node:fs';
-
-const INDEX_HTML = readFileSync(resolvePath('public', 'index.html'), 'utf8');
-
 export default async function useRootRoutes(fastify) {
   fastify.get('/', {
-    handler: (request, reply) => reply.type('text/html').send(INDEX_HTML),
+    handler: (_, reply) => reply.sendFile('index.html', { maxAge: 0, immutable: false }),
     schema: {
       hide: true,
     },

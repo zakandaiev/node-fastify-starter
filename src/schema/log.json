@@ -1,5 +1,17 @@
 {
-  "#example": {},
+  "#example": {
+    "isDeduped": false,
+    "telegram": true,
+    "anotherService": false
+  },
+  "url": {
+    "type": "string",
+    "description": "Error URL"
+  },
+  "error": {
+    "type": "object",
+    "description": "Error data object"
+  },
   "app": {
     "type": "object",
     "description": "App data object"
@@ -8,12 +20,8 @@
     "type": "object",
     "description": "Client data object"
   },
-  "error": {
+  "storage": {
     "type": "object",
-    "description": "Error data object"
-  },
-  "url": {
-    "type": "string",
-    "description": "Error URL"
+    "description": "Client's storage data object"
   }
 }

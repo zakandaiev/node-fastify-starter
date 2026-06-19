@@ -1,82 +1,9 @@
-import { resolvePath } from '#core/path.js';
 import { replyError, replySuccess } from '#src/service/response.js';
 import { createSchema } from '#src/service/schema.js';
-import { toNumber } from '#src/util/misc.js';
-import { randomUUIDv7 } from '#src/util/random.js';
-import { createWriteStream } from 'node:fs';
-import nodePath from 'node:path';
-import { pipeline } from 'node:stream/promises';
+import { getPublicFileUrl, uploadFile } from '#src/service/upload.js';
 
 // NORMALIZATION
 export const OUTPUT_COLUMNS = ['file'];
-
-// UPLOAD UTIL
-export async function uploadFile(data) {
-  if (!data) {
-    return {
-      status: 'error',
-      message: 'File binary is invalid',
-      data: 'FILE_BINARY_IS_INVALID',
-    };
-  }
-
-  const { filename, file } = data;
-
-  // CHECK EXTENSION
-  const allowedExtensions = (process.env.APP_UPLOAD_EXTENSIONS || '')
-    .split(',')
-    .map((ext) => ext.trim().toLowerCase())
-    .filter(Boolean);
-
-  const fileExtension = nodePath.extname(filename)
-    .trim()
-    .slice(1) // remove dot
-    .toLowerCase();
-
-  if (!allowedExtensions.includes(fileExtension)) {
-    return {
-      status: 'error',
-      message: `File extension ".${fileExtension}" is not allowed`,
-      data: 'FILE_EXTENSION_IS_INVALID',
-      validation: [{
-        column: 'extension',
-        columnValue: fileExtension,
-        operator: 'extension',
-        operatorValue: allowedExtensions,
-      }],
-    };
-  }
-
-  // CHECK SIZE
-  const maxSize = toNumber(process.env.APP_UPLOAD_MAX_SIZE);
-  if (maxSize > 0 && data.bytes > maxSize) {
-    return {
-      status: 'error',
-      message: 'File size is too big',
-      data: 'FILE_SIZE_IS_INVALID',
-      validation: [{
-        column: 'size',
-        columnValue: data.bytes,
-        operator: 'maxSize',
-        operatorValue: maxSize,
-      }],
-    };
-  }
-
-  // GENERATE NAME&PATHS
-  const name = randomUUIDv7();
-  const path = resolvePath('upload', name);
-  const uri = `/upload/${name}`;
-
-  // SAVE FILE ON DISK
-  await pipeline(file, createWriteStream(path));
-
-  return {
-    status: 'success',
-    path,
-    uri,
-  };
-}
 
 // UPLOAD ROUTE
 export async function postUpload(request, reply) {
@@ -89,7 +16,7 @@ export async function postUpload(request, reply) {
   }
 
   return replySuccess(reply, {
-    data: result.uri,
+    data: getPublicFileUrl(result.uri),
   });
 }
 
@@ -110,6 +37,7 @@ export const postUploadSchema = createSchema('upload')
     }],
   })
   .meta({
+    consumes: ['multipart/form-data'],
     tags: ['Upload', 'v1'],
     summary: 'Upload a file',
     description: 'Uploads a file and returns path to it',

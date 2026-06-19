@@ -1,8 +1,7 @@
-import { OUTPUT_COLUMNS as USER_OUTPUT_COLUMNS } from '#src/controller/v1/user.js';
+import { normalizeUser, OUTPUT_COLUMNS as USER_OUTPUT_COLUMNS } from '#src/controller/v1/user.js';
 import { createUser, getUserByEmail, getUserById } from '#src/model/v1/user.js';
-import { generateAccessToken, generateRefreshToken } from '#src/service/auth.js';
+import { ALLOWED_HOSTS, generateAccessToken, generateRefreshToken } from '#src/service/auth.js';
 import {
-  normalizeDataByColumns,
   replyError,
   replyErrorAuthentication,
   replyErrorAuthorization,
@@ -11,7 +10,8 @@ import {
 } from '#src/service/response.js';
 import { createSchema } from '#src/service/schema.js';
 import { convertStringToSeconds } from '#src/util/datetime.js';
-import bcrypt from 'bcryptjs';
+import { isArray } from '#src/util/misc.js';
+import bcrypt from 'bcrypt';
 
 // CONST
 const AUTH_API_PATH = '/api/v1';
@@ -52,11 +52,11 @@ export async function tryRefreshJwtToken(request, reply) {
       return replyErrorAuthorization(reply);
     }
 
-    const normalizedUser = normalizeDataByColumns(user, USER_OUTPUT_COLUMNS);
+    const normalizedUser = normalizeUser(user);
     const accessToken = generateAccessToken(normalizedUser);
     setTokenToCookie(reply, { accessToken });
 
-    request.user = user;
+    request.user = normalizedUser;
   } catch {
     return replyErrorAuthentication(reply);
   }
@@ -64,23 +64,25 @@ export async function tryRefreshJwtToken(request, reply) {
 
 // CHECK ORIGIN AUTH
 export async function checkOriginAuth(request, reply) {
-  const { origin } = request.headers;
-  if (!origin) {
-    return replyErrorAuthentication(reply);
+  const { origin, referer } = request.headers;
+
+  let hostToCheck = origin || referer;
+  if (hostToCheck) {
+    try {
+      hostToCheck = new URL(hostToCheck).host.toLowerCase();
+    } catch {
+      hostToCheck = undefined;
+    }
   }
 
-  const frontendDomainList = process.env.APP_CORS_ALLOWED_DOMAINS
-    ? process.env.APP_CORS_ALLOWED_DOMAINS.split(',')
-    : false;
-
-  if (!frontendDomainList || !frontendDomainList.includes(origin)) {
+  if (!hostToCheck || !ALLOWED_HOSTS.includes(hostToCheck)) {
     return replyErrorAuthentication(reply);
   }
 }
 
 // CHECK ROLE
 export function checkUserRole(allowedRolesOneOrMany) {
-  const allowedRoles = Array.isArray(allowedRolesOneOrMany)
+  const allowedRoles = isArray(allowedRolesOneOrMany)
     ? allowedRolesOneOrMany
     : [allowedRolesOneOrMany];
 
@@ -148,7 +150,7 @@ export async function getCurrentUser(request, reply) {
   }
 
   return replySuccess(reply, {
-    data: normalizeDataByColumns(user, USER_OUTPUT_COLUMNS),
+    data: normalizeUser(user),
   });
 }
 
@@ -185,7 +187,11 @@ export async function postLogin(request, reply) {
     });
   }
 
-  const normalizedUser = normalizeDataByColumns(user, USER_OUTPUT_COLUMNS);
+  if (!user.isEnabled) {
+    return replyErrorAuthorization(reply);
+  }
+
+  const normalizedUser = normalizeUser(user);
   const accessToken = generateAccessToken(normalizedUser);
   const refreshToken = generateRefreshToken(normalizedUser);
   setTokenToCookie(reply, { accessToken, refreshToken });
@@ -198,7 +204,7 @@ export async function postLogin(request, reply) {
 export const postLoginSchema = createSchema('user')
   .body(['email', 'password'], ['email', 'password'])
   .defaultResponses({
-    include: [200, 400, 500],
+    exclude: [401, 403],
   })
   .response(200, {
     dataExampleKeys: USER_OUTPUT_COLUMNS,
@@ -234,7 +240,11 @@ export async function postLoginDev(request, reply) {
     });
   }
 
-  const normalizedUser = normalizeDataByColumns(user, USER_OUTPUT_COLUMNS);
+  if (!user.isEnabled) {
+    return replyErrorAuthorization(reply);
+  }
+
+  const normalizedUser = normalizeUser(user);
   const accessToken = generateAccessToken(normalizedUser, { expiresIn: '1d' });
 
   return replySuccess(reply, {
@@ -248,7 +258,7 @@ export async function postLoginDev(request, reply) {
 export const postLoginDevSchema = createSchema('auth', 'user')
   .body(['email', 'password'], ['email', 'password'])
   .defaultResponses({
-    include: [200, 400, 500],
+    exclude: [401, 403],
   })
   .response(200, {
     dataExampleKeys: OUTPUT_COLUMNS.concat(USER_OUTPUT_COLUMNS),
@@ -282,7 +292,7 @@ export async function postLogout(_request, reply) {
 
 export const postLogoutSchema = createSchema('user')
   .defaultResponses({
-    include: [200, 500],
+    exclude: [400, 401, 403],
   })
   .response(200, {
     dataExample: true,
@@ -311,7 +321,7 @@ export async function postRegister(request, reply) {
     phone,
   });
 
-  const normalizedUser = normalizeDataByColumns(user, USER_OUTPUT_COLUMNS);
+  const normalizedUser = normalizeUser(user);
   const accessToken = generateAccessToken(normalizedUser);
   const refreshToken = generateRefreshToken(normalizedUser);
   setTokenToCookie(reply, { accessToken, refreshToken });

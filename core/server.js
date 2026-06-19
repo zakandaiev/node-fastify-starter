@@ -1,6 +1,7 @@
 import { processArg } from '#core/app.js';
 import { absPath } from '#core/path.js';
 import { setErrorHandler, setNotFoundHandler } from '#src/service/response.js';
+import { toNumber } from '#src/util/misc.js';
 import fastifyAutoLoad from '@fastify/autoload';
 import fastifyLib from 'fastify';
 
@@ -10,13 +11,15 @@ export const fastify = fastifyLib({
       allErrors: true,
     },
   },
-  logger: process.env.APP_MODE === 'dev'
-    ? {
+  logger: {
+    level: process.env.APP_LOG_LEVEL || 'info',
+    ...(process.env.APP_MODE === 'dev' && {
       transport: {
         target: 'pino-pretty',
       },
-    }
-    : false,
+    }),
+  },
+  trustProxy: toNumber(process.env.APP_PROXY_TRUST_HOPS) || 1,
 });
 
 export async function startServer() {

@@ -1,12 +1,8 @@
 import { fastify } from '#core/server.js';
 import { loadSchemaFiles } from '#src/service/schema.js';
-import {
-  createSqlContext,
-  cutSelectionPartFromSqlTokens,
-  getSubstitutedSql,
-  normalizeOrderBy,
-} from '#src/service/sql.js';
+import { createSqlContext, cutSelectionPartFromSqlTokens, getSubstitutedSql } from '#src/service/sql.js';
 import { convertStringToSeconds, toDate } from '#src/util/datetime.js';
+import { hash } from '#src/util/hash.js';
 import {
   isArray,
   isBoolean,
@@ -18,7 +14,9 @@ import {
   toNumber,
   toString,
 } from '#src/util/misc.js';
-import { createHash } from 'node:crypto';
+
+export const DATABASE_CACHE_PREFIX = process.env.APP_DATABASE_CACHE_PREFIX || 'database:';
+export const DATABASE_CACHE_TTL_SECONDS = convertStringToSeconds(process.env.APP_DATABASE_CACHE_TTL) || 60 * 60; // 1 hour
 
 export async function getConnection() {
   if (!isFunction(fastify.mysql?.getConnection)) {
@@ -48,12 +46,9 @@ export function createCache({
   ttl,
   tables = [],
 } = {}) {
-  const envTtl = process.env.APP_DATABASE_CACHE_TTL || '1h';
-  const rawTtl = ttl ?? envTtl;
-
-  const safeTtl = isNumber(rawTtl)
-    ? rawTtl
-    : convertStringToSeconds(envTtl);
+  const safeTtl = isNumber(ttl)
+    ? ttl
+    : DATABASE_CACHE_TTL_SECONDS;
 
   return {
     key,
@@ -62,8 +57,22 @@ export function createCache({
   };
 }
 
-export function createFilter(schemaNames, payload = {}) {
-  const { filters: filterDefinition, properties: filterProperties } = loadSchemaFiles(schemaNames);
+export function parseOptionsPayloadValues(value) {
+  const rawValueList = isArray(value)
+    ? value
+    : [value];
+
+  const parsedValues = rawValueList
+    .filter((item) => isString(item) || isNumber(item))
+    .flatMap((item) => toString(item).split(','))
+    .map((item) => item.trim())
+    .filter((item) => item.length);
+
+  return [...new Set(parsedValues)];
+}
+
+export function createFilter(schemaNames, payload = {}, runtimeOptions = {}) {
+  const { filter: filterDefinition, property: filterProperty } = loadSchemaFiles(schemaNames);
   if (!isObject(filterDefinition) || !Object.keys(filterDefinition).length) {
     return {
       sql: '',
@@ -86,9 +95,9 @@ export function createFilter(schemaNames, payload = {}) {
   for (let i = 0; i < filterDefinitionKeys.length; i += 1) {
     const columnName = filterDefinitionKeys[i];
     const columnDefinition = filterDefinition[columnName];
-    const columnProperties = filterProperties[columnName];
+    const columnProperty = filterProperty[columnName];
     const columnType = columnDefinition.type;
-    const columnLabel = columnDefinition.label ?? columnProperties?.description ?? columnName;
+    const columnLabel = columnDefinition.label ?? columnProperty?.description ?? columnName;
     const columnValue = filterPayload[columnName];
     const columnBindingKey = `filter_${columnName}`;
     const columnOperator = allowedColumnOperators.includes(columnDefinition.operator)
@@ -107,8 +116,9 @@ export function createFilter(schemaNames, payload = {}) {
         conditions.push(`${columnName} = :${columnBindingKey}`);
         binding[columnBindingKey] = columnValue;
       } else {
+        const escapedValue = columnValue.replace(/[\\%_]/g, '\\$&');
         conditions.push(`${columnName} LIKE :${columnBindingKey}`);
-        binding[columnBindingKey] = `%${columnValue}%`;
+        binding[columnBindingKey] = `%${escapedValue}%`;
       }
 
       group.value = columnValue;
@@ -116,10 +126,14 @@ export function createFilter(schemaNames, payload = {}) {
 
     // BOOLEAN
     if (columnType === 'boolean' && (isBoolean(columnValue) || isStringBoolean(columnValue))) {
-      conditions.push(`${columnName} = :${columnBindingKey}`);
-      binding[columnBindingKey] = columnValue ? 1 : 0;
+      const booleanValue = isBoolean(columnValue)
+        ? columnValue
+        : columnValue === 'true';
 
-      group.value = columnValue;
+      conditions.push(`${columnName} = :${columnBindingKey}`);
+      binding[columnBindingKey] = booleanValue ? 1 : 0;
+
+      group.value = booleanValue;
     }
 
     // NUMBER
@@ -152,6 +166,68 @@ export function createFilter(schemaNames, payload = {}) {
       binding[columnBindingKey] = columnValue;
 
       group.value = columnValue;
+    }
+
+    // OPTIONS
+    if (columnType === 'options') {
+      const isMultiple = columnDefinition.isMultiple === true;
+
+      const schemaOptions = isArray(columnDefinition.options)
+        ? columnDefinition.options
+        : [];
+      const columnRuntimeOptions = isObject(runtimeOptions) && isArray(runtimeOptions[columnName])
+        ? runtimeOptions[columnName]
+        : null;
+      const columnOptions = columnRuntimeOptions ?? schemaOptions;
+
+      const normalizedOptions = [];
+      const allowedValues = new Set();
+
+      columnOptions.forEach((option) => {
+        if (!isObject(option) || option.value === undefined || option.value === null) {
+          return false;
+        }
+
+        const optionValue = toString(option.value);
+        if (allowedValues.has(optionValue)) {
+          return false;
+        }
+
+        allowedValues.add(optionValue);
+        normalizedOptions.push({
+          value: option.value,
+          label: option.label ?? optionValue,
+        });
+      });
+
+      let checkedValues = parseOptionsPayloadValues(columnValue)
+        .filter((value) => allowedValues.has(value));
+
+      if (!isMultiple && checkedValues.length > 1) {
+        checkedValues = [checkedValues[0]];
+      }
+
+      if (checkedValues.length === 1) {
+        const [checkedValue] = checkedValues;
+
+        conditions.push(`${columnName} = :${columnBindingKey}`);
+        binding[columnBindingKey] = checkedValue;
+      } else if (checkedValues.length > 1) {
+        const placeholders = checkedValues.map((value, index) => {
+          const placeholderKey = `${columnBindingKey}_${index}`;
+          binding[placeholderKey] = value;
+          return `:${placeholderKey}`;
+        });
+
+        conditions.push(`${columnName} IN (${placeholders.join(', ')})`);
+      }
+
+      group.isMultiple = isMultiple;
+      group.options = normalizedOptions.map((option) => ({
+        value: option.value,
+        label: option.label,
+        isChecked: checkedValues.includes(toString(option.value)),
+      }));
     }
 
     filters.push(group);
@@ -206,18 +282,95 @@ export function createPagination(
   };
 }
 
-export function createSort({
-  sort,
-  sortAllowedColumns = [],
-} = {}) {
-  const normalized = normalizeOrderBy(sort, sortAllowedColumns);
-  const safeSort = isString(normalized) && normalized.trim()
-    ? normalized
+export function createSort(schemaNames, payload = {}) {
+  const { sort: sortDefinition } = loadSchemaFiles(schemaNames);
+  if (!isArray(sortDefinition) || !sortDefinition.length) {
+    return {
+      sql: null,
+      sort: [],
+    };
+  }
+
+  const allowedDirections = ['ASC', 'DESC'];
+  const defaultDirection = 'ASC';
+
+  const optionList = [];
+  const allowedValues = new Set();
+
+  sortDefinition.forEach((option) => {
+    if (!isObject(option) || !isString(option.value) || !option.value.length || allowedValues.has(option.value)) {
+      return false;
+    }
+
+    allowedValues.add(option.value);
+    optionList.push({
+      value: option.value,
+      label: option.label ?? option.value,
+      isDefaultChecked: option.isChecked === true,
+    });
+  });
+
+  if (!optionList.length) {
+    return {
+      sql: null,
+      sort: [],
+    };
+  }
+
+  const sortPayload = isObject(payload)
+    ? payload
+    : {};
+
+  let appliedValues = parseOptionsPayloadValues(sortPayload.sort)
+    .filter((value) => allowedValues.has(value));
+
+  if (!appliedValues.length) {
+    appliedValues = optionList
+      .filter((option) => option.isDefaultChecked)
+      .map((option) => option.value);
+  }
+
+  const sort = optionList.map((option) => {
+    const appliedOrder = appliedValues.indexOf(option.value);
+
+    const responseOption = {
+      value: option.value,
+      label: option.label,
+      isChecked: appliedOrder !== -1,
+    };
+
+    if (appliedOrder !== -1) {
+      responseOption.order = appliedOrder + 1;
+    }
+
+    return responseOption;
+  });
+
+  const orderByParts = [];
+  const orderByColumns = new Set();
+
+  appliedValues.forEach((value) => {
+    const [column, directionRaw = ''] = value.split(':');
+    if (orderByColumns.has(column)) {
+      return false;
+    }
+
+    const directionUpper = directionRaw.toUpperCase();
+    const direction = allowedDirections.includes(directionUpper)
+      ? directionUpper
+      : defaultDirection;
+
+    orderByColumns.add(column);
+    orderByParts.push(`${column} ${direction}`);
+  });
+
+  const sql = orderByParts.length
+    ? orderByParts.join(', ')
     : null;
 
   return {
-    sort: safeSort,
-    sortAllowedColumns,
+    sql,
+    sort,
   };
 }
 
@@ -243,12 +396,12 @@ export function createQuery(initialSql = '', initialBinding = {}) {
     return api;
   }
 
-  function filter(schemaNames, payload = {}) {
+  function filter(schemaNames, payload = {}, runtimeOptions = {}) {
     if (!isSelect) {
       return api;
     }
 
-    filterData = createFilter(schemaNames, payload);
+    filterData = createFilter(schemaNames, payload, runtimeOptions);
     if (!isString(filterData.sql) || !filterData.sql.length) {
       return api;
     }
@@ -279,18 +432,18 @@ export function createQuery(initialSql = '', initialBinding = {}) {
     return api;
   }
 
-  function sort(payload = {}) {
+  function sort(schemaNames, payload = {}) {
     if (!isSelect) {
       return api;
     }
 
-    sortData = createSort(payload);
-    if (!isString(sortData.sort) || !sortData.sort.length) {
+    sortData = createSort(schemaNames, payload);
+    if (!isString(sortData.sql) || !sortData.sql.length) {
       return api;
     }
 
     sql = sqlContext
-      .replaceOrderBy(`ORDER BY ${sortData.sort}`)
+      .replaceOrderBy(`ORDER BY ${sortData.sql}`)
       .getSql();
 
     return api;
@@ -355,7 +508,9 @@ export function createQuery(initialSql = '', initialBinding = {}) {
 
       result = rows;
     } catch (error) {
-      throw new Error(error.message);
+      const queryError = new Error(error.message);
+      queryError.code = error.code;
+      throw queryError;
     } finally {
       if (isFunction(connection.release)) {
         await connection.release();
@@ -377,18 +532,16 @@ export function createQuery(initialSql = '', initialBinding = {}) {
       const tableRawList = await Promise.all(tablePromises);
       const tableVersions = tableRawList.map((version, index) => `${tables[index]}:${version ?? 0}`);
 
-      const hash = createHash('sha256')
-        .update(JSON.stringify({
-          sql,
-          binding,
-          filterData,
-          paginationData,
-          sortData,
-          tableVersions,
-        }))
-        .digest('hex');
+      const queryHash = hash({
+        sql,
+        binding,
+        filterData,
+        paginationData,
+        sortData,
+        tableVersions,
+      });
 
-      cacheData.key = `db_query:${hash}`;
+      cacheData.key = `${DATABASE_CACHE_PREFIX}db-query:${queryHash}`;
     }
 
     const dataFromCacheRaw = await fastify.redis.get(cacheData.key);
@@ -431,7 +584,7 @@ export function createQuery(initialSql = '', initialBinding = {}) {
       return false;
     }
 
-    const updatePromises = tables.map((table) => fastify.redis.set(`table-version:${table}`, Date.now()));
+    const updatePromises = tables.map((table) => fastify.redis.set(`${DATABASE_CACHE_PREFIX}table-version:${table}`, Date.now()));
     await Promise.all(updatePromises);
 
     return true;
@@ -450,6 +603,7 @@ export function createQuery(initialSql = '', initialBinding = {}) {
     totalSql = `SELECT COUNT(*) as total FROM ${totalSql}`;
 
     totalSql = createSqlContext(totalSql)
+      .replaceOrderBy('')
       .replacePagination('')
       .getSql();
 
@@ -492,7 +646,7 @@ export function createQuery(initialSql = '', initialBinding = {}) {
       result = result?.affectedRows ?? null;
     } else if (type === 'insertId') {
       result = result?.insertId ?? null;
-    } else if (!Array.isArray(result)) {
+    } else if (!isArray(result)) {
       result = null;
     } else if (type === 'fetch') {
       result = result[0] ?? null;
@@ -517,7 +671,7 @@ export function createQuery(initialSql = '', initialBinding = {}) {
   }
 
   function getSort() {
-    return sortData?.sort || null;
+    return sortData?.sort || [];
   }
 
   function getAll() {
