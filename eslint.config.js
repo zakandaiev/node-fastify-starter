@@ -141,7 +141,7 @@ export default [
       'consistent-return': 0,
       'import/extensions': 0,
       'import/no-extraneous-dependencies': 0,
-      // 'import/order': 0,
+      'import/order': 0,
       'import/prefer-default-export': 0,
       'max-len': 0,
       'no-param-reassign': 0,

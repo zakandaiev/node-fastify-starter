@@ -13,3 +13,137 @@
 ## #core/logger/index.js
 
 - `createLogger({ level, isPretty = false } = {})`
+
+## #utils/array.js
+
+- `chunk(items, size)`
+- `groupBy(items, key)`
+- `keyBy(items, key)`
+- `unique(items, key)`
+
+## #utils/async.js
+
+- `pLimit(concurrency)`
+- `async retry(fn, { retries = RETRY_RETRIES, minDelayMs = RETRY_MIN_DELAY_MS, maxDelayMs = RETRY_MAX_DELAY_MS, factor = RETRY_FACTOR, signal, shouldRetry } = {})`
+- `singleFlight()`
+- `async sleep(ms, { signal } = {})`
+- `async withTimeout(fn, ms, { signal } = {})`
+
+## #utils/case.js
+
+- `camelToSnakeKey(key)`
+- `rowToCamel(row)`
+- `snakeToCamelKey(key)`
+- `toSnake(payload)`
+
+## #utils/date.js
+
+- `addToDate(value, duration)`
+- `convertStringToSeconds(value)`
+- `differenceInDays(left, right)`
+- `getEndOfDay(value)`
+- `getStartOfDay(value)`
+- `isExpired(value, ttl, now = nowUtc())`
+- `isFuture(value, now = nowUtc())`
+- `isPast(value, now = nowUtc())`
+- `nowUtc()`
+- `parseStrictUtc(value)`
+- `toDate(value)`
+- `toTimestamp(value)`
+- `toUtcIso(value)`
+
+## #utils/encoding.js
+
+- `decodeBase64Url(text)`
+- `decodeHex(text)`
+- `encodeBase64Url(value)`
+- `encodeHex(value)`
+- `isBase64Url(value)`
+- `isHex(value)`
+
+## #utils/hash.js
+
+- `hmac(value, secret, { algorithm = SHA256, encoding = HEX } = {})`
+- `objectHash(value)`
+- `sha256(value, encoding = HEX)`
+- `timingSafeEqual(left, right)`
+
+## #utils/id.js
+
+- `UUID_REGEXP`
+- `isUuid(value)`
+- `uuidTimestamp(value)`
+- `uuidVersion(value)`
+- `uuidv7()`
+
+## #utils/mime.js
+
+- `MIME_SIGNATURE_BYTES`
+- `MIME_WHITELIST`
+- `detectMime(bytes)`
+- `extFromMime(mime)`
+
+## #utils/object.js
+
+- `compact(value)`
+- `deepMerge(target, ...sources)`
+- `diff(before, after)`
+- `freezeDeep(value)`
+- `getPath(object, path, defaultValue)`
+- `omit(object, keys)`
+- `pick(object, keys)`
+
+## #utils/person.js
+
+- `PERSON_NAME_MAX_LENGTH`
+- `isValidPersonName(name)`
+- `normalizePersonName(name)`
+- `toValidPersonName(name)`
+
+## #utils/random.js
+
+- `ALPHABET`
+- `pick(items)`
+- `randomInt(min, max)`
+- `randomString(length = STRING_LENGTH, alphabet = ALPHABET.ALPHANUMERIC)`
+- `randomToken(byteLength = TOKEN_BYTES)`
+
+## #utils/sensitive.js
+
+- `isSensitiveKey(key)`
+- `maskSensitiveDeep(value)`
+
+## #utils/string.js
+
+- `escapeHtml(value)`
+- `formatBytes(bytes, decimals = BYTES_DECIMALS)`
+- `mask(value, options = {})`
+- `normalizeEmail(value)`
+- `normalizePhone(value)`
+- `stripHtml(value)`
+- `truncate(value, maxLength, suffix = TRUNCATE_SUFFIX)`
+
+## #utils/type.js
+
+- `isArray(value)`
+- `isBoolean(value)`
+- `isFunction(value)`
+- `isNumber(value)`
+- `isNumberInRange(value, min, max)`
+- `isNumeric(value)`
+- `isObject(value)`
+- `isString(value)`
+- `isStringBoolean(value)`
+- `isStringValidJson(value)`
+- `toNumber(value)`
+- `toString(value)`
+
+## #utils/validate.js
+
+- `ipInCidr(address, cidr)`
+- `isCidr(value)`
+- `isEmail(value)`
+- `isLoopbackAddress(address)`
+- `isPhone(value)`
+- `isPrivateAddress(address)`
+- `isSafeRedirectPath(value)`

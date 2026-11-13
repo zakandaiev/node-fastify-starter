@@ -1,5 +1,5 @@
-import { randomBytes } from 'node:crypto';
+import { randomToken } from '#utils/random.js';
 
 const KEY_BYTES = 48;
 
-console.log(randomBytes(KEY_BYTES).toString('base64url'));
+console.log(randomToken(KEY_BYTES));
