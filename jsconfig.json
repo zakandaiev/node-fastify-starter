@@ -1,18 +1,13 @@
 {
   "compilerOptions": {
     "paths": {
-      "#root/*": [
-        "./*"
-      ],
-      "#core/*": [
-        "./core/*"
-      ],
-      "#src/*": [
-        "./src/*"
-      ]
+      "#root/*": ["./*"],
+      "#config/*": ["./src/config/*"],
+      "#core/*": ["./src/core/*"],
+      "#enums/*": ["./src/enums/*"],
+      "#modules/*": ["./src/modules/*"],
+      "#schemas/*": ["./src/schemas/*"],
+      "#utils/*": ["./src/utils/*"]
     }
-  },
-  "exclude": [
-    "node_modules"
-  ]
+  }
 }
