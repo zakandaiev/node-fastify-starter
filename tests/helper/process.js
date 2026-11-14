@@ -75,10 +75,17 @@ function collectOutput(child) {
 }
 
 // Only system variables are inherited: an APP_* of the developer's shell must not leak into the child.
+// Two variables of the test runner are left out as well: with NODE_TEST_CONTEXT a child that uses node:test writes
+// the wire format of the runner instead of its report, with FORCE_COLOR (set when the runner prints to a terminal) it colours it.
 export function startNode(script, { args = [], cwd, env = {} } = {}) {
   const child = spawn(execPath, [nodePath.join(absPath.root, script), ...args], {
     cwd,
-    env: { ...readSystemEnv(), ...env },
+    env: {
+      ...readSystemEnv(),
+      NODE_TEST_CONTEXT: undefined,
+      FORCE_COLOR: undefined,
+      ...env,
+    },
   });
   const output = collectOutput(child);
   const exit = new Promise((resolve) => {

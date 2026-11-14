@@ -2,6 +2,7 @@ import { isCi } from '#config/env.js';
 import { createTestEnv } from '#root/tests/helper/config.js';
 import { once } from 'node:events';
 import net from 'node:net';
+import { test } from 'node:test';
 
 const CONNECT_TIMEOUT_MS = 1000;
 
@@ -86,4 +87,14 @@ export async function getServiceSkip(names, { isRequired = isCi(), env } = {}) {
   }
 
   return reason;
+}
+
+// A suite that is skipped adds nothing to the totals of a run: one skipped test under this name makes the skip
+// show there. Returns the reason as it is, for describe(name, { skip }).
+export function reportSkip(name, skip) {
+  if (skip) {
+    test(name, { skip }, () => {});
+  }
+
+  return skip;
 }

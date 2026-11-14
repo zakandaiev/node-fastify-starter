@@ -1,4 +1,5 @@
 import { createAppConfig } from '#config/app.js';
+import { createDbConfig } from '#config/db.js';
 import { createLoggerConfig } from '#config/logger.js';
 
 export function createConfig(env) {
@@ -8,6 +9,7 @@ export function createConfig(env) {
 
   return Object.freeze({
     app: createAppConfig(env),
+    db: createDbConfig(env),
     logger: createLoggerConfig(env),
   });
 }

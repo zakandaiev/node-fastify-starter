@@ -9,6 +9,7 @@ export function createContext({
   redis = null,
   cacheRedis = null,
   requestId = null,
+  transaction = null,
 } = {}) {
   if (!config) {
     throw new TypeError('createContext({ config, log }) requires config');
@@ -25,6 +26,7 @@ export function createContext({
     redis,
     cacheRedis,
     requestId,
+    transaction,
   });
 }
 

@@ -30,10 +30,13 @@ async function shutdown(signal) {
 }
 
 try {
+  // Before the port is open: a server that cannot reach a fit database must not take traffic.
+  const databaseVersion = await fastify.db.verify();
+
   await fastify.listen({ ...config.app.listen, ...args });
 
   const { name, version, mode } = config.app;
-  fastify.log.info({ app: { name, version, mode } }, 'Server started');
+  fastify.log.info({ app: { name, version, mode }, database: { version: databaseVersion } }, 'Server started');
 
   SHUTDOWN_SIGNALS.forEach((signal) => {
     process.on(signal, () => shutdown(signal));

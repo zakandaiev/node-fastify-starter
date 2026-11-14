@@ -1,6 +1,7 @@
 import { runNode } from '#root/tests/helper/process.js';
 import {
   addToDate,
+  convertStringToMs,
   convertStringToSeconds,
   differenceInDays,
   getEndOfDay,
@@ -631,6 +632,40 @@ describe('convertStringToSeconds', () => {
         `${'-'.repeat(LONG)}1s`,
         `${' '.repeat(LONG)}1s`,
       ]);
+    });
+  });
+});
+
+describe('convertStringToMs', () => {
+  test('converts a number with a unit into whole milliseconds', () => {
+    [['30s', 30000], ['10m', 600000], ['1h', 3600000], ['1d', 86400000], ['1w', 604800000], ['0s', 0]].forEach(([value, milliseconds]) => {
+      assert.equal(convertStringToMs(value), milliseconds, value);
+    });
+  });
+
+  test('gives a whole number where the way through seconds leaves dust: 1.001 * 1000 is 1000.9999999999999', () => {
+    [['1.001s', 1001], ['0.05s', 50], ['1.1h', 3960000], ['-0.5s', -500], ['0.0006s', 1]].forEach(([value, milliseconds]) => {
+      assert.equal(convertStringToMs(value), milliseconds, value);
+    });
+    assert.notEqual(convertStringToSeconds('1.001s') * 1000, 1001);
+  });
+
+  test('returns 0, never -0, for a negative duration that rounds to nothing', () => {
+    ['-0s', '-0.0001s', '-0.0004s'].forEach((value) => {
+      assert.equal(Object.is(convertStringToMs(value), 0), true, value);
+    });
+  });
+
+  test('throws on what convertStringToSeconds() refuses', () => {
+    assertThrows(convertStringToMs, ['', '10', '100ms', '1h30m', ' 10m', '10M', 600, null, undefined]);
+  });
+
+  test('names itself and the value in the error', () => {
+    [['10 min', "'10 min'"], [600, '600'], [undefined, 'undefined']].forEach(([value, shown]) => {
+      assert.throws(() => convertStringToMs(value), {
+        name: 'TypeError',
+        message: `convertStringToMs(value) requires a number with a unit s, m, h, d or w, such as "10m" or "1.5h": received ${shown}`,
+      });
     });
   });
 });

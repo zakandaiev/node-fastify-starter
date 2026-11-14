@@ -4,7 +4,9 @@ import { ERROR_CODE } from '#enums/error-code.js';
 import { buildApp } from '#root/src/app.js';
 import { buildTestApp } from '#root/tests/helper/app.js';
 import { createTestConfig } from '#root/tests/helper/config.js';
+import { createLogSink } from '#root/tests/helper/log.js';
 import { uuidVersion } from '#utils/id.js';
+import { PromisePool } from 'mysql2/promise';
 import assert from 'node:assert/strict';
 import { readdir } from 'node:fs/promises';
 import { describe, test } from 'node:test';
@@ -131,9 +133,29 @@ describe('buildApp', () => {
     t.after(() => fastify.close());
 
     assert.deepEqual(
-      ['error-handler', 'context', 'response'].map((name) => fastify.hasPlugin(name)),
-      [true, true, true],
+      ['error-handler', 'context', 'db', 'response'].map((name) => fastify.hasPlugin(name)),
+      [true, true, true, true],
     );
+  });
+
+  // The routes fail to load after the db plugin has registered its onClose hook. A pool that never opened
+  // a connection cannot fail to end by itself, so the failure is put into the driver's own end().
+  test('rejects with the error that stopped the start, also when closing the instance fails', async (t) => {
+    const sink = createLogSink();
+    const end = t.mock.method(PromisePool.prototype, 'end', async () => {
+      throw new Error('The pool refused to close');
+    });
+
+    await assert.rejects(
+      buildTestApp({ app: { apiPrefix: '/*/x' }, logger: { level: 'error', stream: sink.stream } }),
+      /Wildcard must be the last character in the route/,
+    );
+
+    const closeFailures = sink.lines.filter((line) => line.msg === 'Failed to close the app after a failed start');
+
+    assert.equal(end.mock.callCount(), 1);
+    assert.equal(closeFailures.length, 1);
+    assert.equal(closeFailures[0].err.message, 'The pool refused to close');
   });
 
   // A route keeps the error handler its scope had when its plugin was loaded: a plugin that declares a route

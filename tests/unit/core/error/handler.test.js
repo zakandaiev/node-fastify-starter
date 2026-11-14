@@ -493,7 +493,8 @@ describe('handleError: schema errors', () => {
 
   test('keeps the value of a sensitive field out of the response and the log, whatever segment of the path names it', async (t) => {
     const apps = await Promise.all([MODE.PROD, MODE.DEV].map((mode) => startLoggedApp(t, { mode })));
-    const secrets = ['hunter2', 'tok-123', '4321', 'k-987'];
+    // Nothing a clock, a pid or a request id can spell by chance: those are digits and hex.
+    const secrets = ['hunter2', 'tok-123', 'p!n-x', 'k-987'];
 
     apps.forEach(({ fastify }) => declareBodyRoute(fastify, createObjectSchema({
       login: { type: 'string', minLength: 3 },
@@ -507,7 +508,7 @@ describe('handleError: schema errors', () => {
       login: 'ab',
       password: 'hunter2',
       accessToken: 'tok-123',
-      credentials: { pin: '4321' },
+      credentials: { pin: 'p!n-x' },
       profile: { apiKey: 'k-987' },
     })));
 

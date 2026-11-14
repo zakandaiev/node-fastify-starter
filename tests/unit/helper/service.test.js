@@ -6,6 +6,7 @@ import {
   getServiceSkip,
   isPortOpen,
   readGreeting,
+  reportSkip,
 } from '#root/tests/helper/service.js';
 import assert from 'node:assert/strict';
 import net from 'node:net';
@@ -13,6 +14,7 @@ import { describe, test } from 'node:test';
 
 const HOST = '127.0.0.1';
 const PRINT_SERVICE_SKIP = 'tests/fixture/print-service-skip.js';
+const SERVICE_SUITE = 'tests/integration/service.test.js';
 
 function listen(t, onConnection) {
   return new Promise((resolve) => {
@@ -129,5 +131,22 @@ describe('getServiceSkip', () => {
     assert.match(inCi.stderr, /must not be skipped here, but redis not reachable/);
     assert.equal(locally.code, 0);
     assert.match(locally.stdout, /^redis not reachable/);
+  });
+});
+
+describe('reportSkip', () => {
+  test('registers nothing and returns false when there is nothing to skip', () => {
+    assert.equal(reportSkip('never registered', false), false);
+  });
+
+  test('makes a skipped suite show in the totals of the run', async (t) => {
+    const cwd = await createWorkDir(t);
+    const env = { APP_REDIS_HOST: HOST, APP_REDIS_PORT: String(await getFreePort()), CI: '' };
+    const { code, stdout } = await runNode(SERVICE_SUITE, { cwd, env });
+
+    assert.equal(code, 0);
+    assert.match(stdout, /redis not reachable: start the local services/);
+    assert.match(stdout, /^ℹ skipped 1$/m);
+    assert.match(stdout, /^ℹ fail 0$/m);
   });
 });

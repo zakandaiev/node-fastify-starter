@@ -13,3 +13,11 @@ export function createLogSink() {
 
   return { lines, stream };
 }
+
+// The lines a process has printed in JSON, one object for each: a line that is not JSON throws.
+export function parseLogLines(stdout) {
+  return stdout
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+}

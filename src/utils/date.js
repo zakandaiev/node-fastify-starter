@@ -125,6 +125,9 @@ export function parseStrictUtc(value) {
   return date;
 }
 
+const SECONDS_SIGNATURE = 'convertStringToSeconds(value)';
+const MS_SIGNATURE = 'convertStringToMs(value)';
+
 function readDurationMs(value) {
   if (!isString(value)) {
     return null;
@@ -138,19 +141,23 @@ function readDurationMs(value) {
     : Math.round(amount * unitMs);
 }
 
-function toDurationMs(value) {
+function toDurationMs(value, signature) {
   const milliseconds = readDurationMs(value);
 
   if (!isNumber(milliseconds)) {
-    throw new TypeError(`convertStringToSeconds(value) requires a number with a unit s, m, h, d or w, such as "10m" or "1.5h": received ${inspect(value)}`);
+    throw new TypeError(`${signature} requires a number with a unit s, m, h, d or w, such as "10m" or "1.5h": received ${inspect(value)}`);
   }
 
   // Math.round() gives -0 for "-0s" and for a negative fraction of a millisecond.
   return milliseconds || 0;
 }
 
+export function convertStringToMs(value) {
+  return toDurationMs(value, MS_SIGNATURE);
+}
+
 export function convertStringToSeconds(value) {
-  return toDurationMs(value) / MS_IN_SECOND;
+  return toDurationMs(value, SECONDS_SIGNATURE) / MS_IN_SECOND;
 }
 
 function moveDate(value, move) {
@@ -162,7 +169,7 @@ function moveDate(value, move) {
 }
 
 export function addToDate(value, duration) {
-  const milliseconds = toDurationMs(duration);
+  const milliseconds = toDurationMs(duration, SECONDS_SIGNATURE);
 
   return moveDate(value, (timestamp) => timestamp + milliseconds);
 }
@@ -211,7 +218,7 @@ export function isFuture(value, now = nowUtc()) {
 export function isExpired(value, ttl, now = nowUtc()) {
   const ttlMs = ttl === undefined
     ? 0
-    : toDurationMs(ttl);
+    : toDurationMs(ttl, SECONDS_SIGNATURE);
   const msLeft = differenceInMs(value, now);
 
   return msLeft === null || msLeft + ttlMs <= 0;

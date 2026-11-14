@@ -6,13 +6,56 @@
 
 ## #core/context/index.js
 
-- `createContext({ config, log, db = null, redis = null, cacheRedis = null, requestId = null } = {})`
+- `createContext({ config, log, db = null, redis = null, cacheRedis = null, requestId = null, transaction = null } = {})`
 - `getContext()`
 - `runInContext(context, fn)`
 
+## #core/db/binding.js
+
+- `bindSql(sql, binding = {}, { render = renderMark } = {})`
+
+## #core/db/driver/mariadb.js
+
+- `SESSION_SQL`
+- `assertServer({ version, timeZone, sqlMode } = {})`
+- `createMariadbDriver(config)`
+- `async initSession(connection)`
+
 ## #core/db/error.js
 
+- `class DbError`
+- `createOverloadError()`
+- `findDbError(error)`
+- `isLockConflict(error)`
 - `maskDbErrorValues(text)`
+- `toDbError(error)`
+
+## #core/db/index.js
+
+- `createDb(config)`
+- `async insertReturning(table, row, { returning } = {})`
+- `async now()`
+- `async updateReturning(table, patch, { where, returning } = {})`
+- `async upsert(table, row, { update } = {})`
+
+## #core/db/isolation.js
+
+- `assertIsolation(isolation, signature)`
+
+## #core/db/lexer.js
+
+- `SYMBOL`
+- `TOKEN_TYPE`
+- `isSymbol(token, symbol)`
+- `tokenizeSql(sql)`
+
+## #core/db/transaction.js
+
+- `async afterCommit(fn)`
+- `findTransaction(context, driver)`
+- `isInTransaction()`
+- `async runInTransaction(scope, run)`
+- `async withTransaction(fn, { isolation, retry = false } = {})`
 
 ## #core/error/classify.js
 
@@ -84,6 +127,7 @@
 ## #utils/date.js
 
 - `addToDate(value, duration)`
+- `convertStringToMs(value)`
 - `convertStringToSeconds(value)`
 - `differenceInDays(left, right)`
 - `getEndOfDay(value)`

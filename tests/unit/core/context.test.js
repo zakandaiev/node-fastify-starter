@@ -23,6 +23,14 @@ describe('createContext', () => {
     assert.equal(context.redis, null);
     assert.equal(context.cacheRedis, null);
     assert.equal(context.requestId, null);
+    assert.equal(context.transaction, null);
+  });
+
+  test('keeps the transaction it is created inside', () => {
+    const transaction = {};
+    const context = createContext({ config: {}, log, transaction });
+
+    assert.equal(context.transaction, transaction);
   });
 
   test('keeps the id of the request it is created for', () => {
