@@ -1,4 +1,4 @@
-import { isArray, isString } from '#utils/type.js';
+import { isArray, isNonNegativeInteger, isString } from '#utils/type.js';
 import { randomBytes, randomInt as cryptoRandomInt } from 'node:crypto';
 
 const BYTE_VALUES = 256;
@@ -51,7 +51,7 @@ function randomIndexes(count, size) {
 }
 
 export function randomString(length = STRING_LENGTH, alphabet = ALPHABET.ALPHANUMERIC) {
-  if (!Number.isSafeInteger(length) || length < 0) {
+  if (!isNonNegativeInteger(length)) {
     throw new RangeError('randomString(length, alphabet) requires a non-negative integer length');
   }
 

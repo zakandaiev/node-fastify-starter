@@ -1,5 +1,6 @@
 import { parseEnv, readEnv } from '#config/env.js';
 import { createConfig } from '#config/index.js';
+import { freezeDeep } from '#utils/object.js';
 
 // Addresses of the local wdt modules; a real environment (.env, CI) overrides them.
 const SERVICE_ENV = Object.freeze({
@@ -43,19 +44,22 @@ export function createTestEnv(overrides = {}) {
   });
 }
 
+// A section is merged key by key over the defaults of the tests: an override of the log level
+// must not bring back the pretty output of the dev config. One level only: a nested object of a section,
+// such as app.validation, is replaced whole.
 export function createTestConfig({ env = {}, ...sections } = {}) {
   const config = createConfig(createTestEnv(env));
-  const overrides = { ...TEST_CONFIG, ...sections };
-  const unknownName = Object.keys(overrides).find((name) => !Object.hasOwn(config, name));
+  const names = [...new Set([...Object.keys(TEST_CONFIG), ...Object.keys(sections)])];
+  const unknownName = names.find((name) => !Object.hasOwn(config, name));
 
   if (unknownName) {
     throw new Error(`createTestConfig(): config has no "${unknownName}" section`);
   }
 
-  return Object.freeze({
+  return freezeDeep({
     ...config,
     ...Object.fromEntries(
-      Object.entries(overrides).map(([name, section]) => [name, Object.freeze({ ...config[name], ...section })]),
+      names.map((name) => [name, { ...config[name], ...TEST_CONFIG[name], ...sections[name] }]),
     ),
   });
 }

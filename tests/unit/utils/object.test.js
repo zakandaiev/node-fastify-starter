@@ -55,6 +55,14 @@ describe('pick', () => {
     assert.deepEqual(pick({}, ['id']), {});
   });
 
+  test('reads a dictionary built on a prototype without a prototype, as request.query of Fastify is', () => {
+    const query = Object.assign(Object.create(Object.create(null)), { limit: '5', offset: '10', token: 'abc' });
+
+    assert.deepEqual(pick(query, ['limit', 'offset']), { limit: '5', offset: '10' });
+    assert.equal(getPath(query, ['limit']), '5');
+    assert.equal(getPath(query, 'offset'), '10');
+  });
+
   test('keeps a listed key whatever its value is', () => {
     const source = {
       a: undefined,

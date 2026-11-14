@@ -2,10 +2,15 @@ import {
   isArray,
   isBoolean,
   isFunction,
+  isNonEmptyArray,
+  isNonEmptyObject,
+  isNonEmptyString,
+  isNonNegativeInteger,
   isNumber,
   isNumberInRange,
   isNumeric,
   isObject,
+  isPositiveInteger,
   isString,
   isStringBoolean,
   isStringValidJson,
@@ -14,6 +19,7 @@ import {
 } from '#utils/type.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
+import { runInNewContext } from 'node:vm';
 
 class Sample {}
 
@@ -47,6 +53,24 @@ describe('isObject', () => {
     assert.equal(isObject({ constructor: Array, toString: null }), true);
   });
 
+  test('accepts a dictionary built on a prototype without a prototype, as request.query of Fastify is', () => {
+    function Dictionary() {}
+
+    Dictionary.prototype = Object.create(null);
+
+    const query = new Dictionary();
+
+    query.token = 'secret';
+
+    assert.equal(isObject(query), true);
+    assert.equal(isObject(Object.create(Object.create(null))), true);
+  });
+
+  test('accepts a plain object of another realm', () => {
+    assert.equal(isObject(runInNewContext('({ id: 1 })')), true);
+    assert.equal(isObject(runInNewContext('[1]')), false);
+  });
+
   test('rejects arrays, dates and instances of other classes', () => {
     [[], new Date(), new Map(), new Set(), /x/, new Sample(), new Error('x'), Buffer.alloc(1), Object.create({})].forEach((value) => {
       assert.equal(isObject(value), false);
@@ -70,6 +94,80 @@ describe('isString', () => {
     assert.equal(isString(1), false);
     assert.equal(isString(null), false);
     assert.equal(isString(['a']), false);
+  });
+});
+
+describe('isNonEmptyString', () => {
+  test('accepts a string that holds at least one character', () => {
+    assert.equal(isNonEmptyString('a'), true);
+    assert.equal(isNonEmptyString(' '), true);
+    assert.equal(isNonEmptyString('0'), true);
+  });
+
+  test('rejects an empty string and everything that is not a string', () => {
+    // eslint-disable-next-line no-new-wrappers -- the wrapper object is the case under test
+    ['', null, undefined, 0, 1, true, ['a'], { length: 1 }, new String('text')].forEach((value) => {
+      assert.equal(isNonEmptyString(value), false);
+    });
+  });
+});
+
+describe('isNonEmptyArray', () => {
+  test('accepts an array that holds at least one item', () => {
+    assert.equal(isNonEmptyArray([0]), true);
+    assert.equal(isNonEmptyArray([undefined]), true);
+    assert.equal(isNonEmptyArray(new Array(1)), true);
+  });
+
+  test('rejects an empty array and everything that is not an array', () => {
+    [[], 'ab', { length: 1 }, new Set([1]), new Uint8Array(2), null, undefined].forEach((value) => {
+      assert.equal(isNonEmptyArray(value), false);
+    });
+  });
+});
+
+describe('isNonEmptyObject', () => {
+  test('accepts a plain object that holds at least one own enumerable key', () => {
+    assert.equal(isNonEmptyObject({ a: undefined }), true);
+    assert.equal(isNonEmptyObject(Object.assign(Object.create(null), { a: 1 })), true);
+    assert.equal(isNonEmptyObject(Object.assign(Object.create(Object.create(null)), { a: 1 })), true);
+  });
+
+  test('rejects an empty object, an object with inherited or hidden keys only and everything that is not a plain object', () => {
+    const hidden = Object.defineProperty({}, 'a', { value: 1, enumerable: false });
+    const inherited = Object.create(Object.assign(Object.create(null), { a: 1 }));
+
+    [{}, Object.create(null), hidden, inherited, [1], 'ab', new Sample(), new Map([['a', 1]]), null, undefined].forEach((value) => {
+      assert.equal(isNonEmptyObject(value), false);
+    });
+  });
+});
+
+describe('isPositiveInteger', () => {
+  test('accepts safe integers above zero', () => {
+    [1, 2, 1e3, Number.MAX_SAFE_INTEGER].forEach((value) => {
+      assert.equal(isPositiveInteger(value), true);
+    });
+  });
+
+  test('rejects zero, negatives, fractions, integers past the safe range and what is not a number', () => {
+    [0, -0, -1, 1.5, 2 ** 53, 1e21, Number.MAX_VALUE, Infinity, Number.NaN, '1', 1n, true, null, undefined, [1]].forEach((value) => {
+      assert.equal(isPositiveInteger(value), false);
+    });
+  });
+});
+
+describe('isNonNegativeInteger', () => {
+  test('accepts zero and safe integers above it', () => {
+    [0, -0, 1, 1e3, Number.MAX_SAFE_INTEGER].forEach((value) => {
+      assert.equal(isNonNegativeInteger(value), true);
+    });
+  });
+
+  test('rejects negatives, fractions, integers past the safe range and what is not a number', () => {
+    [-1, 0.5, 2 ** 53, Infinity, Number.NaN, '0', 0n, false, null, undefined, [0]].forEach((value) => {
+      assert.equal(isNonNegativeInteger(value), false);
+    });
   });
 });
 
@@ -258,7 +356,15 @@ describe('toString', () => {
 
     assert.equal(toString(circular), '[object Object]');
     assert.equal(toString([10n]), '[object Array]');
-    assert.equal(toString(Object.create(Object.create(null))), '[object Object]');
+    assert.equal(toString(Object.create(Object.create(Object.create(null)))), '[object Object]');
     assert.equal(toString({ toJSON: () => undefined }), '');
+  });
+
+  test('serializes a dictionary built on a prototype without a prototype as JSON', () => {
+    const query = Object.create(Object.create(null));
+
+    query.limit = '5';
+
+    assert.equal(toString(query), '{"limit":"5"}');
   });
 });

@@ -5,6 +5,8 @@ export function isArray(value) {
 }
 
 // By prototype, not by value.constructor: a parsed body {"constructor": 1} is still an object.
+// One link to null is allowed, not Object.prototype by identity: request.query and request.params of Fastify
+// are built on a prototype of their own that has no prototype itself.
 export function isObject(value) {
   if (value === null || typeof value !== 'object') {
     return false;
@@ -12,15 +14,35 @@ export function isObject(value) {
 
   const prototype = Object.getPrototypeOf(value);
 
-  return prototype === Object.prototype || prototype === null;
+  return prototype === null || Object.getPrototypeOf(prototype) === null;
 }
 
 export function isString(value) {
   return typeof value === 'string';
 }
 
+export function isNonEmptyString(value) {
+  return typeof value === 'string' && value !== '';
+}
+
+export function isNonEmptyArray(value) {
+  return Array.isArray(value) && value.length > 0;
+}
+
+export function isNonEmptyObject(value) {
+  return isObject(value) && Object.keys(value).length > 0;
+}
+
 export function isNumber(value) {
   return Number.isFinite(value);
+}
+
+export function isPositiveInteger(value) {
+  return Number.isSafeInteger(value) && value > 0;
+}
+
+export function isNonNegativeInteger(value) {
+  return Number.isSafeInteger(value) && value >= 0;
 }
 
 export function isBoolean(value) {

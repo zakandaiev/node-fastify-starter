@@ -1,4 +1,4 @@
-import { isArray, isFunction } from '#utils/type.js';
+import { isArray, isFunction, isPositiveInteger } from '#utils/type.js';
 
 function assertArray(items, name) {
   if (!isArray(items)) {
@@ -15,7 +15,7 @@ function toKeyGetter(key) {
 export function chunk(items, size) {
   assertArray(items, 'chunk');
 
-  if (!Number.isSafeInteger(size) || size < 1) {
+  if (!isPositiveInteger(size)) {
     throw new RangeError('chunk(items, size) requires a positive integer size');
   }
 

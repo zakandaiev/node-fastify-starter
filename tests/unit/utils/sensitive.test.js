@@ -1,4 +1,4 @@
-import { isSensitiveKey, maskSensitiveDeep } from '#utils/sensitive.js';
+import { isSensitiveKey, maskSensitiveDeep, OMIT_VALUE } from '#utils/sensitive.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
@@ -348,6 +348,12 @@ describe('maskSensitiveDeep', () => {
     assert.deepEqual(masked, { id: 1, secret: HIDDEN });
   });
 
+  test('masks a dictionary built on a prototype without a prototype, as request.query of Fastify is', () => {
+    const query = Object.assign(Object.create(Object.create(null)), { page: '2', token: 'abc' });
+
+    assert.deepEqual(maskSensitiveDeep({ query }), { query: { page: '2', token: HIDDEN } });
+  });
+
   test('keeps the holes of a sparse array', () => {
     const sparse = new Array(3);
     sparse[1] = { token: 'abc' };
@@ -384,5 +390,159 @@ describe('maskSensitiveDeep', () => {
       password: HIDDEN,
     });
     assert.equal(maskSensitiveDeep(proxy), UNREADABLE);
+  });
+});
+
+describe('maskSensitiveDeep: replace', () => {
+  test('hands every value to replace() with its key and its depth before it is walked; an item goes under the key of its array', () => {
+    const seen = [];
+    const payload = { id: 1, tags: ['a', 'b'], owner: { name: 'Anna' } };
+
+    maskSensitiveDeep(payload, {
+      replace(value, key, depth) {
+        seen.push([key, value, depth]);
+
+        return value;
+      },
+    });
+
+    assert.deepEqual(seen, [
+      [undefined, payload, 0],
+      ['id', 1, 1],
+      ['tags', payload.tags, 1],
+      ['tags', 'a', 2],
+      ['tags', 'b', 2],
+      ['owner', payload.owner, 1],
+      ['name', 'Anna', 2],
+    ]);
+  });
+
+  test('hands the depth to replace() at the ceiling too', () => {
+    const depths = [];
+
+    maskSensitiveDeep(nestObjects(MAX_DEPTH, new Sample()), {
+      replace(value, key, depth) {
+        depths.push(depth);
+
+        return value;
+      },
+    });
+
+    assert.deepEqual(depths, Array.from({ length: MAX_DEPTH + 1 }, (unused, index) => index));
+  });
+
+  test('walks what replace() returns in place of the value: a class instance given a plain form is masked inside', () => {
+    const masked = maskSensitiveDeep({ user: new Sample(), note: 'text' }, {
+      replace: (value) => (value instanceof Sample ? { ...value, kind: 'sample' } : value),
+    });
+
+    assert.deepEqual(masked, { user: { password: HIDDEN, kind: 'sample' }, note: 'text' });
+  });
+
+  test('returns a replaced primitive as it is', () => {
+    const masked = maskSensitiveDeep({ name: 'Anna', list: ['Bob'] }, {
+      replace: (value) => (typeof value === 'string' ? value.toUpperCase() : value),
+    });
+
+    assert.deepEqual(masked, { name: 'ANNA', list: ['BOB'] });
+  });
+
+  test('leaves out an entry replace() answers OMIT_VALUE for: a key of an object, a hole in an array, undefined at the root', () => {
+    function replace(value, key) {
+      return key === 'sql' || value === 'drop'
+        ? OMIT_VALUE
+        : value;
+    }
+
+    const masked = maskSensitiveDeep({ code: 'E1', sql: 'SELECT 1', list: ['keep', 'drop'] }, { replace });
+
+    assert.deepEqual(Object.keys(masked), ['code', 'list']);
+    assert.deepEqual(masked.list, ['keep', undefined]);
+    assert.equal(maskSensitiveDeep('drop', { replace }), undefined);
+  });
+
+  test('does not ask replace() about a value under a sensitive key', () => {
+    const keys = [];
+
+    maskSensitiveDeep({ token: { value: 'abc' }, id: 1 }, {
+      replace(value, key) {
+        keys.push(key);
+
+        return value;
+      },
+    });
+
+    assert.deepEqual(keys, [undefined, 'id']);
+  });
+
+  test('marks the value itself as visited, not what replace() made of it: a value that holds itself ends in "[repeated]"', () => {
+    const node = new Sample();
+
+    node.self = node;
+
+    const masked = maskSensitiveDeep({ node }, {
+      replace: (value) => (value instanceof Sample ? { ...value } : value),
+    });
+
+    assert.deepEqual(masked, { node: { password: HIDDEN, self: REPEATED } });
+  });
+
+  test('counts the depth of what replace() returns like any other level', () => {
+    const masked = maskSensitiveDeep(nestObjects(MAX_DEPTH + 3, new Sample()), {
+      replace: (value) => (value instanceof Sample ? { ...value } : value),
+    });
+
+    assert.equal(countLevels(masked), MAX_DEPTH);
+  });
+
+  test('asks replace() once about a value it cut at the ceiling, however many holders share it there', () => {
+    const shared = new Sample();
+    const payload = nestObjects(MAX_DEPTH - 2, { list: Array.from({ length: 50 }, () => shared) });
+    let calls = 0;
+
+    const masked = maskSensitiveDeep(payload, {
+      replace(value) {
+        if (value !== shared) {
+          return value;
+        }
+
+        calls += 1;
+
+        return { ...value };
+      },
+    });
+
+    assert.equal(calls, 1);
+    assert.equal(JSON.stringify(masked).split(DEPTH_LIMIT).length - 1, 50);
+  });
+
+  test('writes a value whole where it is nearer to the root, after it was cut at the ceiling', () => {
+    const shared = { id: 7, note: 'written once' };
+    const masked = maskSensitiveDeep({ deep: nestObjects(MAX_DEPTH - 1, shared), near: shared });
+
+    assert.deepEqual(masked.near, shared);
+    assert.equal(JSON.stringify(masked.deep).includes(DEPTH_LIMIT), true);
+  });
+
+  test('replaces only the value replace() throws on, and the whole result when replace is not a function', () => {
+    function replace(value) {
+      if (value === 'boom') {
+        throw new Error('replace failed');
+      }
+
+      return value;
+    }
+
+    assert.deepEqual(maskSensitiveDeep({ id: 1, note: 'boom', list: ['boom', 'ok'] }, { replace }), {
+      id: 1,
+      note: UNREADABLE,
+      list: [UNREADABLE, 'ok'],
+    });
+    assert.equal(maskSensitiveDeep({ id: 1 }, { replace: 'keep' }), UNREADABLE);
+  });
+
+  test('walks as before when no option is given', () => {
+    assert.deepEqual(maskSensitiveDeep({ token: 'abc', id: 1 }, {}), { token: HIDDEN, id: 1 });
+    assert.deepEqual(maskSensitiveDeep({ token: 'abc', id: 1 }, undefined), { token: HIDDEN, id: 1 });
   });
 });

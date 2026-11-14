@@ -1,5 +1,11 @@
 import { randomInt } from '#utils/random.js';
-import { isFunction, isNumber, isNumberInRange } from '#utils/type.js';
+import {
+  isFunction,
+  isNonNegativeInteger,
+  isNumber,
+  isNumberInRange,
+  isPositiveInteger,
+} from '#utils/type.js';
 
 // setTimeout() turns a longer delay into 1 ms.
 const TIMER_MAX_MS = 2 ** 31 - 1;
@@ -92,7 +98,7 @@ export async function withTimeout(fn, ms, { signal } = {}) {
 }
 
 function assertRetryOptions(options) {
-  if (!Number.isSafeInteger(options.retries) || options.retries < 0) {
+  if (!isNonNegativeInteger(options.retries)) {
     throw new RangeError('retry(fn, options) requires retries to be a non-negative integer');
   }
 
@@ -202,7 +208,7 @@ function createQueue() {
 }
 
 export function pLimit(concurrency) {
-  if (!Number.isSafeInteger(concurrency) || concurrency < 1) {
+  if (!isPositiveInteger(concurrency)) {
     throw new RangeError('pLimit(concurrency) requires a positive integer');
   }
 

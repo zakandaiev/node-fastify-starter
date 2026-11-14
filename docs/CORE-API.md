@@ -6,13 +6,58 @@
 
 ## #core/context/index.js
 
-- `createContext({ config, log, db = null, redis = null, cacheRedis = null } = {})`
+- `createContext({ config, log, db = null, redis = null, cacheRedis = null, requestId = null } = {})`
 - `getContext()`
 - `runInContext(context, fn)`
 
+## #core/db/error.js
+
+- `maskDbErrorValues(text)`
+
+## #core/error/classify.js
+
+- `classifyError(error)`
+- `getErrorStatus(error)`
+- `isSchemaError(error)`
+
+## #core/error/handler.js
+
+- `assertErrorConfig(appConfig)`
+- `handleClientError(error, socket)`
+- `handleError(error, request, reply)`
+- `handleNotFound(request, reply)`
+
+## #core/error/index.js
+
+- `class AppError`
+
+## #core/error/validation.js
+
+- `createSchemaErrorFormatter(maxErrors)`
+- `formatValidation(error, request, { maxErrors, maxValueLength, maxListLength, isDev = false })`
+- `normalizeValidation(validation, { maxErrors, maxValueLength, maxListLength })`
+
 ## #core/logger/index.js
 
-- `createLogger({ level, isPretty = false } = {})`
+- `createLogger({ level, isPretty = false, stream } = {})`
+- `serializeError(error)`
+
+## #core/response/index.js
+
+- `createEnvelope({ code, message, data, pagination, sort, filters, validation, requestId, stack } = {})`
+
+## #core/schema/finite.js
+
+- `REQUEST_PARTS`
+- `addFiniteGuards(schema)`
+- `guardRouteSchema(routeSchema)`
+- `readSchemaTypes(schema)`
+- `useFiniteKeyword(ajv)`
+
+## #core/schema/route.js
+
+- `assertRouteContract(routeOptions)`
+- `createRouteHook({ apiPrefix, healthPrefix } = {})`
 
 ## #utils/array.js
 
@@ -110,8 +155,10 @@
 
 ## #utils/sensitive.js
 
+- `OMIT_VALUE`
+- `UNREADABLE_PLACEHOLDER`
 - `isSensitiveKey(key)`
-- `maskSensitiveDeep(value)`
+- `maskSensitiveDeep(value, { replace = keepValue } = {})`
 
 ## #utils/string.js
 
@@ -128,10 +175,15 @@
 - `isArray(value)`
 - `isBoolean(value)`
 - `isFunction(value)`
+- `isNonEmptyArray(value)`
+- `isNonEmptyObject(value)`
+- `isNonEmptyString(value)`
+- `isNonNegativeInteger(value)`
 - `isNumber(value)`
 - `isNumberInRange(value, min, max)`
 - `isNumeric(value)`
 - `isObject(value)`
+- `isPositiveInteger(value)`
 - `isString(value)`
 - `isStringBoolean(value)`
 - `isStringValidJson(value)`

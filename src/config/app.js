@@ -21,6 +21,18 @@ export function createAppConfig(env) {
       port: 4173,
     }),
 
+    apiPrefix: '/api',
+    healthPrefix: '/health',
+
     bodyLimit: 16 * 1024,
+    maxParamLength: 100,
+
+    validation: Object.freeze({
+      maxErrors: 20,
+      maxValueLength: 256,
+      maxListLength: 20,
+    }),
+
+    unavailableRetryAfter: '1m',
   });
 }

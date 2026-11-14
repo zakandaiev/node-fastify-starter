@@ -1,4 +1,5 @@
 import {
+  isNonNegativeInteger,
   isNumberInRange,
   isObject,
   isString,
@@ -71,10 +72,6 @@ const PHONE_MIN_DIGITS = 7;
 const PHONE_MAX_DIGITS = 15;
 const PHONE_SEPARATOR_REGEXP = /[\s+().-]/g;
 const DIGITS_REGEXP = /^\d+$/;
-
-function isCount(value) {
-  return Number.isSafeInteger(value) && value >= 0;
-}
 
 export function escapeHtml(value) {
   return toString(value).replace(HTML_ESCAPE_REGEXP, (char) => HTML_ESCAPES[char]);
@@ -209,7 +206,7 @@ function cutAtGrapheme(text, length) {
 }
 
 export function truncate(value, maxLength, suffix = TRUNCATE_SUFFIX) {
-  if (!isCount(maxLength)) {
+  if (!isNonNegativeInteger(maxLength)) {
     throw new RangeError('truncate(value, maxLength, suffix) requires a non-negative integer maxLength');
   }
 
@@ -238,7 +235,7 @@ export function mask(value, options = {}) {
 
   const { start = MASK_VISIBLE_COUNT, end = MASK_VISIBLE_COUNT, char = MASK_CHAR } = options;
 
-  if (!isCount(start) || !isCount(end)) {
+  if (!isNonNegativeInteger(start) || !isNonNegativeInteger(end)) {
     throw new RangeError('mask(value, options) requires start and end to be non-negative integers');
   }
 

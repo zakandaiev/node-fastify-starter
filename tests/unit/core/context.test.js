@@ -22,6 +22,13 @@ describe('createContext', () => {
     assert.equal(context.db, null);
     assert.equal(context.redis, null);
     assert.equal(context.cacheRedis, null);
+    assert.equal(context.requestId, null);
+  });
+
+  test('keeps the id of the request it is created for', () => {
+    const context = createContext({ config: {}, log, requestId: '019a0000-0000-7000-8000-000000000000' });
+
+    assert.equal(context.requestId, '019a0000-0000-7000-8000-000000000000');
   });
 
   test('keeps the services it is given', () => {

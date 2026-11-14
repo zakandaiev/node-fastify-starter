@@ -38,8 +38,8 @@ describe('api-index', () => {
     const index = await renderApiIndex();
 
     assert.match(index, /^# Core API\n/);
-    assert.ok(index.includes('## #core/context/index.js\n\n- `createContext({ config, log, db = null, redis = null, cacheRedis = null } = {})`\n- `getContext()`\n- `runInContext(context, fn)`\n'));
-    assert.ok(index.includes('## #core/logger/index.js\n\n- `createLogger({ level, isPretty = false } = {})`\n'));
+    assert.ok(index.includes('## #core/context/index.js\n\n- `createContext({ config, log, db = null, redis = null, cacheRedis = null, requestId = null } = {})`\n- `getContext()`\n- `runInContext(context, fn)`\n'));
+    assert.ok(index.includes('## #core/logger/index.js\n\n- `createLogger({ level, isPretty = false, stream } = {})`\n- `serializeError(error)`\n'));
   });
 
   test('describes constants, classes, async functions and generators, and skips a module without exports', async () => {

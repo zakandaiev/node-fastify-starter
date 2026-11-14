@@ -1,13 +1,9 @@
 import { createConfig } from '#config/index.js';
 import packageData from '#root/package.json' with { type: 'json' };
 import { createTestConfig, createTestEnv } from '#root/tests/helper/config.js';
+import { isDeepFrozen } from '#root/tests/helper/object.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-
-function isDeepFrozen(value) {
-  return Object.isFrozen(value)
-    && Object.values(value).every((item) => typeof item !== 'object' || item === null || isDeepFrozen(item));
-}
 
 describe('createConfig', () => {
   test('requires the result of initEnv', () => {
@@ -65,6 +61,22 @@ describe('createTestConfig', () => {
     assert.equal(config.app.isDev, true);
     assert.equal(config.app.bodyLimit, 10);
     assert.equal(config.logger.isPretty, false);
+    assert.ok(isDeepFrozen(config));
+  });
+
+  test('merges a section over the defaults of the tests key by key: a log level does not bring the pretty output back', () => {
+    const stream = { write() {} };
+    const config = createTestConfig({ env: { APP_MODE: 'dev' }, logger: { level: 'info', stream } });
+
+    assert.equal(config.logger.level, 'info');
+    assert.equal(config.logger.isPretty, false);
+    assert.equal(config.logger.stream, stream);
+  });
+
+  test('replaces a nested object of a section whole and still returns a frozen tree', () => {
+    const config = createTestConfig({ app: { validation: { maxErrors: 5 } } });
+
+    assert.deepEqual(config.app.validation, { maxErrors: 5 });
     assert.ok(isDeepFrozen(config));
   });
 
