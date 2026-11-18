@@ -4,6 +4,7 @@ import {
   diff,
   freezeDeep,
   getPath,
+  mapValues,
   omit,
   pick,
 } from '#utils/object.js';
@@ -864,6 +865,41 @@ describe('diff', () => {
     NOT_PLAIN_OBJECTS.forEach((value) => {
       assert.throws(() => diff(value, {}), { name: 'TypeError', message: /^diff\(before, after\) requires/ });
       assert.throws(() => diff({}, value), TypeError);
+    });
+  });
+});
+
+describe('mapValues', () => {
+  test('returns an object of the same keys with every value passed through the function, which gets the key too', () => {
+    const mapped = mapValues({ first: 1, second: 2 }, (value, key) => `${key}:${value * 2}`);
+
+    assert.deepEqual({ ...mapped }, { first: 'first:2', second: 'second:4' });
+    assert.deepEqual(Object.keys(mapValues({}, (value) => value)), []);
+  });
+
+  test('returns an object without a prototype: a key from the data is never answered by an inherited property', () => {
+    const mapped = mapValues({ users: 1 }, (value) => value);
+    const polluted = mapValues(JSON.parse('{"__proto__": {"isAdmin": true}, "constructor": 1}'), (value) => value);
+
+    assert.equal(Object.getPrototypeOf(mapped), null);
+    assert.equal(mapped.constructor, undefined);
+    assert.equal(mapped.toString, undefined);
+    assert.deepEqual(Object.keys(polluted).sort(), ['__proto__', 'constructor']);
+    assert.equal({}.isAdmin, undefined);
+  });
+
+  test('takes an object without a prototype, such as the result of keyBy', () => {
+    const source = Object.assign(Object.create(null), { one: 1 });
+
+    assert.deepEqual({ ...mapValues(source, (value) => value + 1) }, { one: 2 });
+  });
+
+  test('rejects what is not a plain object or not a function', () => {
+    [null, undefined, 'text', 5, [1], new Map()].forEach((object) => {
+      assert.throws(() => mapValues(object, (value) => value), /^TypeError: mapValues\(object, toValue\) requires a plain object and a function$/);
+    });
+    [null, undefined, 'value', {}].forEach((toValue) => {
+      assert.throws(() => mapValues({}, toValue), /mapValues\(object, toValue\) requires/);
     });
   });
 });

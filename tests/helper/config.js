@@ -22,8 +22,10 @@ export const TEST_ENV = Object.freeze({
   ...SERVICE_ENV,
 });
 
+// A test that waits for a lock nobody lets go must fail in seconds, not hold its file for the minutes of the app.
 const TEST_CONFIG = Object.freeze({
   logger: { level: 'silent', isPretty: false },
+  db: { migrationLockTimeout: '5s', migrationTableLockTimeout: '2s' },
 });
 
 function readServiceEnv() {

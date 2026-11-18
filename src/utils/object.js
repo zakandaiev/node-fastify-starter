@@ -1,6 +1,7 @@
 import { unique } from '#utils/array.js';
 import {
   isArray,
+  isFunction,
   isNumber,
   isObject,
   isString,
@@ -52,6 +53,20 @@ export function omit(object, keys) {
   const omitted = new Set(keys.map(String));
 
   return Object.fromEntries(Object.entries(object).filter(([key]) => !omitted.has(key)));
+}
+
+// Without a prototype, like what groupBy() and keyBy() give: when the keys come from the data, a key that only
+// one object has must not be answered by an inherited property of the other.
+export function mapValues(object, toValue) {
+  if (!isObject(object) || !isFunction(toValue)) {
+    throw new TypeError('mapValues(object, toValue) requires a plain object and a function');
+  }
+
+  return Object.entries(object).reduce((result, [key, value]) => {
+    result[key] = toValue(value, key);
+
+    return result;
+  }, Object.create(null));
 }
 
 // The set holds the branch being walked, not everything visited: a value shared by two keys is not a cycle.

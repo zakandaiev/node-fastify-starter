@@ -16,6 +16,15 @@ import { describe, test } from 'node:test';
 
 const { db: DB_CONFIG } = createTestConfig();
 
+const DURATION_KEYS = Object.freeze([
+  'connectTimeout',
+  'statementTimeout',
+  'slowQueryThreshold',
+  'migrationLockTimeout',
+  'migrationTableLockTimeout',
+  'migrationIdleTimeout',
+]);
+
 describe('createDb', () => {
   test('requires the db section of the config', () => {
     assert.throws(() => createDb(), /createDb\(config\) requires the db section of createConfig\(\)/);
@@ -39,11 +48,26 @@ describe('createDb', () => {
     });
   });
 
-  test('refuses a duration that is zero, below zero or not a duration', () => {
-    assert.throws(() => createDb({ ...DB_CONFIG, statementTimeout: '0s' }), /to be above zero/);
-    assert.throws(() => createDb({ ...DB_CONFIG, slowQueryThreshold: '-1s' }), /to be above zero/);
-    assert.throws(() => createDb({ ...DB_CONFIG, connectTimeout: 10 }), /convertStringToMs\(value\) requires a number with a unit/);
-    assert.throws(() => createDb({ ...DB_CONFIG, statementTimeout: '3 seconds' }), /convertStringToMs\(value\) requires a number with a unit/);
+  test('refuses a duration that is zero, below zero or not a duration, each of them: one read on a rare path only would fail on the day that path is taken', () => {
+    const refusal = /config\.db requires connectTimeout, statementTimeout, slowQueryThreshold, migrationLockTimeout, migrationTableLockTimeout, migrationIdleTimeout to be above zero/;
+
+    DURATION_KEYS.forEach((key) => {
+      assert.throws(() => createDb({ ...DB_CONFIG, [key]: '0s' }), refusal, key);
+      assert.throws(() => createDb({ ...DB_CONFIG, [key]: '-1s' }), refusal, key);
+      assert.throws(() => createDb({ ...DB_CONFIG, [key]: 10 }), /convertStringToMs\(value\) requires a number with a unit/, key);
+      assert.throws(() => createDb({ ...DB_CONFIG, [key]: '3 seconds' }), /convertStringToMs\(value\) requires a number with a unit/, key);
+    });
+  });
+
+  test('refuses a prefix of the databases "verify" builds that is no name, or leaves no room for the UUID after it', () => {
+    const refusal = /config\.db requires migrationReferencePrefix to be 1 to 28 letters, digits and underscores that do not start with a digit/;
+    const prefixes = ['', '1_verify_', 'migration-verify-', 'verify`_', `${'v'.repeat(28)}_`, undefined, 28];
+
+    prefixes.forEach((migrationReferencePrefix) => {
+      assert.throws(() => createDb({ ...DB_CONFIG, migrationReferencePrefix }), refusal, String(migrationReferencePrefix));
+    });
+    assert.equal(createDb({ ...DB_CONFIG, migrationReferencePrefix: 'v'.repeat(28) }).getStats().activeCount, 0);
+    assert.equal(createDb(DB_CONFIG).getStats().activeCount, 0);
   });
 
   test('returns a frozen handle and opens no connection', async () => {

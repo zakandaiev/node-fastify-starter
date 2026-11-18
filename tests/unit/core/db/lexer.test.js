@@ -1,5 +1,7 @@
 import {
   isSymbol,
+  isWord,
+  readStatements,
   SYMBOL,
   TOKEN_TYPE,
   tokenizeSql,
@@ -104,6 +106,58 @@ describe('isSymbol', () => {
 
     assert.equal(isSymbol(quoted, SYMBOL.OPEN), false);
     assert.equal(isSymbol(undefined, SYMBOL.OPEN), false);
+  });
+});
+
+describe('isWord', () => {
+  test('tells a word that is one of the keywords, in any case', () => {
+    const [select, column, from] = tokenizeSql('select id From users');
+
+    assert.equal(isWord(select, ['SELECT']), true);
+    assert.equal(isWord(from, ['JOIN', 'FROM']), true);
+    assert.equal(isWord(column, ['SELECT', 'FROM']), false);
+  });
+
+  test('takes a quoted name, a name chained by a dot and a missing token for no keyword', () => {
+    const [quoted, chained] = tokenizeSql('`select` select.id');
+
+    assert.equal(isWord(quoted, ['SELECT']), false);
+    assert.equal(isWord(chained, ['SELECT']), false);
+    assert.equal(isWord(undefined, ['SELECT']), false);
+  });
+});
+
+describe('readStatements', () => {
+  function readValues(sql) {
+    return readStatements(sql).map((statement) => statement.map((token) => token.value));
+  }
+
+  test('gives the tokens of every statement, without the comments and the semicolons', () => {
+    assert.deepEqual(readValues('SELECT 1; -- next\nUPDATE users /* all */ SET name = :name;'), [
+      ['SELECT'],
+      ['UPDATE', 'users', 'SET', 'name', ':name'],
+    ]);
+    assert.deepEqual(readValues('SELECT 1'), [['SELECT']]);
+  });
+
+  test('passes over what holds no token: an empty statement, a comment, blanks', () => {
+    assert.deepEqual(readValues(';;SELECT 1;\n;-- done\n'), [['SELECT']]);
+    assert.deepEqual(readValues('-- nothing to do\n'), []);
+    assert.deepEqual(readValues(''), []);
+  });
+
+  test('keeps a semicolon inside a literal, and ends a statement at one inside a block', () => {
+    assert.deepEqual(readValues("SELECT ';'; BEGIN NOT ATOMIC SELECT a; SELECT b; END;"), [
+      ['SELECT', "';'"],
+      ['BEGIN', 'NOT', 'ATOMIC', 'SELECT', 'a'],
+      ['SELECT', 'b'],
+      ['END'],
+    ]);
+  });
+
+  test('throws on a text the lexer cannot read, and requires a string', () => {
+    assert.throws(() => readStatements("SELECT 'unclosed"), SyntaxError);
+    assert.throws(() => readStatements(null), /tokenizeSql\(sql\) requires a string/);
   });
 });
 

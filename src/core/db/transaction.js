@@ -1,7 +1,7 @@
 import { createContext, getContext, runInContext } from '#core/context/index.js';
 import { isLockConflict } from '#core/db/error.js';
 import { assertIsolation } from '#core/db/isolation.js';
-import { pLimit, retry as runWithRetry } from '#utils/async.js';
+import { mapSeries, pLimit, retry as runWithRetry } from '#utils/async.js';
 import { isBoolean, isFunction } from '#utils/type.js';
 
 const SAVEPOINT_PREFIX = 'sp_';
@@ -230,15 +230,13 @@ function runAttempt(context, fn, { isolation }) {
 // In the order they were registered, each one awaited. The data is committed by now: a callback that fails
 // is logged and the rest still run, so the caller does not take a finished transaction for a failed one.
 async function runCallbacks(callbacks, log) {
-  await callbacks.reduce(async (previous, callback) => {
-    await previous;
-
+  await mapSeries(callbacks, async (callback) => {
     try {
       await callback();
     } catch (err) {
       log.error({ err }, CALLBACK_FAILED_MESSAGE);
     }
-  }, Promise.resolve());
+  });
 }
 
 // One more run on a lock conflict, and only when the caller asked for it: the function runs twice then,

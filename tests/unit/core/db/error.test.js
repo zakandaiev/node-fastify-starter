@@ -2,7 +2,9 @@ import {
   createOverloadError,
   DbError,
   findDbError,
+  isDatabaseAccessDenied,
   isLockConflict,
+  isMissingTable,
   maskDbErrorValues,
   toDbError,
 } from '#core/db/error.js';
@@ -400,6 +402,48 @@ describe('toDbError', () => {
     assert.deepEqual(Object.getOwnPropertyNames(error).toSorted(), ['code', 'constraint', 'errno', 'kind', 'message', 'sqlState', 'stack']);
   });
 
+  test('reads the error of a script of the repository: a name it quotes and the place of a syntax error stay', () => {
+    const messages = {
+      1050: "Table 'users' already exists",
+      1051: "Unknown table 'app.users'",
+      1060: "Duplicate column name 'email'",
+      1061: "Duplicate key name 'users_email'",
+      1064: "You have an error in your SQL syntax; check the manual for the right syntax to use near 'TABLEE users (id INT)' at line 2",
+      4161: "Unknown data type: 'INTT'",
+    };
+
+    Object.entries(messages).forEach(([errno, message]) => {
+      const raw = createServerError(Number(errno), message, { sql: 'CREATE TABLE users (id INT); CREATE TABLEE users (id INT)' });
+      const error = toDbError(raw, { isScript: true });
+
+      assert.equal(error.message, message);
+      assert.notEqual(toDbError(raw).message, message);
+      assert.notEqual(toDbError(raw, {}).message, message);
+      assert.equal(JSON.stringify([error.stack, { ...error }, Object.getOwnPropertyNames(error)]).includes('CREATE TABLE users (id INT); CREATE'), false);
+    });
+  });
+
+  test('still hides in the error of a script what the server repeats of the rows it has met', () => {
+    const cases = {
+      1062: [`Duplicate entry '${EMAIL}' for key 'users_email_unique'`, "Duplicate entry '***' for key 'users_email_unique'"],
+      1292: ["Truncated incorrect INTEGER value: 'token sk_live_51Hxyz'", "Truncated incorrect INTEGER value: '***'"],
+      1366: ["Incorrect integer value: 'abc' for column `app`.`users`.`age` at row 1", "Incorrect integer value: '***' for column `app`.`users`.`age` at row 1"],
+    };
+
+    Object.entries(cases).forEach(([errno, [message, masked]]) => {
+      assert.equal(toDbError(createServerError(Number(errno), message), { isScript: true }).message, masked);
+    });
+  });
+
+  test('keeps the kind and the 503 of the error of a script', () => {
+    const duplicate = toDbError(createServerError(1062, "Duplicate entry 'admin' for key 'groups_slug_unique'"), { isScript: true });
+    const timeout = toDbError(createServerError(1969, 'Query execution was interrupted (max_statement_time exceeded)'), { isScript: true });
+
+    assert.deepEqual([duplicate.kind, duplicate.constraint], [DB_ERROR_KIND.UNIQUE, 'groups_slug_unique']);
+    assert.ok(timeout instanceof AppError);
+    assert.equal(timeout.cause.kind, DB_ERROR_KIND.TIMEOUT);
+  });
+
   test('takes everything in quotes for a value when the server does not say which kind of error it is', () => {
     const cases = {
       "Incorrect integer value: 'abc' for column `app`.`users`.`age` at row 1": "Incorrect integer value: '***' for column `app`.`users`.`age` at row 1",
@@ -608,5 +652,21 @@ describe('isLockConflict', () => {
     assert.equal(isLockConflict(Object.assign(new Error('x'), { kind: DB_ERROR_KIND.DEADLOCK })), false);
     assert.equal(isLockConflict(createOverloadError()), false);
     assert.equal(isLockConflict(null), false);
+  });
+});
+
+describe('isMissingTable and isDatabaseAccessDenied', () => {
+  test('tell an error by the number of the server, also behind a 503, and are false for anything else', () => {
+    const missing = toDbError(createServerError(1146, "Table 'app._migrations' doesn't exist", { code: 'ER_NO_SUCH_TABLE', sqlState: '42S02' }));
+    const denied = toDbError(createServerError(1044, "Access denied for user 'app'@'%' to database 'migration_verify_x'", { code: 'ER_DBACCESS_DENIED_ERROR', sqlState: '42000' }));
+
+    assert.deepEqual([isMissingTable(missing), isMissingTable(denied)], [true, false]);
+    assert.deepEqual([isDatabaseAccessDenied(denied), isDatabaseAccessDenied(missing)], [true, false]);
+    assert.equal(isMissingTable(new AppError(ERROR_CODE.SERVICE_UNAVAILABLE_ERROR, { cause: missing })), true);
+
+    [null, undefined, new Error('boom'), { errno: 1146 }, createOverloadError()].forEach((error) => {
+      assert.equal(isMissingTable(error), false);
+      assert.equal(isDatabaseAccessDenied(error), false);
+    });
   });
 });

@@ -1,5 +1,6 @@
 import { randomInt } from '#utils/random.js';
 import {
+  isArray,
   isFunction,
   isNonNegativeInteger,
   isNumber,
@@ -162,6 +163,28 @@ export async function retry(fn, {
   assertRetryOptions(options);
 
   return runAttempt(fn, RETRY_FIRST_ATTEMPT, options);
+}
+
+async function mapFrom(items, fn, index, results) {
+  if (index === items.length) {
+    return results;
+  }
+
+  results.push(await fn(items[index], index));
+
+  return mapFrom(items, fn, index + 1, results);
+}
+
+// One item at a time, in the order of the list: the first failure ends the series, and fn is not called
+// for what follows it.
+export async function mapSeries(items, fn) {
+  if (!isArray(items)) {
+    throw new TypeError('mapSeries(items, fn) requires an array');
+  }
+
+  assertFunction(fn, 'mapSeries(items, fn)');
+
+  return mapFrom([...items], fn, 0, []);
 }
 
 // A linked list, not an array: shift() on a long array takes time proportional to its length.

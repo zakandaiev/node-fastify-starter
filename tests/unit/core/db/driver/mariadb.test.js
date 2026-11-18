@@ -211,6 +211,19 @@ describe('createMariadbDriver', () => {
     });
   });
 
+  test('escapes a name the server or the config gave, whatever it holds, by doubling its quote', (t) => {
+    const driver = createDriver(t);
+
+    assert.equal(driver.escapeName('nfs_dev'), '`nfs_dev`');
+    assert.equal(driver.escapeName('my-app.2026'), '`my-app.2026`');
+    assert.equal(driver.escapeName('a`b``c'), '`a``b````c`');
+    assert.equal(driver.escapeName('x`; DROP DATABASE y; --'), '`x``; DROP DATABASE y; --`');
+
+    ['', null, undefined, 5, ['users']].forEach((name) => {
+      assert.throws(() => driver.escapeName(name), /escapeName\(name\) requires a name/);
+    });
+  });
+
   test('builds the clause that overwrites the named columns of a row that exists', (t) => {
     const driver = createDriver(t);
 
@@ -263,6 +276,27 @@ describe('createMariadbDriver', () => {
       assert.equal(result.reason.kind, undefined);
     });
     assert.equal(driver.getStats().activeCount, 0);
+  });
+
+  test('fails to open a script the same way when the database is down, and leaves nothing that keeps the process', async (t) => {
+    const driver = createDriver(t, {}, await createDownEnv());
+
+    const fn = t.mock.fn();
+
+    await assert.rejects(driver.withScript({ database: 'app' }, fn), (error) => error instanceof DbError && error.code === 'ECONNREFUSED' && error.isFatal === true);
+    assert.equal(fn.mock.callCount(), 0);
+    assert.equal(driver.getStats().activeCount, 0);
+  });
+
+  test('requires the database of a script to be named, and a function to run with it: a script never lands in a database by default', async (t) => {
+    const driver = createDriver(t, {}, await createDownEnv());
+    const refusal = /withScript\(\{ database \}, fn\) requires the name of a database and a function/;
+
+    await assert.rejects(driver.withScript({}, () => true), refusal);
+    await assert.rejects(driver.withScript(undefined, () => true), refusal);
+    await assert.rejects(driver.withScript({ database: '' }, () => true), refusal);
+    await assert.rejects(driver.withScript({ database: 'app' }), refusal);
+    assert.equal(driver.database, createTestConfig().db.database);
   });
 
   test('keeps the text of a connection that failed on a host with several addresses', async (t) => {

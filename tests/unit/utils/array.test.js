@@ -2,6 +2,7 @@ import {
   chunk,
   groupBy,
   keyBy,
+  sortBy,
   unique,
 } from '#utils/array.js';
 import assert from 'node:assert/strict';
@@ -151,6 +152,41 @@ describe('keyBy', () => {
   test('rejects what is not an array', () => {
     NOT_ARRAYS.forEach((items) => {
       assert.throws(() => keyBy(items, 'id'), { name: 'TypeError', message: /^keyBy\(/ });
+    });
+  });
+});
+
+describe('sortBy', () => {
+  test('returns a copy in the ascending order of a property, numbers by their value', () => {
+    const versions = [{ version: 10 }, { version: 2 }, { version: 1 }];
+    const sorted = sortBy(versions, 'version');
+
+    assert.deepEqual(sorted, [{ version: 1 }, { version: 2 }, { version: 10 }]);
+    assert.deepEqual(versions, [{ version: 10 }, { version: 2 }, { version: 1 }]);
+    assert.notEqual(sorted, versions);
+  });
+
+  test('orders by the result of a function, and texts by their code units', () => {
+    assert.deepEqual(sortBy(['b', 'a', '_c', 'B'], (item) => item), ['B', '_c', 'a', 'b']);
+    assert.deepEqual(sortBy(USERS, (user) => -user.id).map((user) => user.id), [3, 2, 1]);
+  });
+
+  test('keeps items of an equal key in the order they came', () => {
+    const items = [{ id: 1, rank: 2 }, { id: 2, rank: 1 }, { id: 3, rank: 2 }, { id: 4, rank: 1 }];
+
+    assert.deepEqual(sortBy(items, 'rank').map((item) => item.id), [2, 4, 1, 3]);
+  });
+
+  test('returns an empty array for an empty one', () => {
+    assert.deepEqual(sortBy([], 'id'), []);
+  });
+
+  test('rejects what is not an array, and a key that is neither a name nor a function', () => {
+    NOT_ARRAYS.forEach((items) => {
+      assert.throws(() => sortBy(items, 'id'), { name: 'TypeError', message: /^sortBy\(/ });
+    });
+    [undefined, null, 5, {}].forEach((key) => {
+      assert.throws(() => sortBy(USERS, key), { name: 'TypeError', message: /^sortBy\(items, key\) requires the name of a property or a function/ });
     });
   });
 });

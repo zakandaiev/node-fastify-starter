@@ -1,5 +1,12 @@
 import { DbError } from '#core/db/error.js';
-import { createDatabaseName, createDownDb, createDownEnv } from '#root/tests/helper/db.js';
+import {
+  ACCOUNT_HOST,
+  createDatabaseName,
+  createDownDb,
+  createDownEnv,
+  DATABASE_PREFIX,
+  toLikePattern,
+} from '#root/tests/helper/db.js';
 import { createLogSink } from '#root/tests/helper/log.js';
 import { createWorkDir, runNode } from '#root/tests/helper/process.js';
 import { isPortOpen } from '#root/tests/helper/service.js';
@@ -8,13 +15,29 @@ import { describe, test } from 'node:test';
 
 const RUN_DATABASE_SUITE = 'tests/fixture/run-database-suite.js';
 
+describe('DATABASE_PREFIX and ACCOUNT_HOST', () => {
+  test('are the prefix a database or an account of the tests is named with, and the host such an account is made for: any host', () => {
+    assert.equal(DATABASE_PREFIX, 'nfs_test_');
+    assert.equal(ACCOUNT_HOST, '%');
+  });
+});
+
 describe('createDatabaseName', () => {
   test('is the prefix of the tests and a UUIDv7 with underscores', () => {
     const name = createDatabaseName('019a0000-0000-7000-8000-000000000001');
 
     assert.equal(name, 'nfs_test_019a0000_0000_7000_8000_000000000001');
+    assert.equal(name.startsWith(DATABASE_PREFIX), true);
     assert.match(createDatabaseName(), /^nfs_test_[0-9a-f]{8}_[0-9a-f]{4}_7[0-9a-f]{3}_[0-9a-f]{4}_[0-9a-f]{12}$/);
     assert.notEqual(createDatabaseName(), createDatabaseName());
+  });
+});
+
+describe('toLikePattern', () => {
+  test('is the prefix with every underscore escaped and a percent sign after it: LIKE and GRANT read an underscore as any character, and anything may follow the prefix', () => {
+    assert.equal(toLikePattern(DATABASE_PREFIX), 'nfs\\_test\\_%');
+    assert.equal(toLikePattern('nfs_test_019a0000_0000_'), 'nfs\\_test\\_019a0000\\_0000\\_%');
+    assert.equal(toLikePattern('plain'), 'plain%');
   });
 });
 

@@ -26,13 +26,17 @@
 - `class DbError`
 - `createOverloadError()`
 - `findDbError(error)`
+- `isDatabaseAccessDenied(error)`
 - `isLockConflict(error)`
+- `isLockWaitTimeout(error)`
+- `isMissingTable(error)`
 - `maskDbErrorValues(text)`
-- `toDbError(error)`
+- `toDbError(error, { isScript = false } = {})`
 
 ## #core/db/index.js
 
 - `createDb(config)`
+- `getDb()`
 - `async insertReturning(table, row, { returning } = {})`
 - `async now()`
 - `async updateReturning(table, patch, { where, returning } = {})`
@@ -47,7 +51,40 @@
 - `SYMBOL`
 - `TOKEN_TYPE`
 - `isSymbol(token, symbol)`
+- `isWord(token, words)`
+- `readStatements(sql)`
 - `tokenizeSql(sql)`
+
+## #core/db/migration-file.js
+
+- `MIGRATION_DIRECTORY`
+- `MIGRATION_NAME_MAX_LENGTH`
+- `assertMigrationType(type, signature)`
+- `assertRunnable({ path, sql, database })`
+- `findDatabaseName(sql, database)`
+- `formatMigrationId(version, name)`
+- `async listMigrations({ directory = MIGRATION_DIRECTORY, type = MIGRATION_TYPE.MIGRATION } = {})`
+- `async makeMigrations({ names, type = MIGRATION_TYPE.MIGRATION, directory = MIGRATION_DIRECTORY, isDryRun = false } = {})`
+- `async readMigrationFile(path)`
+- `resolveMigrationDirectory(directory, type)`
+- `startsWithDefinition(sql)`
+
+## #core/db/migrator.js
+
+- `async findPendingMigrations({ directory = MIGRATION_DIRECTORY } = {})`
+- `async getMigrationStatus({ type, directory } = {})`
+- `async migrateDown({ type, names, namesExclude, isDryRun, directory, onLockWait, onFileStart, onFileFinish } = {})`
+- `async migrateFresh({ isDryRun, directory, onLockWait, onFileStart, onFileFinish } = {})`
+- `async migrateUp({ type, names, namesExclude, isDryRun, directory, onLockWait, onFileStart, onFileFinish } = {})`
+- `async verifyMigrations({ directory, onLockWait, onFileStart, onFileFinish } = {})`
+
+## #core/db/structure.js
+
+- `compareStructures(live, reference)`
+- `findDisallowedCollations(structure)`
+- `findServerNamedConstraints(structure)`
+- `async readDatabaseDefaults(database, { query = getDb().query } = {})`
+- `async readStructure(database, { query = getDb().query, except = [] } = {})`
 
 ## #core/db/transaction.js
 
@@ -107,10 +144,12 @@
 - `chunk(items, size)`
 - `groupBy(items, key)`
 - `keyBy(items, key)`
+- `sortBy(items, key)`
 - `unique(items, key)`
 
 ## #utils/async.js
 
+- `async mapSeries(items, fn)`
 - `pLimit(concurrency)`
 - `async retry(fn, { retries = RETRY_RETRIES, minDelayMs = RETRY_MIN_DELAY_MS, maxDelayMs = RETRY_MAX_DELAY_MS, factor = RETRY_FACTOR, signal, shouldRetry } = {})`
 - `singleFlight()`
@@ -179,6 +218,7 @@
 - `diff(before, after)`
 - `freezeDeep(value)`
 - `getPath(object, path, defaultValue)`
+- `mapValues(object, toValue)`
 - `omit(object, keys)`
 - `pick(object, keys)`
 

@@ -1,4 +1,9 @@
-import { isArray, isFunction, isPositiveInteger } from '#utils/type.js';
+import {
+  isArray,
+  isFunction,
+  isPositiveInteger,
+  isString,
+} from '#utils/type.js';
 
 function assertArray(items, name) {
   if (!isArray(items)) {
@@ -46,6 +51,29 @@ export function unique(items, key) {
 
     return true;
   });
+}
+
+function compareKeys(left, right) {
+  if (left < right) {
+    return -1;
+  }
+
+  return left > right
+    ? 1
+    : 0;
+}
+
+// A sorted copy, ascending: numbers by their value, texts by their code units, equal keys in the order they came.
+export function sortBy(items, key) {
+  assertArray(items, 'sortBy');
+
+  if (!isFunction(key) && !isString(key)) {
+    throw new TypeError('sortBy(items, key) requires the name of a property or a function as the key');
+  }
+
+  const getKey = toKeyGetter(key);
+
+  return items.toSorted((left, right) => compareKeys(getKey(left), getKey(right)));
 }
 
 export function groupBy(items, key) {

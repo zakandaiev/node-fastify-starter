@@ -1,5 +1,6 @@
 import {
   isSymbol,
+  isWord,
   SYMBOL,
   TOKEN_TYPE,
   tokenizeSql,
@@ -101,8 +102,7 @@ function isListPlaceholder(tokens, index) {
   const open = tokens[index - 1];
   const close = tokens[index + 1];
 
-  return keyword?.type === TOKEN_TYPE.WORD
-    && keyword.upper === LIST_KEYWORD
+  return isWord(keyword, [LIST_KEYWORD])
     && isSymbol(open, SYMBOL.OPEN)
     && isSymbol(close, SYMBOL.CLOSE)
     && [open, tokens[index], close].every((token) => token.isAfterBlank);

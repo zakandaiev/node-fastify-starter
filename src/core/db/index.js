@@ -32,19 +32,38 @@ const WHERE_PREFIX = 'where_';
 
 const NOW_SQL = 'SELECT CURRENT_TIMESTAMP(3) AS now';
 
+// Checked when the pool is made: a duration that is read only on a rare path, such as the wait for another
+// migrator, would otherwise fail on the day that path is taken.
+const DURATION_KEYS = Object.freeze([
+  'connectTimeout',
+  'statementTimeout',
+  'slowQueryThreshold',
+  'migrationLockTimeout',
+  'migrationTableLockTimeout',
+  'migrationIdleTimeout',
+]);
+
+// A UUID follows the prefix in the name of the database "verify" builds, and a name holds 64 characters.
+const DATABASE_NAME_MAX_LENGTH = 64;
+const UUID_LENGTH = 36;
+const REFERENCE_PREFIX_MAX_LENGTH = DATABASE_NAME_MAX_LENGTH - UUID_LENGTH;
+const REFERENCE_PREFIX_REGEXP = new RegExp(`^[A-Za-z_][A-Za-z0-9_]{0,${REFERENCE_PREFIX_MAX_LENGTH - 1}}$`);
+
 function assertConfig(config) {
   if (!isObject(config)) {
     throw new TypeError('createDb(config) requires the db section of createConfig()');
+  }
+
+  if (!isString(config.migrationReferencePrefix) || !REFERENCE_PREFIX_REGEXP.test(config.migrationReferencePrefix)) {
+    throw new TypeError(`config.db requires migrationReferencePrefix to be 1 to ${REFERENCE_PREFIX_MAX_LENGTH} letters, digits and underscores that do not start with a digit: a UUID follows it in the name of a database`);
   }
 
   if (!isPositiveInteger(config.connectionLimit) || !isNonNegativeInteger(config.queueLimit)) {
     throw new TypeError('config.db requires connectionLimit to be a positive integer and queueLimit an integer that is not negative');
   }
 
-  const durations = [config.connectTimeout, config.statementTimeout, config.slowQueryThreshold];
-
-  if (!durations.every((duration) => convertStringToMs(duration) > 0)) {
-    throw new TypeError('config.db requires connectTimeout, statementTimeout and slowQueryThreshold to be above zero');
+  if (!DURATION_KEYS.every((key) => convertStringToMs(config[key]) > 0)) {
+    throw new TypeError(`config.db requires ${DURATION_KEYS.join(', ')} to be above zero`);
   }
 }
 
@@ -129,7 +148,7 @@ export function createDb(config) {
   });
 }
 
-function getDb() {
+export function getDb() {
   const { db } = getContext();
 
   if (!db) {

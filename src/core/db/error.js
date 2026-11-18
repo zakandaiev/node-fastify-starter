@@ -46,6 +46,7 @@ const ERRNO = Object.freeze({
   NON_UNIQ: 1052,
   BAD_FIELD: 1054,
   DUP_ENTRY: 1062,
+  PARSE_ERROR: 1064,
   TABLEACCESS_DENIED: 1142,
   NO_SUCH_TABLE: 1146,
   TOO_MANY_USER_CONNECTIONS: 1203,
@@ -331,9 +332,17 @@ function readCode(error) {
 // An error of the server tells its number, so its text is read strictly: unless the number is known to quote
 // names only, everything in quotes is taken for a value. Any other text gets the masking of known phrases.
 // A duplicate is one entry however many lines and "for key" its value holds: the name of the index stays.
-function readMessage(error, text, kind) {
+function readMessage(error, text, kind, isScript) {
   if (kind === DB_ERROR_KIND.UNIQUE && text.includes(DUPLICATE_ENTRY_PREFIX)) {
     return maskDuplicateEntry(text);
+  }
+
+  // The text of a script comes from the repository: the piece of it a syntax error shows stays as it is.
+  // A value is still masked: a script that fails on the rows of a table repeats what those rows hold.
+  if (isScript) {
+    return error?.errno === ERRNO.PARSE_ERROR
+      ? text
+      : maskDbErrorValues(text);
   }
 
   return isString(error?.sqlState) && !NAMING_ERRNOS.includes(error?.errno)
@@ -352,7 +361,8 @@ function refuseWhenUnavailable(dbError) {
     : dbError;
 }
 
-export function toDbError(error) {
+// "isScript" is for a statement whose text is a file of the repository and carries no value of a request.
+export function toDbError(error, { isScript = false } = {}) {
   if (error instanceof DbError || error instanceof AppError) {
     return error;
   }
@@ -360,7 +370,7 @@ export function toDbError(error) {
   const text = readText(error);
   const kind = readKind(error, text);
 
-  return refuseWhenUnavailable(new DbError(readMessage(error, text, kind), {
+  return refuseWhenUnavailable(new DbError(readMessage(error, text, kind, isScript), {
     kind,
     constraint: kind === DB_ERROR_KIND.UNIQUE
       ? readConstraint(text)
@@ -392,4 +402,17 @@ export function findDbError(error) {
 
 export function isLockConflict(error) {
   return error instanceof DbError && error.kind === DB_ERROR_KIND.DEADLOCK;
+}
+
+// The wait for a lock that ran out of time, as apart from a deadlock: there another session still holds the lock.
+export function isLockWaitTimeout(error) {
+  return findDbError(error)?.errno === ERRNO.LOCK_WAIT_TIMEOUT;
+}
+
+export function isMissingTable(error) {
+  return findDbError(error)?.errno === ERRNO.NO_SUCH_TABLE;
+}
+
+export function isDatabaseAccessDenied(error) {
+  return findDbError(error)?.errno === ERRNO.DBACCESS_DENIED;
 }

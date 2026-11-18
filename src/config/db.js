@@ -13,5 +13,15 @@ export function createDbConfig(env) {
 
     statementTimeout: '3s',
     slowQueryThreshold: '1s',
+
+    // The first is how long a migrator waits for another one, the second how long a statement of a migration
+    // file waits for a table another session holds: without it that is a day, with every query on the table behind it.
+    migrationLockTimeout: '5m',
+    migrationTableLockTimeout: '1m',
+
+    // How long the connection that holds the lock of a migrator may stand idle while a file runs: the server
+    // closes it after its own wait_timeout otherwise, and the lock goes with it.
+    migrationIdleTimeout: '1d',
+    migrationReferencePrefix: 'migration_verify_',
   });
 }

@@ -1,4 +1,5 @@
 import {
+  mapSeries,
   pLimit,
   retry,
   singleFlight,
@@ -759,6 +760,95 @@ describe('retry', SUITE, () => {
 
     assert.equal(fn.mock.callCount(), 4);
     assert.ok(delays.every((delay, index) => delay <= 100 * 2 ** index), `the waits were ${delays} ms`);
+  });
+});
+
+describe('mapSeries', SUITE, () => {
+  test('resolves with the results in the order of the list, calling fn with the item and its index', async (t) => {
+    const fn = t.mock.fn(async (item, index) => `${item}:${index}`);
+
+    assert.deepEqual(await mapSeries(['a', 'b', 'c'], fn), ['a:0', 'b:1', 'c:2']);
+    assert.deepEqual(fn.mock.calls.map((call) => call.arguments), [['a', 0], ['b', 1], ['c', 2]]);
+  });
+
+  test('starts an item only when the one before it has settled', async () => {
+    const gates = range(3).map(() => Promise.withResolvers());
+    const started = [];
+    const pending = mapSeries(gates, (gate, index) => {
+      started.push(index);
+
+      return gate.promise;
+    });
+
+    await nextTurn();
+    assert.deepEqual(started, [0]);
+
+    gates[0].resolve('first');
+    await nextTurn();
+    assert.deepEqual(started, [0, 1]);
+
+    gates[1].resolve('second');
+    gates[2].resolve('third');
+
+    assert.deepEqual(await pending, ['first', 'second', 'third']);
+  });
+
+  test('accepts plain return values and resolves with an empty list for an empty one, without a call of fn', async (t) => {
+    const fn = t.mock.fn();
+
+    assert.deepEqual(await mapSeries([1, 2], (item) => item * 2), [2, 4]);
+    assert.deepEqual(await mapSeries([], fn), []);
+    assert.equal(fn.mock.callCount(), 0);
+  });
+
+  test('rejects with the first failure, thrown or rejected, and does not call fn for what follows it', async (t) => {
+    const error = new Error('boom');
+    const rejecting = t.mock.fn(async (item) => {
+      if (item === 2) {
+        throw error;
+      }
+
+      return item;
+    });
+    const throwing = t.mock.fn((item) => {
+      if (item === 1) {
+        throw error;
+      }
+
+      return item;
+    });
+
+    assert.equal(await rejectionOf(mapSeries([1, 2, 3, 4], rejecting)), error);
+    assert.deepEqual(attemptsOf(rejecting), [1, 2]);
+    assert.equal(await rejectionOf(mapSeries([1, 2], throwing)), error);
+    assert.deepEqual(attemptsOf(throwing), [1]);
+  });
+
+  test('runs over the list as it was when called: an item added on the way is not taken', async () => {
+    const items = [1, 2];
+    const seen = await mapSeries(items, (item) => {
+      items.push(item + 10);
+
+      return item;
+    });
+
+    assert.deepEqual(seen, [1, 2]);
+  });
+
+  test('walks a long list without growing the stack', async () => {
+    const results = await mapSeries(range(20_000), (item) => item);
+
+    assert.equal(results.length, 20_000);
+    assert.equal(results.at(-1), 19_999);
+  });
+
+  test('rejects with a TypeError for what is not an array or not a function, without a call of fn', async (t) => {
+    const fn = t.mock.fn();
+
+    await Promise.all([null, undefined, 'ab', 2, {}, new Set([1])].map((items) => assert.rejects(mapSeries(items, fn), errorNaming(TypeError, 'mapSeries'))));
+    await Promise.all(NOT_FUNCTIONS.map((notFn) => assert.rejects(mapSeries([1], notFn), errorNaming(TypeError, 'mapSeries'))));
+
+    assert.equal(fn.mock.callCount(), 0);
   });
 });
 

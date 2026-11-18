@@ -6,11 +6,24 @@ import {
   toDbError,
 } from '#core/db/error.js';
 import { assertIsolation } from '#core/db/isolation.js';
+import {
+  isSymbol,
+  SYMBOL,
+  TOKEN_TYPE,
+  tokenizeSql,
+} from '#core/db/lexer.js';
 import { DB_ERROR_KIND } from '#enums/db-error-kind.js';
+import { ISOLATION_LEVEL } from '#enums/isolation-level.js';
 import { pLimit } from '#utils/async.js';
 import { convertStringToMs, convertStringToSeconds } from '#utils/date.js';
-import { isArray, isFunction, isString } from '#utils/type.js';
-import { createPool } from 'mysql2/promise';
+import { compact } from '#utils/object.js';
+import {
+  isArray,
+  isFunction,
+  isNonEmptyString,
+  isString,
+} from '#utils/type.js';
+import { createConnection, createPool } from 'mysql2/promise';
 
 const CHARSET = 'utf8mb4';
 const CLIENT_TIME_ZONE = 'Z';
@@ -18,6 +31,8 @@ const SESSION_TIME_ZONE = '+00:00';
 const MESSAGE_LOCALE = 'en_US';
 const UNESCAPED_SQL_MODE = 'NO_BACKSLASH_ESCAPES';
 const EMPTY_AS_NULL_SQL_MODE = 'EMPTY_STRING_IS_NULL';
+
+const LOCAL_FILES_OFF_FLAG = '-LOCAL_FILES';
 
 const BOOLEAN_TYPE = 'TINY';
 const BOOLEAN_LENGTH = 1;
@@ -31,7 +46,14 @@ const UNSAFE_SQL_MODES = Object.freeze([UNESCAPED_SQL_MODE, EMPTY_AS_NULL_SQL_MO
 const MULTIPLE_RESULTS_MESSAGE = 'The statement returned several result sets: one statement gives one, a procedure may select once';
 const MULTIPLE_RESULTS_CODE = 'MULTIPLE_RESULT_SETS';
 
+const SCRIPT_LEFT_DATABASE_MESSAGE = 'The script changed the database of its session: USE has no place in a script, and what followed it was written elsewhere';
+const SCRIPT_LEFT_DATABASE_CODE = 'SCRIPT_LEFT_DATABASE';
+
+const SEVERAL_STATEMENTS_MESSAGE = 'script.query(sql, binding) takes one statement with no semicolon inside it: a compound statement (BEGIN ... END, IF ... END IF) and a text of several are run with script.run(text)';
+const SEVERAL_STATEMENTS_CODE = 'SEVERAL_STATEMENTS';
+
 const NAME_REGEXP = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+const NAME_QUOTE = '`';
 
 // A comma takes the place of a mode, not an empty string: under EMPTY_STRING_IS_NULL an empty literal is NULL
 // and would wipe the whole sql_mode, strict mode included. That mode goes out too: it reads a bound '' as NULL.
@@ -55,9 +77,27 @@ const sessions = new WeakSet();
 
 const SERVER_SQL = 'SELECT VERSION() AS version, @@session.time_zone AS timeZone, @@session.sql_mode AS sqlMode';
 const PING_SQL = 'SELECT 1';
+
+// QUESTIONS counts every statement the server has started for the session, each statement of a script included.
+// BYTES_RECEIVED tells whether that count can be trusted: FLUSH STATUS in a script sets both to zero.
+const SCRIPT_STATE_SQL = `
+  SELECT
+    DATABASE() AS name,
+    (SELECT CAST(variable_value AS UNSIGNED) FROM information_schema.session_status WHERE variable_name = 'QUESTIONS') AS questionCount,
+    (SELECT CAST(variable_value AS UNSIGNED) FROM information_schema.session_status WHERE variable_name = 'BYTES_RECEIVED') AS receivedByteCount
+`;
 const BEGIN_SQL = 'START TRANSACTION';
 const COMMIT_SQL = 'COMMIT';
 const ROLLBACK_SQL = 'ROLLBACK';
+
+// Under the default level a write to a row another session has changed since the transaction first read fails
+// the whole transaction (ER_CHECKREAD): a script that runs beside traffic would meet that often. For the
+// session, not for one transaction: a script may open transactions of its own.
+const SCRIPT_SESSION_SQL = `SET SESSION TRANSACTION ISOLATION LEVEL ${ISOLATION_LEVEL.READ_COMMITTED}`;
+
+const SCRIPT_SAVEPOINT = 'script_start';
+const SAVEPOINT_SQL = `SAVEPOINT ${SCRIPT_SAVEPOINT}`;
+const UNDO_SQL = `ROLLBACK TO SAVEPOINT ${SCRIPT_SAVEPOINT}`;
 
 // field.string() reads NULL as null: compared straight to "1" it would come back as false.
 function castField(field, next) {
@@ -72,9 +112,7 @@ function castField(field, next) {
     : text === BOOLEAN_TRUE;
 }
 
-// mysql2 never queues: the gate in withConnection() asks for no more connections than the pool has,
-// so who waits and how many is counted here, not read from the insides of the pool.
-function toPoolOptions(config) {
+function toConnectionOptions(config) {
   return {
     host: config.host,
     port: config.port,
@@ -88,10 +126,21 @@ function toPoolOptions(config) {
     supportBigNumbers: true,
     namedPlaceholders: false,
     multipleStatements: false,
-    waitForConnections: false,
-    connectionLimit: config.connectionLimit,
     connectTimeout: convertStringToMs(config.connectTimeout),
     typeCast: castField,
+    // With the capability announced and no stream to read from, mysql2 fails LOAD DATA LOCAL on the client
+    // while the server goes on with the rest of a script. Without it the server refuses the statement itself.
+    flags: [LOCAL_FILES_OFF_FLAG],
+  };
+}
+
+// mysql2 never queues: the gate in withConnection() asks for no more connections than the pool has,
+// so who waits and how many is counted here, not read from the insides of the pool.
+function toPoolOptions(connectionOptions, config) {
+  return {
+    ...connectionOptions,
+    waitForConnections: false,
+    connectionLimit: config.connectionLimit,
   };
 }
 
@@ -264,12 +313,182 @@ function destroy(connection) {
   connection.destroy();
 }
 
-async function verify(state) {
-  const { rows: [server] } = await withConnection(state, (connection) => execute(state, connection, { text: SERVER_SQL }));
+async function checkServer(state, connection) {
+  const { rows: [server] } = await execute(state, connection, { text: SERVER_SQL });
 
   assertServer(server);
 
   return server.version;
+}
+
+function verify(state) {
+  return withConnection(state, (connection) => checkServer(state, connection));
+}
+
+// The 503 a busy server is answered with belongs to a request: what runs a script is told the error itself.
+async function connectAlone(options) {
+  try {
+    return await createConnection(options);
+  } catch (error) {
+    throw findDbError(toDbError(error));
+  }
+}
+
+// A connection outside the pool, with its options and its session, and the server checked the same way.
+// end() never rejects, also on a connection that is lost.
+async function openScriptConnection(state, database) {
+  const connection = await connectAlone({ ...state.connectionOptions, database, multipleStatements: true });
+
+  // A session the server drops while it stands idle is told by an "error" event, which ends the process when
+  // nobody listens. mysql2 takes the first one by a listener it happens to leave behind: this does not rely on it.
+  connection.on('error', () => {});
+
+  await initSession(connection);
+
+  try {
+    await run(connection, SCRIPT_SESSION_SQL);
+    await checkServer(state, connection);
+  } catch (error) {
+    await connection.end();
+
+    throw error;
+  }
+
+  return connection;
+}
+
+async function readScriptState(state, connection) {
+  const { rows: [scriptState] } = await execute(state, connection, { text: SCRIPT_STATE_SQL });
+
+  return scriptState;
+}
+
+// The server answers a failed script with the error of one statement and no word about which one it was:
+// the statements it has started since the script began tell the number. A script that has reset the status of
+// its session shows fewer bytes received than the script alone holds: no number is told then, not a wrong one.
+async function readFailedStatement(state, connection, { start, text }) {
+  try {
+    const { questionCount, receivedByteCount } = await readScriptState(state, connection);
+    const isReset = Number(receivedByteCount) < Number(start.receivedByteCount) + Buffer.byteLength(text);
+
+    return isReset
+      ? null
+      : Number(questionCount) - Number(start.questionCount) - 1;
+  } catch {
+    return null;
+  }
+}
+
+// The savepoint is still there only when nothing has ended the transaction since the script began: no DDL and
+// no COMMIT of its own. Going back to it then undoes every write of the script, and the answer is the proof;
+// a warning tells of a table that takes no part in transactions and has kept its rows.
+async function undoScript(connection) {
+  try {
+    const [header] = await run(connection, UNDO_SQL);
+
+    return header.warningStatus === 0;
+  } catch {
+    return false;
+  }
+}
+
+// The raw error, whose "sql" is the whole script, goes no further than this.
+async function toScriptError(state, connection, error, script) {
+  const dbError = findDbError(toDbError(error, { isScript: true }));
+
+  if (dbError.isFatal) {
+    connection.destroy();
+
+    return dbError;
+  }
+
+  const statementNumber = await readFailedStatement(state, connection, script);
+  const isRolledBack = await undoScript(connection) || null;
+
+  return Object.assign(dbError, compact({ statementNumber, isRolledBack }));
+}
+
+// One transaction around the script: a file of plain writes is applied whole or not at all, and is not committed
+// row by row. DDL commits on its own, and so may the script: the COMMIT at the end then has nothing to do.
+async function runScript(state, session, text) {
+  if (!isNonEmptyString(text)) {
+    throw new TypeError('script.run(text) requires the text of the script');
+  }
+
+  if (session.isRun) {
+    throw new TypeError('script.run(text) runs one script on its connection: the next one needs a connection of its own');
+  }
+
+  const { connection } = session;
+
+  session.isRun = true;
+  await run(connection, BEGIN_SQL);
+  await run(connection, SAVEPOINT_SQL);
+
+  const start = await readScriptState(state, connection);
+
+  try {
+    await connection.query(text);
+  } catch (error) {
+    throw await toScriptError(state, connection, error, { start, text });
+  }
+
+  await run(connection, COMMIT_SQL);
+
+  if ((await readScriptState(state, connection)).name !== start.name) {
+    throw new DbError(SCRIPT_LEFT_DATABASE_MESSAGE, { code: SCRIPT_LEFT_DATABASE_CODE });
+  }
+}
+
+// The connection of a script takes a text of several statements, and the result of "query" is read as
+// the result of one: the second statement would run and its outcome be lost. The text is cut at its
+// semicolon, after which only comments may stand: the server answers a comment there as one more statement.
+function readOneStatement(sql) {
+  const tokens = tokenizeSql(sql);
+  const end = tokens.findIndex((token) => isSymbol(token, SYMBOL.SEMICOLON));
+
+  if (end === -1) {
+    return sql;
+  }
+
+  if (tokens.slice(end + 1).some((token) => token.type !== TOKEN_TYPE.COMMENT && !isSymbol(token, SYMBOL.SEMICOLON))) {
+    throw new DbError(SEVERAL_STATEMENTS_MESSAGE, { code: SEVERAL_STATEMENTS_CODE });
+  }
+
+  return sql.slice(0, tokens[end].start);
+}
+
+// As in connectAlone(): the 503 belongs to a request, what runs a script is told the error itself.
+async function queryScript(state, session, sql, binding) {
+  const prepared = prepare(state, readOneStatement(sql), binding);
+
+  try {
+    return await execute(state, session.connection, prepared);
+  } catch (error) {
+    throw findDbError(error) ?? error;
+  }
+}
+
+// For a text of several statements, which the pool refuses: a connection of its own, open while fn runs.
+// One script per connection: a script leaves what it has set in its session (the checks of foreign keys, the
+// sql_mode, variables). The database is named by the caller every time: a script must never land in one by default.
+async function withScript(state, options, fn) {
+  const database = options?.database;
+
+  if (!isNonEmptyString(database) || !isFunction(fn)) {
+    throw new TypeError('withScript({ database }, fn) requires the name of a database and a function');
+  }
+
+  const session = { connection: await openScriptConnection(state, database), isRun: false };
+
+  try {
+    return await fn(Object.freeze({
+      query: queryScript.bind(null, state, session),
+      run: runScript.bind(null, state, session),
+    }));
+  } finally {
+    await session.connection.end();
+  }
 }
 
 async function ping(state) {
@@ -315,14 +534,26 @@ function quoteName(name) {
   return `\`${name}\``;
 }
 
+// A name the server or the config gave, such as the name of the database: any character may stand in it,
+// so it is escaped, not checked.
+function escapeName(name) {
+  if (!isNonEmptyString(name)) {
+    throw new TypeError('escapeName(name) requires a name');
+  }
+
+  return `${NAME_QUOTE}${name.replaceAll(NAME_QUOTE, `${NAME_QUOTE}${NAME_QUOTE}`)}${NAME_QUOTE}`;
+}
+
 function buildUpsertClause(quotedColumns) {
   return `ON DUPLICATE KEY UPDATE ${quotedColumns.map((column) => `${column} = VALUES(${column})`).join(', ')}`;
 }
 
 export function createMariadbDriver(config) {
-  const pool = createPool(toPoolOptions(config));
+  const connectionOptions = toConnectionOptions(config);
+  const pool = createPool(toPoolOptions(connectionOptions, config));
   const state = {
     pool,
+    connectionOptions,
     gate: pLimit(config.connectionLimit),
     escape: (value) => pool.escape(value),
     connectionLimit: config.connectionLimit,
@@ -337,6 +568,8 @@ export function createMariadbDriver(config) {
     withConnection: withConnection.bind(null, state),
     prepare: prepare.bind(null, state),
     execute: execute.bind(null, state),
+    database: config.database,
+    withScript: withScript.bind(null, state),
     verify: verify.bind(null, state),
     ping: ping.bind(null, state),
     close: close.bind(null, state),
@@ -346,6 +579,7 @@ export function createMariadbDriver(config) {
     rollback,
     destroy,
     quoteName,
+    escapeName,
     buildUpsertClause,
   });
 }

@@ -38,3 +38,83 @@ describe('readArgs', () => {
     assert.throws(() => readArgs(['unknown'], []), /--unknown is not declared/);
   });
 });
+
+describe('readArgs: migrations', () => {
+  const NAMES = ['direction', 'type', 'names', 'names-exclude', 'dry-run'];
+
+  test('reads the direction and the type as they are and the names as lists', () => {
+    assert.deepEqual(readArgs(NAMES, ['--direction=up', '--type=seed', '--names=users,sessions', '--names-exclude=groups']), {
+      direction: 'up',
+      type: 'seed',
+      names: ['users', 'sessions'],
+      'names-exclude': ['groups'],
+    });
+  });
+
+  test('accepts every direction and both types, and no other', () => {
+    ['up', 'down', 'status', 'make', 'verify', 'fresh'].forEach((direction) => {
+      assert.deepEqual(readArgs(NAMES, [`--direction=${direction}`]), { direction });
+    });
+    ['migration', 'seed'].forEach((type) => assert.deepEqual(readArgs(NAMES, [`--type=${type}`]), { type }));
+
+    ['', 'UP', 'rollback', 'up,down'].forEach((direction) => {
+      assert.throws(
+        () => readArgs(NAMES, [`--direction=${direction}`]),
+        /--direction must be one of: up, down, status, make, verify, fresh/,
+      );
+    });
+    ['', 'seeds', 'Migration'].forEach((type) => {
+      assert.throws(() => readArgs(NAMES, [`--type=${type}`]), /--type must be one of: migration, seed/);
+    });
+  });
+
+  test('joins a list that is given twice', () => {
+    assert.deepEqual(
+      readArgs(NAMES, ['--names=users', '--names-exclude=groups', '--names=sessions,audit_logs', '--names-exclude', 'scopes']),
+      { names: ['users', 'sessions', 'audit_logs'], 'names-exclude': ['groups', 'scopes'] },
+    );
+  });
+
+  test('refuses a direction or a type that is given twice: what follows the one of an npm script must not replace it', () => {
+    assert.throws(() => readArgs(NAMES, ['--direction=status', '--direction=down']), /--direction is given twice: status, down/);
+    assert.throws(() => readArgs(NAMES, ['--direction=up', '--direction', 'up']), /--direction is given twice: up, up/);
+    assert.throws(() => readArgs(NAMES, ['--type=seed', '--direction=up', '--type=migration']), /--type is given twice: seed, migration/);
+  });
+
+  test('refuses an argument that npm has taken for itself: one written before "--" never reaches the script', () => {
+    const cases = {
+      'dry-run': { npm_config_dry_run: 'true' },
+      names: { npm_config_names: 'users' },
+      'names-exclude': { npm_config_names_exclude: 'users' },
+      type: { npm_config_type: 'seed' },
+    };
+
+    Object.entries(cases).forEach(([name, env]) => {
+      assert.throws(
+        () => readArgs(NAMES, ['--direction=down'], env),
+        new RegExp(`--${name} was given to npm, not to the script: put it after "--", as in "npm run <script> -- --${name}"`),
+      );
+    });
+    assert.throws(() => readArgs(['port', 'host'], [], { npm_config_port: '5000' }), /--port was given to npm/);
+    assert.deepEqual(readArgs(NAMES, ['--direction=down', '--dry-run'], { npm_config_dry_run: 'true' }), { direction: 'down', 'dry-run': true });
+    assert.deepEqual(readArgs(NAMES, ['--direction=down'], { npm_config_user_agent: 'npm/11', npm_config_cache: '/tmp' }), { direction: 'down' });
+  });
+
+  test('trims the names of a list and refuses an empty one among them', () => {
+    assert.deepEqual(readArgs(NAMES, ['--names', ' users , sessions ']), { names: ['users', 'sessions'] });
+    assert.throws(() => readArgs(NAMES, ['--names=users', '--names=']), /--names must be a list of names separated by commas/);
+
+    ['', ',', 'users,', ',users', 'users,,sessions', ' '].forEach((value) => {
+      assert.throws(() => readArgs(NAMES, [`--names=${value}`]), /--names must be a list of names separated by commas/);
+      assert.throws(() => readArgs(NAMES, [`--names-exclude=${value}`]), /--names-exclude must be a list of names separated by commas/);
+    });
+  });
+
+  test('reads --dry-run as a flag that takes no value', () => {
+    assert.deepEqual(readArgs(NAMES, ['--dry-run']), { 'dry-run': true });
+    assert.deepEqual(readArgs(NAMES, ['--dry-run', '--dry-run']), { 'dry-run': true });
+    assert.deepEqual(readArgs(NAMES, []), {});
+    assert.throws(() => readArgs(NAMES, ['--dry-run=true']), { code: 'ERR_PARSE_ARGS_INVALID_OPTION_VALUE' });
+    assert.throws(() => readArgs(NAMES, ['--dry-run', 'true']), { code: 'ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL' });
+  });
+});

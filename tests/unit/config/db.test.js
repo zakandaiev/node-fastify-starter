@@ -5,7 +5,14 @@ import { convertStringToSeconds } from '#utils/date.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-const DURATION_KEYS = ['connectTimeout', 'statementTimeout', 'slowQueryThreshold'];
+const DURATION_KEYS = [
+  'connectTimeout',
+  'statementTimeout',
+  'slowQueryThreshold',
+  'migrationLockTimeout',
+  'migrationTableLockTimeout',
+  'migrationIdleTimeout',
+];
 
 describe('config.db', () => {
   test('takes where the database is and who connects from env', () => {

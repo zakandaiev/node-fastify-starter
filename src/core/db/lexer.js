@@ -181,6 +181,11 @@ export function isSymbol(token, symbol) {
   return token?.type === TOKEN_TYPE.SYMBOL && token.value === symbol;
 }
 
+// "words" are keywords in upper case: a quoted name is no keyword, whatever it spells.
+export function isWord(token, words) {
+  return token?.type === TOKEN_TYPE.WORD && words.includes(token.upper);
+}
+
 // Every token is { type, value, start, end, depth }; a word also has "upper", a placeholder "name".
 // A parenthesis carries the depth of the level it sits on, what it encloses is one level deeper.
 export function tokenizeSql(sql) {
@@ -220,4 +225,20 @@ export function tokenizeSql(sql) {
   }
 
   return tokens;
+}
+
+// The statements of a text, each as its tokens without the comments and the semicolon. Every semicolon ends
+// one, also inside a block: BEGIN ... END reads as the statements it holds. What has no token is no statement.
+export function readStatements(sql) {
+  const statements = [[]];
+
+  tokenizeSql(sql).forEach((token) => {
+    if (isSymbol(token, SYMBOL.SEMICOLON)) {
+      statements.push([]);
+    } else if (token.type !== TOKEN_TYPE.COMMENT) {
+      statements.at(-1).push(token);
+    }
+  });
+
+  return statements.filter((statement) => statement.length > 0);
 }
