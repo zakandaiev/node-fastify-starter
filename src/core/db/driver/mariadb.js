@@ -12,6 +12,7 @@ import {
   TOKEN_TYPE,
   tokenizeSql,
 } from '#core/db/lexer.js';
+import { CHARSET } from '#enums/collation.js';
 import { DB_ERROR_KIND } from '#enums/db-error-kind.js';
 import { ISOLATION_LEVEL } from '#enums/isolation-level.js';
 import { pLimit } from '#utils/async.js';
@@ -25,7 +26,6 @@ import {
 } from '#utils/type.js';
 import { createConnection, createPool } from 'mysql2/promise';
 
-const CHARSET = 'utf8mb4';
 const CLIENT_TIME_ZONE = 'Z';
 const SESSION_TIME_ZONE = '+00:00';
 const MESSAGE_LOCALE = 'en_US';

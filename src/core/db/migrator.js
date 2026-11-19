@@ -25,6 +25,7 @@ import {
   readDatabaseDefaults,
   readStructure,
 } from '#core/db/structure.js';
+import { CHARSET, COLLATION } from '#enums/collation.js';
 import { MIGRATION_STATE } from '#enums/migration-state.js';
 import { MIGRATION_TYPE } from '#enums/migration-type.js';
 import { sortBy } from '#utils/array.js';
@@ -104,7 +105,11 @@ const HOLDER_SQL = 'SELECT IS_USED_LOCK(CONCAT(:prefix, DATABASE())) AS holder';
 
 // A statement of a file that needs a table another session holds would wait for a day by default, with every
 // other statement on that table behind it. A limit on statements that the server may have would cut a long one.
-const FILE_SESSION_SQL = 'SET SESSION lock_wait_timeout = :seconds, max_statement_time = 0';
+const FILE_SESSION_SQL = 'SET SESSION lock_wait_timeout = :seconds, max_statement_time = 0, character_set_collations = :collations';
+
+// A charset named without a collation takes the default of the charset, not the collation of its table: a column
+// of CHARACTER SET utf8mb4 alone would compare as a text for a person, and no guard can tell it from one.
+const FILE_COLLATIONS = `${CHARSET}=${COLLATION.MACHINE}`;
 
 // The connection that holds the lock sends nothing while a file runs, and the server closes a session
 // that stands idle for longer than its wait_timeout.
@@ -603,7 +608,7 @@ async function closeMark(run, step, durationMs) {
 async function openFileSession(run, script, step) {
   const seconds = Math.max(TABLE_LOCK_SECONDS_MIN, Math.ceil(convertStringToSeconds(run.tableLockTimeout)));
 
-  await script.query(FILE_SESSION_SQL, { seconds });
+  await script.query(FILE_SESSION_SQL, { seconds, collations: FILE_COLLATIONS });
 
   if (step.database) {
     return false;
@@ -1056,4 +1061,14 @@ export async function findPendingMigrations({ directory = MIGRATION_DIRECTORY } 
   return migrations
     .filter((migration) => !settled.some((row) => isSameMigration(row, migration)))
     .map((migration) => migration.id);
+}
+
+// What an entrypoint asks before it takes work: a build must not run on a database that lacks what its
+// migrations make.
+export async function assertMigrated({ directory = MIGRATION_DIRECTORY } = {}) {
+  const pending = await findPendingMigrations({ directory });
+
+  if (pending.length) {
+    throw new Error(`The database is behind this build, not applied or dirty: ${pending.join(', ')}. Migrate it before the app starts (npm run migrate:up)`);
+  }
 }

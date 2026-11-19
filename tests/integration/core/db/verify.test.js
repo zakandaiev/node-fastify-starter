@@ -99,7 +99,7 @@ const PROJECT_CODE = Object.freeze({ '0001_project_code.up.sql': 'ALTER TABLE pr
 
 const COLLATIONS = Object.freeze({
   '0001_labels.up.sql': `
-    CREATE TABLE labels (id INT PRIMARY KEY, title VARCHAR(50) NOT NULL) DEFAULT CHARSET=utf8mb4;
+    CREATE TABLE labels (id INT PRIMARY KEY, title VARCHAR(50) NOT NULL) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci;
     CREATE TABLE codes (
       id INT PRIMARY KEY,
       code VARCHAR(10) COLLATE utf8mb4_general_ci NOT NULL,
@@ -112,6 +112,14 @@ const COLLATIONS = Object.freeze({
 
 // Names neither a charset nor a collation: its table takes what its database defaults to.
 const PLAIN = Object.freeze({ '0001_plain.up.sql': 'CREATE TABLE plain (id INT PRIMARY KEY, title VARCHAR(50) NULL);\n' });
+
+// Names the charset alone, of the table and of a column: the server gives either the default collation of the
+// charset, not the one of the database or of the table.
+function createNotesSql(table) {
+  return `CREATE TABLE ${table} (id INT PRIMARY KEY, code VARCHAR(10) CHARACTER SET utf8mb4 NOT NULL, title VARCHAR(50) NULL) DEFAULT CHARSET=utf8mb4`;
+}
+
+const CHARSET_ALONE = Object.freeze({ '0001_notes.up.sql': `${createNotesSql('notes')};\n` });
 
 // Of each kind one constraint the migration names and one it leaves to the server, and a check written
 // on a column, which the server names after the column.
@@ -586,6 +594,24 @@ describe('verifyMigrations', { skip: testDb.skip }, () => {
       'table plain: the default collation is utf8mb4_general_ci, it must be utf8mb4_bin',
       'column plain.title: the collation utf8mb4_general_ci is not allowed, only utf8mb4_bin and utf8mb4_uca1400_ai_ci are',
     ]);
+  });
+
+  test('gives a charset named without a collation the one of a machine string in a file, of the table and of a column, live and in its own database: outside a file the server gives the one of a text for a person', async (t) => {
+    const directory = await createMigrationDir(t, CHARSET_ALONE);
+    const neighbour = await testDb.createNeighbour(t);
+
+    function readNotes({ tables: { notes } }) {
+      return { table: notes.cells.defaultCollation, code: notes.columns.code.collation, title: notes.columns.title.collation };
+    }
+
+    await up({ directory });
+    await testDb.runAsAdmin(createNotesSql(`\`${neighbour}\`.notes`));
+
+    assert.deepEqual(readNotes(await read(testDb.name)), { table: 'utf8mb4_bin', code: 'utf8mb4_bin', title: 'utf8mb4_bin' });
+    assert.deepEqual(readNotes(await read(neighbour)), {
+      table: 'utf8mb4_uca1400_ai_ci', code: 'utf8mb4_uca1400_ai_ci', title: 'utf8mb4_uca1400_ai_ci',
+    });
+    assert.deepEqual(await verify({ directory }), matched(1));
   });
 
   test('neither builds nor compares a migration that is not applied: it names it in a note and does not miss its tables', async (t) => {

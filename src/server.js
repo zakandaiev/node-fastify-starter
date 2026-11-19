@@ -1,6 +1,8 @@
 import { readArgs } from '#config/arg.js';
 import { initEnv } from '#config/env.js';
 import { createConfig } from '#config/index.js';
+import { runInContext } from '#core/context/index.js';
+import { assertMigrated } from '#core/db/migrator.js';
 import { buildApp } from './app.js';
 
 const SHUTDOWN_SIGNALS = ['SIGTERM', 'SIGINT'];
@@ -33,6 +35,7 @@ try {
   // Before the port is open: a server that cannot reach a fit database must not take traffic.
   const databaseVersion = await fastify.db.verify();
 
+  await runInContext(fastify.context, () => assertMigrated());
   await fastify.listen({ ...config.app.listen, ...args });
 
   const { name, version, mode } = config.app;

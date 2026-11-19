@@ -71,6 +71,7 @@
 
 ## #core/db/migrator.js
 
+- `async assertMigrated({ directory = MIGRATION_DIRECTORY } = {})`
 - `async findPendingMigrations({ directory = MIGRATION_DIRECTORY } = {})`
 - `async getMigrationStatus({ type, directory } = {})`
 - `async migrateDown({ type, names, namesExclude, isDryRun, directory, onLockWait, onFileStart, onFileFinish } = {})`

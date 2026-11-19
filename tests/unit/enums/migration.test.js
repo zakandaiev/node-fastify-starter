@@ -1,4 +1,4 @@
-import { COLLATION } from '#enums/collation.js';
+import { CHARSET, COLLATION } from '#enums/collation.js';
 import { MIGRATION_DIRECTION } from '#enums/migration-direction.js';
 import { MIGRATION_STATE } from '#enums/migration-state.js';
 import { MIGRATION_TYPE } from '#enums/migration-type.js';
@@ -9,6 +9,11 @@ describe('COLLATION', () => {
   test('names the two collations a text column may have: of a machine string and of a text for a person', () => {
     assert.deepEqual(COLLATION, { MACHINE: 'utf8mb4_bin', HUMAN: 'utf8mb4_uca1400_ai_ci' });
     assert.ok(Object.isFrozen(COLLATION));
+  });
+
+  test('both belong to the one charset of every text column', () => {
+    assert.equal(CHARSET, 'utf8mb4');
+    Object.values(COLLATION).forEach((collation) => assert.ok(collation.startsWith(`${CHARSET}_`), collation));
   });
 });
 

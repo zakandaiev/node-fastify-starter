@@ -1,5 +1,6 @@
 import { DbError } from '#core/db/error.js';
 import {
+  assertMigrated,
   findPendingMigrations,
   getMigrationStatus,
   migrateDown,
@@ -43,6 +44,7 @@ describe('migrator without a database', () => {
 
     await assert.rejects(migrateUp({ directory }), /No active context/);
     await assert.rejects(findPendingMigrations({ directory }), /No active context/);
+    await assert.rejects(assertMigrated({ directory }), /No active context/);
   });
 
   test('fails with the error of the connection when the database is out of reach, a dry run included', async (t) => {
@@ -57,6 +59,7 @@ describe('migrator without a database', () => {
     await assert.rejects(down.run(() => verifyMigrations({ directory })), isRefused);
     await assert.rejects(down.run(() => findPendingMigrations({ directory })), isRefused);
     await assert.rejects(down.run(() => findPendingMigrations({ directory: empty })), isRefused);
+    await assert.rejects(down.run(() => assertMigrated({ directory })), isRefused);
     assert.equal(down.db.getStats().activeCount, 0);
   });
 

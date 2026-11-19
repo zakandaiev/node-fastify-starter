@@ -1,7 +1,9 @@
+import { migrateUp } from '#core/db/migrator.js';
 import packageData from '#root/package.json' with { type: 'json' };
 import { TEST_ENV } from '#root/tests/helper/config.js';
 import { createTestDb } from '#root/tests/helper/db.js';
 import { parseLogLines } from '#root/tests/helper/log.js';
+import { describePendingRefusal, REPOSITORY_MIGRATIONS } from '#root/tests/helper/migration.js';
 import {
   createWorkDir,
   getFreePort,
@@ -11,7 +13,7 @@ import {
 } from '#root/tests/helper/process.js';
 import assert from 'node:assert/strict';
 import { platform } from 'node:process';
-import { describe, test } from 'node:test';
+import { before, describe, test } from 'node:test';
 
 const SERVER = 'src/server.js';
 const STARTED = /Server started/;
@@ -27,6 +29,8 @@ async function startServer(t, env = {}) {
 }
 
 describe('server', { skip: testDb.skip }, () => {
+  before(() => testDb.run(() => migrateUp()));
+
   test('listens on loopback and the port from --port and logs the versions of the app and of the database', async (t) => {
     const { server, port } = await startServer(t);
 
@@ -81,6 +85,17 @@ describe('server', { skip: testDb.skip }, () => {
 
     assert.equal(code, 1);
     assert.equal(failed.err.code, 'ER_BAD_DB_ERROR');
+    assert.equal(stdout.includes('Server listening'), false);
+  });
+
+  test('does not start and does not listen on a database without the migrations of the build, and names them', async (t) => {
+    const empty = await testDb.createNeighbour(t);
+    const cwd = await createWorkDir(t, { ...TEST_ENV, ...testDb.env, APP_DATABASE_NAME: empty });
+    const { code, stdout } = await runNode(SERVER, { args: ['--port=0'], cwd });
+    const failed = parseLogLines(stdout).find((line) => line.msg === 'Server failed to start');
+
+    assert.equal(code, 1);
+    assert.equal(failed.err.message, describePendingRefusal(REPOSITORY_MIGRATIONS));
     assert.equal(stdout.includes('Server listening'), false);
   });
 });

@@ -1,6 +1,6 @@
 import { findDbError } from '#core/db/error.js';
 import { now } from '#core/db/index.js';
-import { findPendingMigrations, migrateFresh } from '#core/db/migrator.js';
+import { assertMigrated, findPendingMigrations, migrateFresh } from '#core/db/migrator.js';
 import { withTransaction } from '#core/db/transaction.js';
 import { rejectionOf, waitFor } from '#root/tests/helper/async.js';
 import {
@@ -15,6 +15,7 @@ import {
   createMigrationDir,
   createMigrationEvents,
   describeDirtyRefusal,
+  describePendingRefusal,
   describeQualifiedName,
   listTableNames,
   MIGRATION_TEXT,
@@ -1296,6 +1297,34 @@ describe('findPendingMigrations', { skip: testDb.skip }, () => {
     await holder.query('UNLOCK TABLES');
 
     assert.deepEqual(await findPending(directory, impatient), []);
+  });
+});
+
+describe('assertMigrated', { skip: testDb.skip }, () => {
+  beforeEach(() => testDb.reset());
+
+  test('refuses a database that lacks migrations of the build, naming them, and passes once they are applied', async (t) => {
+    const directory = await createMigrationDir(t, { ...USERS, ...SESSIONS });
+
+    function check() {
+      return run(() => assertMigrated({ directory }));
+    }
+
+    await assert.rejects(check(), { message: describePendingRefusal(['0001_users', '0002_sessions']) });
+
+    await up({ directory, names: ['users'] });
+
+    await assert.rejects(check(), { message: describePendingRefusal(['0002_sessions']) });
+
+    await up({ directory });
+
+    assert.equal(await check(), undefined);
+  });
+
+  test('refuses a database that holds a migration of the build half applied, though its row is there', async (t) => {
+    const directory = await createEveryState(t);
+
+    await assert.rejects(run(() => assertMigrated({ directory })), { message: describePendingRefusal(['0004_broken', '0005_later']) });
   });
 });
 

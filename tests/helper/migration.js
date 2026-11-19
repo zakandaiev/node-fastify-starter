@@ -20,6 +20,16 @@ const LOCK_PREFIX = 'migrator:';
 const BY_HAND_REGEXP = /(?:DELETE FROM|UPDATE) _migrations .*?version = \d+(?: AND is_dirty = TRUE)?/g;
 const KILL_REGEXP = /KILL \d+/;
 
+// The files of the repository, in their order, as a test of the script or of an entrypoint on them names them.
+export const REPOSITORY_MIGRATIONS = Object.freeze([
+  '0001_users',
+  '0002_user_identities',
+  '0003_groups',
+  '0004_group_scopes',
+  '0005_user_groups',
+]);
+export const REPOSITORY_SEEDS = Object.freeze(['0001_groups']);
+
 // The words of the migrator that more than one test file compares a message with.
 export const MIGRATION_TEXT = Object.freeze({
   NAMES_NO_DATABASE: 'a migration file works in the database it is applied to and never names one',
@@ -136,6 +146,11 @@ export function readStatementsByHand(message) {
 
 export function readKillStatement(message) {
   return message.match(KILL_REGEXP)?.[0] ?? null;
+}
+
+// What an entrypoint is refused with while migrations of its build are not applied or dirty; "ids" as 0001_users.
+export function describePendingRefusal(ids) {
+  return `The database is behind this build, not applied or dirty: ${ids.join(', ')}. Migrate it before the app starts (npm run migrate:up)`;
 }
 
 // What every command is refused with while a row is dirty. "checksum" is the one of the up file as it is at

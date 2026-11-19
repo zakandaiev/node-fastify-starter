@@ -21,6 +21,8 @@ import {
   readKillStatement,
   readStatementsByHand,
   removeMigrationFiles,
+  REPOSITORY_MIGRATIONS,
+  REPOSITORY_SEEDS,
   runMigrateProcess,
   writeMigrationFiles,
 } from '#root/tests/helper/migration.js';
@@ -150,6 +152,11 @@ async function migrateAsProcess(t, args, { env = {}, systemEnv } = {}) {
   const { code, stdout, stderr } = await runMigrateProcess(t, { ...testDb.env, ...env }, args, systemEnv);
 
   return { code, lines: stdout.trimEnd().split(LINE_BREAK).map((line) => normalize(line)), stderr };
+}
+
+// The two lines a run prints for each file, the duration normalized; "ids" as 0001_users.
+function describeFiles(label, ids, direction) {
+  return ids.flatMap((id) => [`⏳ ${label} started: ${id}.${direction}.sql`, `✅ ${label} finished: ${id}.${direction}.sql (N ms)`]);
 }
 
 // The files a directory of migrations holds, named as writeMigrationFiles() takes them: a seed with its folder.
@@ -1069,21 +1076,56 @@ describe('migrate: fresh', { skip: testDb.skip }, () => {
 describe('migrate: as a process', { skip: testDb.skip }, () => {
   beforeEach(() => testDb.reset());
 
-  test('exits by itself with the code 0 on an empty database with the migrations of the repository, which has none yet, and writes nothing into that database', async (t) => {
-    const [status, up, verify, down] = await mapSeries(
-      ['status', 'up', 'verify', 'down'],
-      (direction) => migrateAsProcess(t, [`--direction=${direction}`]),
-    );
+  test('applies the migrations and the seeds of the repository to an empty database, verifies them and rolls them back to an empty one, each command exiting by itself with the code 0', async (t) => {
+    const migrations = REPOSITORY_MIGRATIONS.length;
+    const [status, up, seedUp, verify, seedDown, down] = await mapSeries([
+      ['--direction=status'],
+      ['--direction=up'],
+      ['--direction=up', '--type=seed'],
+      ['--direction=verify'],
+      ['--direction=down', '--type=seed'],
+      ['--direction=down'],
+    ], (args) => migrateAsProcess(t, args));
 
-    assert.deepEqual(status, { code: 0, lines: [target('Migration'), '⚠️ Migration status: nothing to show'], stderr: '' });
-    assert.deepEqual(up, { code: 0, lines: [target('Migration'), '⚠️ Migration cancelled: nothing to do'], stderr: '' });
-    assert.deepEqual(verify, {
+    assert.deepEqual(status, {
       code: 0,
-      lines: [target('Verify'), `🎉 Verify succeeded: "${testDb.name}" matches its migrations (0 tables)`],
+      lines: [target('Migration'), ...REPOSITORY_MIGRATIONS.map((id) => `⏳ ${id}: pending`)],
       stderr: '',
     });
-    assert.deepEqual(down, { code: 0, lines: [target('Migration'), '⚠️ Migration cancelled: nothing to do'], stderr: '' });
-    assert.deepEqual(await listTableNames(testDb), []);
+    assert.deepEqual(up, {
+      code: 0,
+      lines: [target('Migration'), ...describeFiles('Migration', REPOSITORY_MIGRATIONS, 'up'), `🎉 Migration succeeded: ${migrations} up migrations done`],
+      stderr: '',
+    });
+    assert.deepEqual(seedUp, {
+      code: 0,
+      lines: [target('Seed'), ...describeFiles('Seed', REPOSITORY_SEEDS, 'up'), '🎉 Seed succeeded: 1 up seed done'],
+      stderr: '',
+    });
+    assert.deepEqual(verify, {
+      code: 0,
+      lines: [
+        target('Verify'),
+        ...describeFiles('Verify', REPOSITORY_MIGRATIONS, 'up'),
+        `🎉 Verify succeeded: "${testDb.name}" matches its migrations (${migrations} tables)`,
+      ],
+      stderr: '',
+    });
+    assert.deepEqual(seedDown, {
+      code: 0,
+      lines: [target('Seed'), ...describeFiles('Seed', REPOSITORY_SEEDS, 'down'), '🎉 Seed succeeded: 1 down seed done'],
+      stderr: '',
+    });
+    assert.deepEqual(down, {
+      code: 0,
+      lines: [
+        target('Migration'),
+        ...describeFiles('Migration', REPOSITORY_MIGRATIONS.toReversed(), 'down'),
+        `🎉 Migration succeeded: ${migrations} down migrations done`,
+      ],
+      stderr: '',
+    });
+    assert.deepEqual(await listTableNames(testDb), ['_migrations']);
   });
 
   test('exits with the code 1 and one line for a wrong argument, before it goes anywhere', async (t) => {
@@ -1135,7 +1177,7 @@ describe('migrate: as a process', { skip: testDb.skip }, () => {
     });
   });
 
-  test('drops the database and migrates anew in dev mode: with no migration in the repository yet, the database is left empty', async (t) => {
+  test('drops the database and applies the migrations of the repository anew in dev mode, without the seeds', async (t) => {
     await testDb.readRows('CREATE TABLE leftovers (id INT PRIMARY KEY)');
 
     assert.deepEqual(await migrateAsProcess(t, ['--direction=fresh'], { env: DEV }), {
@@ -1144,11 +1186,13 @@ describe('migrate: as a process', { skip: testDb.skip }, () => {
         target('Fresh', DEV),
         `⏳ Fresh started: DROP DATABASE \`${testDb.name}\``,
         `✅ Fresh finished: DROP DATABASE \`${testDb.name}\` (N ms)`,
-        `🎉 Fresh succeeded: the database "${testDb.name}" was dropped and 0 up migrations done; seeds are applied apart`,
+        ...describeFiles('Fresh', REPOSITORY_MIGRATIONS, 'up'),
+        `🎉 Fresh succeeded: the database "${testDb.name}" was dropped and ${REPOSITORY_MIGRATIONS.length} up migrations done; seeds are applied apart`,
       ],
       stderr: '',
     });
-    assert.deepEqual(await listTableNames(testDb), []);
+    assert.deepEqual(await listTableNames(testDb), ['_migrations', 'group_scopes', 'groups', 'user_groups', 'user_identities', 'users']);
+    assert.deepEqual(await testDb.readRows('SELECT COUNT(*) AS total FROM groups'), [{ total: 0 }]);
   });
 
   test('refuses a flag that npm has swallowed, in one line and before it goes anywhere: nothing is rolled back', async (t) => {
