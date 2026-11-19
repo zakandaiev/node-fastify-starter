@@ -1,3 +1,4 @@
+import { writeValueText } from '#utils/serialize.js';
 import {
   isArray,
   isBoolean,
@@ -85,6 +86,7 @@ function serializeScalar(value) {
   throw new TypeError(`objectHash(value) cannot serialize ${Object.prototype.toString.call(value)}: only plain objects, arrays, dates, buffers and primitives except symbols`);
 }
 
+// Sorted keys: the hash of an object does not depend on the order it was built in. A hole of an array reads as undefined.
 function toEntries(container) {
   if (isArray(container)) {
     return Array.from(container, (item) => ['', item]);
@@ -99,64 +101,19 @@ function toEntries(container) {
     .map((key) => [`${JSON.stringify(key)}:`, container[key]]);
 }
 
-function enter(walk, container) {
-  if (walk.ancestors.has(container)) {
-    throw new TypeError('objectHash(value) cannot serialize a circular structure');
-  }
-
-  const isList = isArray(container);
-
-  walk.ancestors.add(container);
-  walk.parts.push(isList ? '[' : '{');
-  walk.frames.push({
-    container,
-    entries: toEntries(container),
-    index: 0,
-    close: isList ? ']' : '}',
-  });
+function isContainer(value) {
+  return isArray(value) || isObject(value);
 }
 
-function write(walk, value) {
-  if (isArray(value) || isObject(value)) {
-    enter(walk, value);
-  } else {
-    walk.parts.push(serializeScalar(value));
-  }
-}
-
-function advance(walk) {
-  const frame = walk.frames.at(-1);
-
-  if (frame.index === frame.entries.length) {
-    walk.parts.push(frame.close);
-    walk.ancestors.delete(frame.container);
-    walk.frames.pop();
-
-    return false;
-  }
-
-  const [label, value] = frame.entries[frame.index];
-
-  walk.parts.push(frame.index ? `,${label}` : label);
-  frame.index += 1;
-  write(walk, value);
-}
-
-// A loop over an explicit stack, not recursion: JSON.parse() returns a body nested far deeper than the call stack goes.
-function serialize(value) {
-  const walk = { ancestors: new Set(), frames: [], parts: [] };
-
-  write(walk, value);
-
-  while (walk.frames.length) {
-    advance(walk);
-  }
-
-  return walk.parts.join('');
-}
+const HASH_FORMAT = Object.freeze({
+  isContainer,
+  toEntries,
+  writeScalar: serializeScalar,
+  circularMessage: 'objectHash(value) cannot serialize a circular structure',
+});
 
 export function objectHash(value) {
-  return sha256(serialize(value));
+  return sha256(writeValueText(value, HASH_FORMAT));
 }
 
 function toBytes(value) {

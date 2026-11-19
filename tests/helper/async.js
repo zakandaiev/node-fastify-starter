@@ -26,6 +26,14 @@ export async function waitFor(read, what, checksLeft = CHECKS) {
   return waitFor(read, what, checksLeft - 1);
 }
 
+// What fn gives and how long it took, by the monotonic clock.
+export async function timeIt(fn) {
+  const startedAt = performance.now();
+  const result = await fn();
+
+  return { result, durationMs: performance.now() - startedAt };
+}
+
 // The error a promise rejects with, for a test that looks at more of it than assert.rejects() compares.
 export async function rejectionOf(promise) {
   try {

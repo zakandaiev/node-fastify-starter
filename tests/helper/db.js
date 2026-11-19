@@ -6,8 +6,8 @@ import { waitFor } from '#root/tests/helper/async.js';
 import { createTestConfig, createTestEnv } from '#root/tests/helper/config.js';
 import { getFreePort } from '#root/tests/helper/process.js';
 import { getServiceSkip, reportSkip } from '#root/tests/helper/service.js';
-import { isExpired } from '#utils/date.js';
-import { uuidTimestamp, uuidv7 } from '#utils/id.js';
+import { isStaleId } from '#root/tests/helper/stale.js';
+import { uuidv7 } from '#utils/id.js';
 import { pick } from '#utils/object.js';
 import { randomToken } from '#utils/random.js';
 import { createConnection } from 'mysql2/promise';
@@ -34,9 +34,6 @@ const GATE_PREFIX = 'nfs-test-gate:';
 const GATE_WAIT_SECONDS = 10;
 const LOCK_WAIT_STATE = 'User lock';
 
-// A run that was killed leaves its database behind: the next run drops what is older than this.
-const STALE_AFTER = '1h';
-
 // A database that a session still holds locked is left for the next run instead of being waited for:
 // the server would wait a day.
 const DROP_LOCK_WAIT_SECONDS = 5;
@@ -60,14 +57,16 @@ export function toLikePattern(prefix) {
   return `${prefix.replaceAll('_', '\\_')}%`;
 }
 
-// The moment is the UUIDv7 a name ends with. A name without one is not of these tests' making and is left alone.
-function isStale(name) {
-  const isNamedByTests = listStalePrefixes().some((prefix) => name.startsWith(prefix));
-  const createdAt = isNamedByTests
-    ? uuidTimestamp(name.slice(-ID_LENGTH).replaceAll('_', '-'))
+// The UUIDv7 a name ends with, its underscores dashes again, or null for a name the tests did not make.
+export function readDatabaseId(name) {
+  return name.startsWith(DATABASE_PREFIX) && name.length >= DATABASE_PREFIX.length + ID_LENGTH
+    ? name.slice(-ID_LENGTH).replaceAll('_', '-')
     : null;
+}
 
-  return createdAt !== null && isExpired(createdAt, STALE_AFTER);
+function isStale(name) {
+  return listStalePrefixes().some((prefix) => name.startsWith(prefix))
+    && isStaleId(name.slice(-ID_LENGTH).replaceAll('_', '-'));
 }
 
 // Not through createDb(): a broken driver must not break the setup of its own tests.

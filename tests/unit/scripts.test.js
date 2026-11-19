@@ -42,7 +42,7 @@ describe('api-index', () => {
     const index = await renderApiIndex();
 
     assert.match(index, /^# Core API\n/);
-    assert.ok(index.includes('## #core/context/index.js\n\n- `createContext({ config, log, db = null, redis = null, cacheRedis = null, requestId = null, transaction = null } = {})`\n- `getContext()`\n- `runInContext(context, fn)`\n'));
+    assert.ok(index.includes('## #core/context/index.js\n\n- `createContext({ config, log, db = null, redis = null, cacheRedis = null, requestId = null, transaction = null } = {})`\n- `findContext()`\n- `getContext()`\n- `runInContext(context, fn)`\n- `runOutsideContext(fn)`\n'));
     assert.ok(index.includes('## #core/logger/index.js\n\n- `createLogger({ level, isPretty = false, stream } = {})`\n- `serializeError(error)`\n'));
   });
 

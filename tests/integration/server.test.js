@@ -11,6 +11,9 @@ import {
   startNode,
   waitForOutput,
 } from '#root/tests/helper/process.js';
+import { readRedisEnv, REDIS_DOWN_ENV } from '#root/tests/helper/redis.js';
+import { getServiceAddress, getServiceSkip } from '#root/tests/helper/service.js';
+import { compact } from '#utils/object.js';
 import assert from 'node:assert/strict';
 import { platform } from 'node:process';
 import { before, describe, test } from 'node:test';
@@ -18,10 +21,21 @@ import { before, describe, test } from 'node:test';
 const SERVER = 'src/server.js';
 const STARTED = /Server started/;
 
+// Exact: "Redis is ready" alone would also match the line of the cache Redis.
+const MAIN_READY = /"msg":"Redis is ready"/;
+const CACHE_READY = /"msg":"Cache Redis is ready"/;
+
 const testDb = await createTestDb();
+const redisSkip = await getServiceSkip(['redis']);
+const redisEnv = readRedisEnv();
 
 async function startServer(t, env = {}) {
-  const cwd = await createWorkDir(t, { ...TEST_ENV, ...testDb.env, ...env });
+  const cwd = await createWorkDir(t, {
+    ...TEST_ENV,
+    ...redisEnv,
+    ...testDb.env,
+    ...env,
+  });
   const port = await getFreePort();
   const server = startNode(SERVER, { args: [`--port=${port}`], cwd });
 
@@ -42,6 +56,46 @@ describe('server', { skip: testDb.skip }, () => {
     assert.ok(lines.some((line) => line.msg === `Server listening at http://127.0.0.1:${port}`));
     assert.deepEqual(started.app, { name: packageData.name, version: packageData.version, mode: 'prod' });
     assert.match(started.database.version, /^\d+\.\d+\.\d+-MariaDB/);
+  });
+
+  test('connects to Redis once it starts and says so, and where the cache lives', { skip: redisSkip }, async (t) => {
+    const { server } = await startServer(t);
+
+    const lines = parseLogLines(await waitForOutput(server, MAIN_READY));
+    const ready = lines.find((line) => line.msg === 'Redis is ready');
+    const cache = lines.find((line) => line.msg === 'Cache lives in the main Redis: it must run with noeviction and memory to spare');
+    const { host, port } = getServiceAddress('redis');
+
+    assert.equal(ready.redis.address, `${host}:${port}`);
+    assert.equal(cache.cache.redis, ready.redis.address);
+  });
+
+  test('connects a Redis of its own for the cache as well', { skip: redisSkip }, async (t) => {
+    const { server } = await startServer(t, compact({
+      APP_CACHE_REDIS_HOST: redisEnv.APP_REDIS_HOST,
+      APP_CACHE_REDIS_PORT: redisEnv.APP_REDIS_PORT,
+      APP_CACHE_REDIS_USER: redisEnv.APP_REDIS_USER,
+      APP_CACHE_REDIS_PASSWORD: redisEnv.APP_REDIS_PASSWORD,
+    }));
+
+    await waitForOutput(server, CACHE_READY);
+
+    const lines = parseLogLines(await waitForOutput(server, MAIN_READY));
+
+    assert.ok(lines.some((line) => line.msg === 'Cache uses a Redis of its own'));
+    assert.ok(lines.some((line) => line.msg === 'Cache Redis is ready'));
+  });
+
+  test('starts and listens without Redis: Redis only speeds it up', async (t) => {
+    const { server, port } = await startServer(t, REDIS_DOWN_ENV);
+
+    const lines = parseLogLines(await waitForOutput(server, STARTED));
+    const response = await fetch(`http://127.0.0.1:${port}/api/v1/system/ping`);
+    const unreachable = lines.find((line) => line.msg === 'Redis is not reachable');
+
+    assert.equal(response.status, 200);
+    assert.equal(unreachable.level, 40);
+    assert.equal(unreachable.err.code, 'ECONNREFUSED');
   });
 
   test('prints readable logs in dev mode', async (t) => {

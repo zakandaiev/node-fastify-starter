@@ -1,5 +1,12 @@
 import { Writable } from 'node:stream';
 
+export const LOG_LEVEL = Object.freeze({
+  DEBUG: 20,
+  INFO: 30,
+  WARN: 40,
+  ERROR: 50,
+});
+
 // pino writes to the stream synchronously inside the log call: the lines are there as soon as the call returns.
 // Usage: buildTestApp({ logger: { level: 'info', stream: sink.stream } }) - the level of the test config is "silent".
 export function createLogSink() {
@@ -12,6 +19,10 @@ export function createLogSink() {
   });
 
   return { lines, stream };
+}
+
+export function findLogLines(sink, message) {
+  return sink.lines.filter((line) => line.msg === message);
 }
 
 // The lines a process has printed in JSON, one object for each: a line that is not JSON throws.

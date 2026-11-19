@@ -133,8 +133,8 @@ describe('buildApp', () => {
     t.after(() => fastify.close());
 
     assert.deepEqual(
-      ['error-handler', 'context', 'db', 'response'].map((name) => fastify.hasPlugin(name)),
-      [true, true, true, true],
+      ['error-handler', 'context', 'redis', 'db', 'cache', 'response'].map((name) => fastify.hasPlugin(name)),
+      [true, true, true, true, true, true],
     );
   });
 

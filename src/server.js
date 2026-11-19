@@ -32,6 +32,10 @@ async function shutdown(signal) {
 }
 
 try {
+  // Redis only speeds the app up: the server starts without it, and its clients go on connecting by themselves.
+  fastify.redis.connect();
+  fastify.cacheRedis.connect();
+
   // Before the port is open: a server that cannot reach a fit database must not take traffic.
   const databaseVersion = await fastify.db.verify();
 

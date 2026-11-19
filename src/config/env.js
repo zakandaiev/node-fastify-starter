@@ -92,6 +92,13 @@ export const ENV_SCHEMA = Object.freeze({
 
     APP_LOG_API_KEY: TEXT,
   },
+  // A setting of the cache Redis without its host would leave the cache in the main Redis without a word.
+  dependencies: {
+    APP_CACHE_REDIS_HOST: ['APP_CACHE_REDIS_PORT'],
+    APP_CACHE_REDIS_PORT: ['APP_CACHE_REDIS_HOST'],
+    APP_CACHE_REDIS_USER: ['APP_CACHE_REDIS_HOST'],
+    APP_CACHE_REDIS_PASSWORD: ['APP_CACHE_REDIS_HOST'],
+  },
 });
 
 const validate = new Ajv({
@@ -117,10 +124,15 @@ function formatMinLength(error) {
   return `${getVariableName(error)} must be at least ${error.params.limit} characters long: generate it with "npm run keygen"`;
 }
 
+function formatDependency(error) {
+  return `${error.params.missingProperty} is required when ${error.params.property} is set`;
+}
+
 const ERROR_FORMATTERS = Object.freeze({
   required: formatRequired,
   enum: formatEnum,
   minLength: formatMinLength,
+  dependencies: formatDependency,
 });
 
 function formatError(error) {

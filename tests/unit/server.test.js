@@ -2,6 +2,7 @@ import { TEST_ENV } from '#root/tests/helper/config.js';
 import { createDownEnv } from '#root/tests/helper/db.js';
 import { parseLogLines } from '#root/tests/helper/log.js';
 import { createWorkDir, runNode } from '#root/tests/helper/process.js';
+import { REDIS_DOWN_ENV } from '#root/tests/helper/redis.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
@@ -43,7 +44,7 @@ describe('server', () => {
   });
 
   test('does not start and does not listen when the database is unreachable', async (t) => {
-    const cwd = await createWorkDir(t, { ...TEST_ENV, ...(await createDownEnv()) });
+    const cwd = await createWorkDir(t, { ...TEST_ENV, ...(await createDownEnv()), ...REDIS_DOWN_ENV });
     const { code, stdout } = await runNode(SERVER, { args: [ANY_PORT], cwd });
     const lines = parseLogLines(stdout);
     const failed = lines.find((line) => line.msg === 'Server failed to start');

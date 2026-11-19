@@ -51,3 +51,18 @@ export function getContext() {
 
   return context;
 }
+
+// For code that also runs where no context is, such as a listener of a socket event: null there.
+export function findContext() {
+  return storage.getStore() ?? null;
+}
+
+// A socket keeps the context it was opened in for every event it ever emits, reconnects included:
+// one opened inside a request would hand that request's context to all of them.
+export function runOutsideContext(fn) {
+  if (typeof fn !== 'function') {
+    throw new TypeError('runOutsideContext(fn) requires a function');
+  }
+
+  return storage.exit(fn);
+}

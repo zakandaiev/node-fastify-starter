@@ -4,11 +4,22 @@
 >
 > Look here before writing a new function: extend what exists instead of duplicating it.
 
+## #core/cache/index.js
+
+- `async deleteCache(keys)`
+- `async invalidateCacheTables(tables)`
+- `async readCache(key)`
+- `watchCacheOutage(redis, { after, log, onOutage, onRecovery } = {})`
+- `async wrapCache(key, fn, { ttl, tables } = {})`
+- `async writeCache(key, value, { ttl } = {})`
+
 ## #core/context/index.js
 
 - `createContext({ config, log, db = null, redis = null, cacheRedis = null, requestId = null, transaction = null } = {})`
+- `findContext()`
 - `getContext()`
 - `runInContext(context, fn)`
+- `runOutsideContext(fn)`
 
 ## #core/db/binding.js
 
@@ -122,6 +133,13 @@
 
 - `createLogger({ level, isPretty = false, stream } = {})`
 - `serializeError(error)`
+
+## #core/redis/index.js
+
+- `REDIS_FAILURE`
+- `createRedis(config, options)`
+- `async publish(channel, message, { redis = findContext()?.redis ?? null } = {})`
+- `async runRedisSafely(action, message, { redis = findContext()?.redis ?? null } = {})`
 
 ## #core/response/index.js
 
@@ -244,6 +262,13 @@
 - `UNREADABLE_PLACEHOLDER`
 - `isSensitiveKey(key)`
 - `maskSensitiveDeep(value, { replace = keepValue } = {})`
+
+## #utils/serialize.js
+
+- `SERIALIZED_FORMAT`
+- `deserializeValue(text)`
+- `serializeValue(value)`
+- `writeValueText(value, format)`
 
 ## #utils/string.js
 

@@ -1,5 +1,6 @@
 import { parseEnv, readEnv } from '#config/env.js';
 import { createConfig } from '#config/index.js';
+import { uuidv7 } from '#utils/id.js';
 import { freezeDeep } from '#utils/object.js';
 
 // Addresses of the local wdt modules; a real environment (.env, CI) overrides them.
@@ -22,10 +23,16 @@ export const TEST_ENV = Object.freeze({
   ...SERVICE_ENV,
 });
 
+// Every Redis key of the tests starts with this, and then with the UUIDv7 of the test file that wrote it: a file
+// is a process of its own, and its keys are told from those of the files beside it and of a run that was killed.
+export const REDIS_TEST_PREFIX = 'nfs-test:';
+export const PROCESS_KEY_PREFIX = `${REDIS_TEST_PREFIX}${uuidv7()}:`;
+
 // A test that waits for a lock nobody lets go must fail in seconds, not hold its file for the minutes of the app.
 const TEST_CONFIG = Object.freeze({
   logger: { level: 'silent', isPretty: false },
   db: { migrationLockTimeout: '5s', migrationTableLockTimeout: '2s' },
+  redis: { keyPrefix: PROCESS_KEY_PREFIX },
 });
 
 function readServiceEnv() {

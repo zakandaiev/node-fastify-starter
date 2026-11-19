@@ -162,6 +162,19 @@ describe('parseEnv', () => {
     assert.equal(env.APP_OAUTH_GITHUB_CLIENT_ID, 'id');
     assert.equal(env.APP_OAUTH_GITHUB_CLIENT_SECRET, 'secret');
   });
+
+  test('takes a Redis of its own for the cache only with its host and its port: a setting without the host would leave the cache in the main one', () => {
+    const cache = { APP_CACHE_REDIS_HOST: 'cache.internal', APP_CACHE_REDIS_PORT: '6390' };
+
+    assert.equal(parseEnv({ ...TEST_ENV, ...cache }).APP_CACHE_REDIS_PORT, 6390);
+    assert.deepEqual(getErrorLines({ ...TEST_ENV, APP_CACHE_REDIS_HOST: 'cache.internal' })[1], '  - APP_CACHE_REDIS_PORT is required when APP_CACHE_REDIS_HOST is set');
+    assert.deepEqual(getErrorLines({ ...TEST_ENV, APP_CACHE_REDIS_PORT: '6390' })[1], '  - APP_CACHE_REDIS_HOST is required when APP_CACHE_REDIS_PORT is set');
+    assert.deepEqual(getErrorLines({ ...TEST_ENV, APP_CACHE_REDIS_USER: 'cache', APP_CACHE_REDIS_PASSWORD: 'secret' }).slice(1, 3), [
+      '  - APP_CACHE_REDIS_HOST is required when APP_CACHE_REDIS_USER is set',
+      '  - APP_CACHE_REDIS_HOST is required when APP_CACHE_REDIS_PASSWORD is set',
+    ]);
+    assert.deepEqual(getErrorLines({ ...TEST_ENV, APP_CACHE_REDIS_HOST: ' ', APP_CACHE_REDIS_PORT: '' }), []);
+  });
 });
 
 describe('initEnv in a process of its own', () => {

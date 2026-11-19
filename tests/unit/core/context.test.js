@@ -1,4 +1,10 @@
-import { createContext, getContext, runInContext } from '#core/context/index.js';
+import {
+  createContext,
+  findContext,
+  getContext,
+  runInContext,
+  runOutsideContext,
+} from '#core/context/index.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -60,6 +66,32 @@ describe('createContext', () => {
 describe('getContext', () => {
   test('throws a clear error outside a context', () => {
     assert.throws(() => getContext(), /No active context: wrap the call in runInContext/);
+  });
+});
+
+describe('findContext', () => {
+  test('gives the current context, or null outside one, without throwing', () => {
+    const context = createContext({ config: {}, log });
+
+    assert.equal(findContext(), null);
+    assert.equal(runInContext(context, () => findContext()), context);
+  });
+});
+
+describe('runOutsideContext', () => {
+  test('runs the function with no context, and what it starts stays without one', async () => {
+    const context = createContext({ config: {}, log });
+    const { promise, resolve } = Promise.withResolvers();
+
+    const result = runInContext(context, () => runOutsideContext(() => {
+      setTimeout(() => resolve(findContext()), 1);
+
+      return findContext();
+    }));
+
+    assert.equal(result, null);
+    assert.equal(await promise, null);
+    assert.throws(() => runOutsideContext('fn'), /requires a function/);
   });
 });
 
