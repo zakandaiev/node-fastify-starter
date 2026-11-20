@@ -27,6 +27,16 @@ const INTEGERS_SCHEMA = { type: 'array', items: { type: 'integer' } };
 const EMAIL_SCHEMA = { type: 'object', properties: { email: { type: 'string', format: 'email' } } };
 const LIMIT_SCHEMA = { type: 'object', properties: { limit: { type: 'integer', minimum: 1 } } };
 
+// The shape the gate of a route gives a format: AJV adds an "if" entry after the errors of every failed branch.
+const GATED_EMAILS_SCHEMA = {
+  type: 'array',
+  items: {
+    type: 'string',
+    maxLength: 254,
+    allOf: [{ if: { maxLength: 254 }, then: { format: 'email' } }],
+  },
+};
+
 const BOUNDS = [
   ['minimum', { type: 'integer', minimum: 18 }, 17, 18],
   ['maximum', { type: 'integer', maximum: 100 }, 101, 100],
@@ -76,11 +86,10 @@ const VALUELESS_KEYWORDS = [
   ['anyOf', { anyOf: [{ type: 'integer' }, { type: 'boolean' }] }, 'x'],
   ['oneOf', { oneOf: [{ type: 'integer' }, { type: 'number' }] }, 5],
   ['not', { not: { type: 'string' } }, 'x'],
-  ['if', { type: 'object', if: { required: ['card'] }, then: { required: ['cvv'] } }, { card: '4111' }],
   ['false schema', false, 1],
 ];
 
-// AJV knows no format by itself, Fastify adds ajv-formats: a schema with an unknown format does not compile.
+// AJV knows no format by itself, the validator of the app adds them: a schema with an unknown format does not compile.
 const ajv = new Ajv({
   allErrors: true,
   coerceTypes: 'array',
@@ -129,6 +138,18 @@ function readOperators(entries) {
 
 function createErrors(count) {
   return failPart('body', INTEGERS_SCHEMA, Array.from({ length: count }, () => 'x')).validation;
+}
+
+function createGatedErrors(count) {
+  return failPart('body', GATED_EMAILS_SCHEMA, Array.from({ length: count }, () => 'x')).validation;
+}
+
+function readKeywords(errors) {
+  return errors.map((item) => item.keyword);
+}
+
+function createEmailEntries(count) {
+  return Array.from({ length: count }, (unused, index) => createEntry(String(index), 'x', 'format', 'email'));
 }
 
 // request.query and request.params of Fastify: a dictionary on a prototype that has no prototype itself.
@@ -201,6 +222,76 @@ describe('createSchemaErrorFormatter', () => {
       assert.equal(formatValidation(markSchemaError(new Error('Request is not valid'), errors, 'body'), {}, LIMITS).length, MAX_ERRORS);
     });
   });
+
+  test('drops the "if" entries of AJV in place and counts only the errors it reports', () => {
+    const errors = createGatedErrors(3);
+    const reported = errors.filter((item) => item.keyword === 'format');
+
+    assert.deepEqual(readKeywords(errors), ['format', 'if', 'format', 'if', 'format', 'if']);
+    assert.equal(createSchemaErrorFormatter(MAX_ERRORS)(errors, 'body').message, 'Request body is not valid: 3 schema errors');
+    assert.equal(errors.length, 3);
+    reported.forEach((item, index) => assert.equal(errors[index], item));
+  });
+
+  test('drops an item that is not an error object in place too, and does not count it', () => {
+    const [formatError, branchError] = createGatedErrors(1);
+    const errors = [null, formatError, 'must match format "email"', branchError, 5];
+
+    assert.deepEqual(readKeywords([formatError, branchError]), ['format', 'if']);
+    assert.equal(createSchemaErrorFormatter(MAX_ERRORS)(errors, 'body').message, 'Request body is not valid: 1 schema errors');
+    assert.equal(errors.length, 1);
+    assert.equal(errors[0], formatError);
+  });
+
+  test('cuts to the ceiling after the "if" entries are dropped: maxErrors counts the errors it reports', () => {
+    [1, 3, MAX_ERRORS].forEach((maxErrors) => {
+      const errors = createGatedErrors(MAX_ERRORS + 5);
+      const error = createSchemaErrorFormatter(maxErrors)(errors, 'body');
+
+      assert.equal(error.message, 'Request body is not valid: 25 schema errors');
+      assert.deepEqual(
+        errors.map((item) => [item.keyword, item.instancePath]),
+        Array.from({ length: maxErrors }, (unused, index) => ['format', `/${index}`]),
+      );
+    });
+  });
+
+  test('does not throw on a frozen list with "if" entries, which formatValidation still reads once per error', () => {
+    const formatSchemaErrors = createSchemaErrorFormatter(MAX_ERRORS);
+
+    [2, MAX_ERRORS + 5].forEach((count) => {
+      const errors = Object.freeze(createGatedErrors(count));
+      const body = Array.from({ length: count }, () => 'x');
+
+      assert.equal(formatSchemaErrors(errors, 'body').message, `Request body is not valid: ${count} schema errors`);
+      assert.equal(errors.length, count * 2);
+      assert.deepEqual(
+        formatValidation(markSchemaError(new Error('Request is not valid'), errors, 'body'), { body }, LIMITS),
+        createEmailEntries(Math.min(count, MAX_ERRORS)),
+      );
+    });
+  });
+
+  test(
+    'leaves a list with "if" entries that refuses the cut halfway readable once per error: sealed, with a read-only length, with a locked item',
+    () => {
+      const formatSchemaErrors = createSchemaErrorFormatter(MAX_ERRORS);
+      const count = 2;
+      const lists = [
+        Object.seal(createGatedErrors(count)),
+        Object.defineProperty(createGatedErrors(count), 'length', { writable: false }),
+        Object.defineProperty(createGatedErrors(count), count * 2 - 1, { configurable: false }),
+      ];
+
+      lists.forEach((errors) => {
+        assert.equal(formatSchemaErrors(errors, 'body').message, 'Request body is not valid: 2 schema errors');
+        assert.deepEqual(
+          formatValidation(markSchemaError(new Error('Request is not valid'), errors, 'body'), { body: ['x', 'x'] }, LIMITS),
+          createEmailEntries(count),
+        );
+      });
+    },
+  );
 
   test('counts no errors in what is not a list, and does not throw', () => {
     const formatSchemaErrors = createSchemaErrorFormatter(MAX_ERRORS);
@@ -595,6 +686,19 @@ describe('formatValidation: operator and operatorValue', () => {
     });
   });
 
+  test('reports the errors of a failed branch of if/then/else, never the "if" entry that only says the branch failed', () => {
+    const payment = {
+      type: 'object',
+      if: { required: ['card'] },
+      then: { required: ['cvv'] },
+      else: { required: ['iban'] },
+    };
+
+    assert.deepEqual(readKeywords(failPart('body', payment, { card: '4111' }).validation), ['required', 'if']);
+    assert.deepEqual(formatField(payment, { card: '4111' }), [createEntry('field.cvv', null, 'required')]);
+    assert.deepEqual(formatField(payment, {}), [createEntry('field.iban', null, 'required')]);
+  });
+
   test('takes the keyword of a plugin as the operator, without a value', () => {
     const query = { limit: Infinity, page: NaN };
     const error = markSchemaError(new Error('Request is not valid'), [
@@ -658,7 +762,7 @@ describe('formatValidation: entries', () => {
     );
   });
 
-  test('skips an item of the list that is not an error object', () => {
+  test('skips an item of the list that is not an error object, and does not count it against maxErrors', () => {
     const body = { email: 'abc' };
     const error = failPart('body', EMAIL_SCHEMA, body);
     const [ajvError] = error.validation;
@@ -666,6 +770,31 @@ describe('formatValidation: entries', () => {
     error.validation = [null, undefined, 'must match format "email"', 5, true, ajvError];
 
     assert.deepEqual(formatValidation(error, { body }, LIMITS), [createEntry('email', 'abc', 'format', 'email')]);
+    assert.deepEqual(formatValidation(error, { body }, { ...LIMITS, maxErrors: 1 }), [createEntry('email', 'abc', 'format', 'email')]);
+  });
+
+  test('leaves out the "if" entries of AJV on a copy: the list of the error stays as it was', () => {
+    const body = ['x', 'anna@example.com', 'y'];
+    const error = failPart('body', GATED_EMAILS_SCHEMA, body);
+    const snapshot = [...error.validation];
+
+    assert.deepEqual(readKeywords(error.validation), ['format', 'if', 'format', 'if']);
+    assert.deepEqual(formatValidation(error, { body }, LIMITS), [
+      createEntry('0', 'x', 'format', 'email'),
+      createEntry('2', 'y', 'format', 'email'),
+    ]);
+    assert.deepEqual(readKeywords(formatValidation(error, { body }, { ...LIMITS, isDev: true }).map((entry) => entry.schema)), ['format', 'format']);
+    assert.equal(error.validation.length, snapshot.length);
+    snapshot.forEach((item, index) => assert.equal(error.validation[index], item));
+  });
+
+  test('takes maxErrors entries after the "if" entries are left out: the ceiling counts the errors it reports', () => {
+    const body = Array.from({ length: MAX_ERRORS + 5 }, () => 'x');
+    const error = failPart('body', GATED_EMAILS_SCHEMA, body);
+
+    assert.equal(error.validation.length, (MAX_ERRORS + 5) * 2);
+    assert.deepEqual(formatValidation(error, { body }, LIMITS), createEmailEntries(MAX_ERRORS));
+    assert.deepEqual(formatValidation(error, { body }, { ...LIMITS, maxErrors: 3 }), createEmailEntries(3));
   });
 });
 

@@ -1,4 +1,6 @@
 import { createConfig } from '#config/index.js';
+import { PAGINATION } from '#config/pagination.js';
+import { SCHEMA_LIMITS } from '#config/schema.js';
 import packageData from '#root/package.json' with { type: 'json' };
 import { createTestConfig, createTestEnv } from '#root/tests/helper/config.js';
 import { isDeepFrozen } from '#root/tests/helper/object.js';
@@ -43,6 +45,34 @@ describe('createConfig', () => {
 
     assert.equal(config.app.listen.host, '127.0.0.1');
     assert.equal(Number.isInteger(config.app.listen.port), true);
+  });
+
+  test('serves the API docs at /docs, outside the prefixes whose routes must meet the route contract', () => {
+    const { app } = createConfig(createTestEnv());
+
+    assert.equal(app.docsPrefix, '/docs');
+    [app.apiPrefix, app.healthPrefix].forEach((prefix) => {
+      assert.equal(app.docsPrefix === prefix || app.docsPrefix.startsWith(`${prefix}/`), false, prefix);
+    });
+  });
+});
+
+describe('static limits', () => {
+  test('PAGINATION and SCHEMA_LIMITS are frozen and hold positive integers only', () => {
+    const cases = [
+      [PAGINATION, ['defaultLimit', 'maxLimit', 'maxOffset']],
+      [SCHEMA_LIMITS, ['textMaxLength', 'listMaxValues']],
+    ];
+
+    cases.forEach(([limits, names]) => {
+      assert.ok(Object.isFrozen(limits));
+      names.forEach((name) => assert.ok(Object.hasOwn(limits, name), name));
+      Object.entries(limits).forEach(([name, value]) => assert.ok(Number.isSafeInteger(value) && value > 0, name));
+    });
+  });
+
+  test('PAGINATION gives a default limit that is not above the maximum one', () => {
+    assert.ok(PAGINATION.defaultLimit <= PAGINATION.maxLimit);
   });
 });
 

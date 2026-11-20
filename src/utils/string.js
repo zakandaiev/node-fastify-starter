@@ -30,6 +30,8 @@ const HTML_ENTITIES = Object.freeze({
 });
 const HTML_ENTITY_REGEXP = /&(?:amp|lt|gt|quot|#39|nbsp);/g;
 
+const REGEXP_SYNTAX_REGEXP = /[\\^$.*+?()[\]{}|/]/g;
+
 const TAG_OPEN = '<';
 const TAG_CLOSE = '>';
 const END_TAG_OPEN = '</';
@@ -64,7 +66,7 @@ const BYTES_DECIMALS = 1;
 const DECIMALS_MAX = 100;
 
 // NFC takes quadratic time on a long run of combining marks, and no address is longer than this.
-const EMAIL_MAX_LENGTH = 320;
+const EMAIL_INPUT_MAX_LENGTH = 320;
 const UNICODE_FORM = 'NFC';
 
 const PHONE_RAW_MAX_LENGTH = 32;
@@ -75,6 +77,12 @@ const DIGITS_REGEXP = /^\d+$/;
 
 export function escapeHtml(value) {
   return toString(value).replace(HTML_ESCAPE_REGEXP, (char) => HTML_ESCAPES[char]);
+}
+
+// Not RegExp.escape(): it writes a leading letter or digit as \x.., and the pattern lands in the API docs.
+// Every character escaped here is a syntax character, which the "u" flag of AJV accepts escaped.
+export function escapeRegExp(value) {
+  return toString(value).replace(REGEXP_SYNTAX_REGEXP, '\\$&');
 }
 
 // What is left unclosed runs to the end of the input, as in a browser: a failed search is never repeated from
@@ -281,7 +289,7 @@ export function formatBytes(bytes, decimals = BYTES_DECIMALS) {
 export function normalizeEmail(value) {
   const email = toString(value).trim();
 
-  if (email.length > EMAIL_MAX_LENGTH) {
+  if (email.length > EMAIL_INPUT_MAX_LENGTH) {
     return '';
   }
 

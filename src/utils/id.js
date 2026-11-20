@@ -29,6 +29,7 @@ const TEXT_TIMESTAMP_END = 13;
 const TEXT_VERSION_INDEX = 14;
 
 export const UUID_REGEXP = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+export const UUID_LENGTH = 36;
 
 // One buffer for all calls: every call overwrites it whole, so it must never leave the module.
 const bytes = Buffer.alloc(UUID_BYTES);

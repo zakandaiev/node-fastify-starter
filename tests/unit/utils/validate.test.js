@@ -1,4 +1,5 @@
 import {
+  EMAIL_MAX_LENGTH,
   ipInCidr,
   isCidr,
   isEmail,
@@ -114,6 +115,26 @@ describe('isEmail', () => {
     ];
 
     assert.ok(measure(() => assertAll(isEmail, inputs, false)) < INSTANT_MS);
+  });
+});
+
+describe('EMAIL_MAX_LENGTH', () => {
+  test('is the length of the longest address isEmail accepts, whichever side of the "@" is long', () => {
+    const longLocal = `${'a'.repeat(EMAIL_MAX_LENGTH - '@example.com'.length)}@example.com`;
+    const longDomain = `a@${'b'.repeat(EMAIL_MAX_LENGTH - 'a@.com'.length)}.com`;
+
+    [longLocal, longDomain].forEach((address) => {
+      assert.equal(address.length, EMAIL_MAX_LENGTH);
+      assert.equal(isEmail(address), true);
+      assert.equal(isEmail(`a${address}`), false);
+    });
+  });
+
+  test('is measured on the address isEmail checks: the outer whitespace it trims is not counted', () => {
+    const address = `${'a'.repeat(EMAIL_MAX_LENGTH - '@example.com'.length)}@example.com`;
+
+    assert.equal(isEmail(`  ${address}  `), true);
+    assert.equal(isEmail(`  a${address}  `), false);
   });
 });
 

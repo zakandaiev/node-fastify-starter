@@ -23,6 +23,7 @@ export function createAppConfig(env) {
 
     apiPrefix: '/api',
     healthPrefix: '/health',
+    docsPrefix: '/docs',
 
     bodyLimit: 16 * 1024,
     maxParamLength: 100,

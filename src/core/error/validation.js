@@ -19,6 +19,10 @@ const COLUMN_SEPARATOR = '.';
 
 const PROPERTY_NAMES_KEYWORD = 'propertyNames';
 
+// AJV reports a failed branch of if/then/else twice: by the errors of the branch, and by an "if" entry that only
+// says the branch failed. The gate of expensive keywords puts pattern and format under "if" in every request.
+const BRANCH_KEYWORD = 'if';
+
 const CONTEXT_SOURCES = Object.freeze({
   body: 'body',
   querystring: 'query',
@@ -58,11 +62,18 @@ const OPERATOR_VALUE_PARAMS = Object.freeze({
   formatExclusiveMaximum: 'limit',
 });
 
-// A list that refuses the cut (frozen, a read-only length, a locked item) is still capped by the copy
-// formatValidation takes.
-function cutList(list, maxLength) {
+function isReported(error) {
+  return isObject(error) && error.keyword !== BRANCH_KEYWORD;
+}
+
+// The length first, then the items: a list that refuses the cut (frozen, sealed, a read-only length) is left
+// as it was, never half rewritten, and the copy formatValidation takes still filters and caps it.
+function keepReported(list, reported) {
   try {
-    list.length = maxLength;
+    list.length = reported.length;
+    reported.forEach((error, index) => {
+      list[index] = error;
+    });
   } catch {
     return false;
   }
@@ -79,15 +90,16 @@ export function createSchemaErrorFormatter(maxErrors) {
   }
 
   function formatSchemaErrors(errors, dataVar) {
-    const count = isArray(errors)
-      ? errors.length
-      : 0;
+    const list = isArray(errors)
+      ? errors
+      : [];
+    const reported = list.filter((error) => isReported(error));
 
-    if (count > maxErrors) {
-      cutList(errors, maxErrors);
+    if (reported.length !== list.length || reported.length > maxErrors) {
+      keepReported(list, reported.slice(0, maxErrors));
     }
 
-    return new Error(`Request ${dataVar} is not valid: ${count} schema errors`);
+    return new Error(`Request ${dataVar} is not valid: ${reported.length} schema errors`);
   }
 
   return formatSchemaErrors;
@@ -213,8 +225,8 @@ export function formatValidation(error, request, {
   const source = request?.[CONTEXT_SOURCES[error.validationContext]];
 
   return error.validation
+    .filter((item) => isReported(item))
     .slice(0, maxErrors)
-    .filter((item) => isObject(item))
     .map((item) => toSchemaEntry(item, source, { maxValueLength, maxListLength, isDev }));
 }
 

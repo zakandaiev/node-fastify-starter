@@ -1,9 +1,9 @@
 import {
   addFiniteGuards,
   guardRouteSchema,
-  readSchemaTypes,
   useFiniteKeyword,
 } from '#core/schema/finite.js';
+import { MEDIA_TYPE } from '#enums/media-type.js';
 import { buildTestApp } from '#root/tests/helper/app.js';
 import { freezeDeep } from '#utils/object.js';
 import Ajv from 'ajv';
@@ -106,6 +106,19 @@ function describeRejection(response, column, columnValue) {
   };
 }
 
+// AJV refuses a non-finite number for a number type by itself (strictNumbers): in a JSON body the guard stays silent
+// there, and the entry of the type is the only one.
+function describeJsonRejection(column, columnValue, type) {
+  return [
+    {
+      column,
+      columnValue,
+      operator: 'type',
+      operatorValue: type,
+    },
+  ];
+}
+
 function describeNotFound(response) {
   return {
     status: 'error',
@@ -113,6 +126,32 @@ function describeNotFound(response) {
     message: 'Not found',
     meta: { requestId: response.headers['x-request-id'] },
   };
+}
+
+// Fastify parses no form by itself: this parser gives every field as text, as a browser sends it.
+function useFormParser(fastify) {
+  fastify.addContentTypeParser(MEDIA_TYPE.FORM_URLENCODED, { parseAs: 'string' }, (request, body, done) => {
+    done(null, Object.fromEntries(new URLSearchParams(body)));
+  });
+}
+
+// A raw payload: a JSON number such as 1e400 cannot be written from JavaScript, where it is already Infinity.
+function postJson(fastify, url, payload) {
+  return fastify.inject({
+    method: 'POST',
+    url,
+    payload,
+    headers: { 'content-type': MEDIA_TYPE.JSON },
+  });
+}
+
+function postForm(fastify, url, fields) {
+  return fastify.inject({
+    method: 'POST',
+    url,
+    payload: new URLSearchParams(fields).toString(),
+    headers: { 'content-type': MEDIA_TYPE.FORM_URLENCODED },
+  });
 }
 
 describe('useFiniteKeyword', () => {
@@ -214,27 +253,6 @@ describe('useFiniteKeyword', () => {
   });
 });
 
-describe('readSchemaTypes', () => {
-  test('returns the types of a schema as a list, whichever way it names them', () => {
-    assert.deepEqual(readSchemaTypes({ type: 'integer' }), ['integer']);
-    assert.deepEqual(readSchemaTypes({ type: ['integer', 'null'] }), ['integer', 'null']);
-    assert.deepEqual(readSchemaTypes({ properties: {} }), []);
-    assert.deepEqual(readSchemaTypes({ type: null }), []);
-  });
-
-  test('does not hand out the list of the schema itself', () => {
-    const schema = Object.freeze({ type: Object.freeze(['integer', 'null']) });
-
-    assert.notEqual(readSchemaTypes(schema), schema.type);
-  });
-
-  test('requires a schema object', () => {
-    [undefined, null, true, 'integer', [{ type: 'integer' }]].forEach((schema) => {
-      assert.throws(() => readSchemaTypes(schema), { name: 'TypeError', message: /requires a schema object/ });
-    });
-  });
-});
-
 describe('addFiniteGuards', () => {
   test('marks a number and an integer', () => {
     assert.deepEqual(addFiniteGuards({ type: 'number' }), { type: 'number', finite: true });
@@ -318,11 +336,11 @@ describe('addFiniteGuards', () => {
     });
   });
 
-  test('marks the schema that holds a $ref: the schema it points to is out of sight', () => {
-    assert.deepEqual(addFiniteGuards({ $ref: 'limit#' }), { $ref: 'limit#', finite: true });
+  test('leaves a $ref unmarked: the schema it points to is guarded where it is defined', () => {
+    assert.deepEqual(addFiniteGuards({ $ref: 'limit#' }), { $ref: 'limit#' });
     assert.deepEqual(
       addFiniteGuards({ type: 'object', properties: { limit: { $ref: 'limit#' } } }),
-      { type: 'object', properties: { limit: { $ref: 'limit#', finite: true } } },
+      { type: 'object', properties: { limit: { $ref: 'limit#' } } },
     );
   });
 
@@ -358,6 +376,17 @@ describe('addFiniteGuards', () => {
         range: { type: 'array', items: { anyOf: [{ type: 'number', finite: true }, { type: 'null' }], finite: true } },
       },
     });
+  });
+
+  test('walks propertyNames', () => {
+    assert.deepEqual(
+      addFiniteGuards({ type: 'object', propertyNames: { not: { const: 'constructor' } } }),
+      { type: 'object', propertyNames: { not: { const: 'constructor' }, finite: true } },
+    );
+    assert.deepEqual(
+      addFiniteGuards({ type: 'object', propertyNames: { anyOf: [{ type: 'string', maxLength: 3 }, { type: 'integer' }] } }),
+      { type: 'object', propertyNames: { anyOf: [{ type: 'string', maxLength: 3 }, { type: 'integer', finite: true }], finite: true } },
+    );
   });
 
   test('walks definitions and $defs', () => {
@@ -790,63 +819,123 @@ describe('finite guard in a request', () => {
     assert.deepEqual(received, []);
   });
 
-  test('answers 422 to a JSON string that coerces to a non-finite number in the body', async (t) => {
+  test('answers 422 with a type entry to a JSON string in place of a number in the body: a JSON body is not coerced', async (t) => {
+    const fastify = await createApp(t);
+    const received = [];
+    const texts = [...NON_FINITE.map(({ text }) => text), '5'];
+
+    fastify.post('/items', { schema: { body: createPart() } }, (request) => {
+      received.push(request.body.limit);
+
+      return { limit: request.body.limit };
+    });
+
+    await Promise.all(texts.map(async (text) => {
+      const response = await fastify.inject({ method: 'POST', url: '/items', payload: { limit: text } });
+
+      assert.equal(response.statusCode, 422, text);
+      assert.deepEqual(response.json().validation, [{
+        column: 'limit',
+        columnValue: text,
+        operator: 'type',
+        operatorValue: 'integer',
+      }], text);
+    }));
+
+    assert.deepEqual(received, []);
+  });
+
+  test('answers 422 with the type entry alone to the JSON numbers 1e400 and -1e400 in the body', async (t) => {
     const fastify = await createApp(t);
     const received = [];
 
     fastify.post('/items', { schema: { body: createPart() } }, (request) => {
+      received.push(request.body.limit);
+
+      return { limit: request.body.limit };
+    });
+
+    const [positive, negative] = await Promise.all([
+      postJson(fastify, '/items', '{"limit":1e400}'),
+      postJson(fastify, '/items', '{"limit":-1e400}'),
+    ]);
+
+    assert.equal(positive.statusCode, 422);
+    assert.deepEqual(positive.json().validation, describeJsonRejection('limit', 'Infinity', 'integer'));
+    assert.equal(negative.statusCode, 422);
+    assert.deepEqual(negative.json().validation, describeJsonRejection('limit', '-Infinity', 'integer'));
+    assert.deepEqual(received, []);
+  });
+
+  test('keeps the guard on a field of a JSON body that names no type: nothing else refuses Infinity there', async (t) => {
+    const fastify = await createApp(t);
+    const received = [];
+    const body = { type: 'object', properties: { limit: { minimum: 0, finite: true } } };
+
+    fastify.post('/items', { schema: { body } }, (request) => {
+      received.push(request.body.limit);
+
+      return { isReceived: true };
+    });
+
+    const response = await postJson(fastify, '/items', '{"limit":1e400}');
+
+    assert.equal(response.statusCode, 422);
+    assert.deepEqual(response.json(), describeRejection(response, 'limit', 'Infinity'));
+    assert.deepEqual(received, []);
+  });
+
+  test('stays silent under a type only where the type refuses Infinity by itself: without coercion', () => {
+    const typed = { type: 'object', properties: { limit: { type: 'integer', finite: true } } };
+    const strict = new Ajv({ allErrors: true });
+    const coercing = createAjv();
+
+    useFiniteKeyword(strict);
+
+    const validateStrict = strict.compile(typed);
+    const validateCoercing = coercing.compile(typed);
+
+    assert.equal(validateStrict({ limit: Infinity }), false);
+    assert.deepEqual(validateStrict.errors.map((error) => error.keyword), ['type']);
+    assert.equal(validateCoercing({ limit: 'Infinity' }), false);
+    assert.deepEqual(validateCoercing.errors.map((error) => error.keyword), ['finite']);
+  });
+
+  test('guards a body that is declared by media type: a form is coerced, and JSON is not', async (t) => {
+    const fastify = await createApp(t);
+    const received = [];
+    const body = {
+      content: {
+        [MEDIA_TYPE.JSON]: { schema: createPart() },
+        [MEDIA_TYPE.FORM_URLENCODED]: { schema: createPart() },
+      },
+    };
+
+    useFormParser(fastify);
+    fastify.post('/items', { schema: { body } }, (request) => {
       received.push(request.body.limit);
 
       return { limit: request.body.limit };
     });
 
     await Promise.all(NON_FINITE.map(async ({ text, reflected }) => {
-      const response = await fastify.inject({ method: 'POST', url: '/items', payload: { limit: text } });
+      const response = await postForm(fastify, '/items', { limit: text });
 
       assert.equal(response.statusCode, 422, text);
       assert.deepEqual(response.json(), describeRejection(response, 'limit', reflected), text);
     }));
 
-    assert.deepEqual(received, []);
-  });
-
-  test('never lets the JSON number 1e400 reach the handler either', async (t) => {
-    const fastify = await createApp(t);
-    const received = [];
-
-    fastify.post('/items', { schema: { body: createPart() } }, (request) => {
-      received.push(request.body.limit);
-
-      return { limit: request.body.limit };
-    });
-
-    const response = await fastify.inject({
-      method: 'POST',
-      url: '/items',
-      payload: '{"limit":1e400}',
-      headers: { 'content-type': 'application/json' },
-    });
-
-    assert.equal(response.statusCode, 422);
-    assert.equal(response.json().code, 'VALIDATION_ERROR');
-    assert.deepEqual(received, []);
-  });
-
-  test('guards a body that is declared by media type', async (t) => {
-    const fastify = await createApp(t);
-    const body = { content: { 'application/json': { schema: createPart() } } };
-
-    fastify.post('/items', { schema: { body } }, (request) => ({ limit: request.body.limit }));
-
-    const [rejected, accepted] = await Promise.all([
-      fastify.inject({ method: 'POST', url: '/items', payload: { limit: '1e400' } }),
-      fastify.inject({ method: 'POST', url: '/items', payload: { limit: '7' } }),
+    const [json, form, typedJson] = await Promise.all([
+      postJson(fastify, '/items', '{"limit":1e400}'),
+      postForm(fastify, '/items', { limit: '7' }),
+      postJson(fastify, '/items', '{"limit":7}'),
     ]);
 
-    assert.equal(rejected.statusCode, 422);
-    assert.deepEqual(rejected.json(), describeRejection(rejected, 'limit', 'Infinity'));
-    assert.equal(accepted.statusCode, 200);
-    assert.deepEqual(accepted.json(), { limit: 7 });
+    assert.equal(json.statusCode, 422);
+    assert.deepEqual(json.json().validation, describeJsonRejection('limit', 'Infinity', 'integer'));
+    assert.deepEqual([form.statusCode, form.json()], [200, { limit: 7 }]);
+    assert.deepEqual([typedJson.statusCode, typedJson.json()], [200, { limit: 7 }]);
+    assert.deepEqual(received, [7, 7]);
   });
 
   test('guards a number nested in an array, an object or a dictionary', async (t) => {
@@ -865,17 +954,17 @@ describe('finite guard in a request', () => {
 
     const [inArray, inObject, inDictionary, finite] = await Promise.all([
       fastify.inject('/items?ids=1&ids=Infinity'),
-      fastify.inject({ method: 'POST', url: '/items', payload: { page: { size: '1e400' } } }),
-      fastify.inject({ method: 'POST', url: '/items', payload: { prices: { apple: '-Infinity' } } }),
+      postJson(fastify, '/items', '{"page":{"size":1e400}}'),
+      postJson(fastify, '/items', '{"prices":{"apple":-1e400}}'),
       fastify.inject('/items?ids=1&ids=2'),
     ]);
 
     assert.equal(inArray.statusCode, 422);
     assert.deepEqual(inArray.json(), describeRejection(inArray, 'ids.1', 'Infinity'));
     assert.equal(inObject.statusCode, 422);
-    assert.deepEqual(inObject.json(), describeRejection(inObject, 'page.size', 'Infinity'));
+    assert.deepEqual(inObject.json().validation, describeJsonRejection('page.size', 'Infinity', 'integer'));
     assert.equal(inDictionary.statusCode, 422);
-    assert.deepEqual(inDictionary.json(), describeRejection(inDictionary, 'prices.apple', '-Infinity'));
+    assert.deepEqual(inDictionary.json().validation, describeJsonRejection('prices.apple', '-Infinity', 'number'));
     assert.equal(finite.statusCode, 200);
     assert.deepEqual(finite.json(), { ids: [1, 2] });
   });
@@ -915,7 +1004,7 @@ describe('finite guard in a request', () => {
       fastify.inject('/query?limit=5'),
       fastify.inject('/params/5'),
       fastify.inject({ url: '/headers', headers: { 'x-limit': '5' } }),
-      fastify.inject({ method: 'POST', url: '/body', payload: { limit: '5' } }),
+      fastify.inject({ method: 'POST', url: '/body', payload: { limit: 5 } }),
     ]);
 
     responses.forEach((response) => {

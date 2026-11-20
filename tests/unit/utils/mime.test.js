@@ -3,6 +3,7 @@ import {
   MIME_WHITELIST,
   detectMime,
   extFromMime,
+  toMimeEssence,
 } from '#utils/mime.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
@@ -358,6 +359,72 @@ describe('detectMime', () => {
       assert.equal(detectMime(huge), 'image/webp');
     });
 
+    assert.ok(performance.now() - startedAt < INSTANT_MS);
+  });
+});
+
+describe('toMimeEssence', () => {
+  test('lower-cases the type and the subtype', () => {
+    assert.equal(toMimeEssence('IMAGE/JPEG'), 'image/jpeg');
+    assert.equal(toMimeEssence('Application/JSON'), 'application/json');
+    assert.equal(toMimeEssence('Multipart/Form-Data'), 'multipart/form-data');
+  });
+
+  test('drops the parameters and the whitespace around the type', () => {
+    assert.equal(toMimeEssence('application/json; charset=utf-8'), 'application/json');
+    assert.equal(toMimeEssence('APPLICATION/JSON; CHARSET=UTF-8'), 'application/json');
+    assert.equal(toMimeEssence('multipart/form-data; boundary=----WebKitFormBoundary7MA4YWxk'), 'multipart/form-data');
+    assert.equal(toMimeEssence(' application/x-www-form-urlencoded '), 'application/x-www-form-urlencoded');
+    assert.equal(toMimeEssence('\tapplication/pdf ; name="report.pdf"\r\n'), 'application/pdf');
+    assert.equal(toMimeEssence('text/plain;'), 'text/plain');
+  });
+
+  test('names the essence of any type, not only of a whitelisted one', () => {
+    ['text/html', 'image/svg+xml', 'application/vnd.api+json', 'application/octet-stream', 'image/*', '*/*'].forEach((mime) => {
+      assert.equal(toMimeEssence(mime), mime);
+    });
+  });
+
+  test('gives back every whitelisted type from any spelling of it: extFromMime finds the extension by it', () => {
+    MIME_WHITELIST.forEach((type) => {
+      assert.equal(toMimeEssence(` ${type.toUpperCase()}; q=0.8 `), type);
+    });
+  });
+
+  test('returns null for a string that is not one MIME type', () => {
+    [
+      '',
+      ' ',
+      'image',
+      'image/',
+      '/jpeg',
+      'jpeg',
+      'image/jpeg, image/png',
+      'image/jpeg/extra',
+      'image /jpeg',
+      'image/ jpeg',
+      'image/jpeg\0',
+      `${BYTE_ORDER_MARK}image/jpeg`,
+      '__proto__',
+      'constructor',
+    ].forEach((mime) => {
+      assert.equal(toMimeEssence(mime), null, JSON.stringify(mime));
+    });
+  });
+
+  test('returns null for what is not a string', () => {
+    [null, undefined, 0, 1, true, {}, [], ['application/json'], Buffer.from('application/json'), { toString: () => 'application/json' }].forEach((mime) => {
+      assert.equal(toMimeEssence(mime), null);
+    });
+  });
+
+  test('reads a long hostile string in linear time', () => {
+    const startedAt = performance.now();
+
+    assert.equal(toMimeEssence('a'.repeat(LONG_STRING_LENGTH)), null);
+    assert.equal(toMimeEssence(`image/${' '.repeat(LONG_STRING_LENGTH)}x`), null);
+    assert.equal(toMimeEssence(`${' '.repeat(LONG_STRING_LENGTH)}application/json`), 'application/json');
+    assert.equal(toMimeEssence(`application/json${';a="b"'.repeat(LONG_STRING_LENGTH / 10)}`), 'application/json');
     assert.ok(performance.now() - startedAt < INSTANT_MS);
   });
 });

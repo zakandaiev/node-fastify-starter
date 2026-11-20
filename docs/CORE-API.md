@@ -145,18 +145,43 @@
 
 - `createEnvelope({ code, message, data, pagination, sort, filters, validation, requestId, stack } = {})`
 
+## #core/schema/create-schema.js
+
+- `createSchema(...sources)`
+
+## #core/schema/docs.js
+
+- `dropSchemaMarkers(schema)`
+- `isJsonField(schema)`
+- `readDocumentedSchema(routeSchema)`
+- `rememberSourceSchema(routeSchema, source)`
+
 ## #core/schema/finite.js
 
-- `REQUEST_PARTS`
 - `addFiniteGuards(schema)`
 - `guardRouteSchema(routeSchema)`
-- `readSchemaTypes(schema)`
 - `useFiniteKeyword(ajv)`
+
+## #core/schema/gate.js
+
+- `gateExpensiveKeywords(schema, { label = '"schema"', isStrict = true } = {})`
+- `gateRouteSchema(routeSchema)`
 
 ## #core/schema/route.js
 
 - `assertRouteContract(routeOptions)`
 - `createRouteHook({ apiPrefix, healthPrefix } = {})`
+
+## #core/schema/validator.js
+
+- `buildValidator(externalSchemas = {})`
+- `useSchemaKeywords(ajv)`
+
+## #core/schema/walk.js
+
+- `BODY_PART`
+- `REQUEST_PARTS`
+- `mapRequestSchemas(routeSchema, transform)`
 
 ## #utils/array.js
 
@@ -184,6 +209,8 @@
 
 ## #utils/date.js
 
+- `ISO_DATE_LENGTH`
+- `ISO_DATE_TIME_MAX_LENGTH`
 - `addToDate(value, duration)`
 - `convertStringToMs(value)`
 - `convertStringToSeconds(value)`
@@ -193,6 +220,7 @@
 - `isExpired(value, ttl, now = nowUtc())`
 - `isFuture(value, now = nowUtc())`
 - `isPast(value, now = nowUtc())`
+- `isUtcDateTime(value)`
 - `nowUtc()`
 - `parseStrictUtc(value)`
 - `toDate(value)`
@@ -217,6 +245,7 @@
 
 ## #utils/id.js
 
+- `UUID_LENGTH`
 - `UUID_REGEXP`
 - `isUuid(value)`
 - `uuidTimestamp(value)`
@@ -229,6 +258,7 @@
 - `MIME_WHITELIST`
 - `detectMime(bytes)`
 - `extFromMime(mime)`
+- `toMimeEssence(mime)`
 
 ## #utils/object.js
 
@@ -256,6 +286,14 @@
 - `randomString(length = STRING_LENGTH, alphabet = ALPHABET.ALPHANUMERIC)`
 - `randomToken(byteLength = TOKEN_BYTES)`
 
+## #utils/schema.js
+
+- `SUBSCHEMA_MAP_KEYWORDS`
+- `formatSchemaPointer(path)`
+- `isNumericSchema(schema)`
+- `mapSchema(schema, visit)`
+- `readSchemaTypes(schema)`
+
 ## #utils/sensitive.js
 
 - `OMIT_VALUE`
@@ -273,6 +311,7 @@
 ## #utils/string.js
 
 - `escapeHtml(value)`
+- `escapeRegExp(value)`
 - `formatBytes(bytes, decimals = BYTES_DECIMALS)`
 - `mask(value, options = {})`
 - `normalizeEmail(value)`
@@ -302,6 +341,7 @@
 
 ## #utils/validate.js
 
+- `EMAIL_MAX_LENGTH`
 - `ipInCidr(address, cidr)`
 - `isCidr(value)`
 - `isEmail(value)`

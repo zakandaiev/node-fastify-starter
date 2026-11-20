@@ -41,7 +41,7 @@ export function detectMime(bytes) {
   return format?.type ?? null;
 }
 
-function toEssence(mime) {
+export function toMimeEssence(mime) {
   if (!isString(mime)) {
     return null;
   }
@@ -54,7 +54,7 @@ function toEssence(mime) {
 }
 
 export function extFromMime(mime) {
-  const type = toEssence(mime);
+  const type = toMimeEssence(mime);
   const format = REGISTRY.find((item) => item.type === type);
 
   return format?.extension ?? null;

@@ -1,9 +1,9 @@
 import { readStructure } from '#core/db/structure.js';
 import { createTestDb } from '#root/tests/helper/db.js';
 import { bindMigrator } from '#root/tests/helper/migration.js';
-import { properties as groupProperties } from '#schemas/entity/group.js';
-import { properties as userProperties } from '#schemas/entity/user.js';
-import { snakeToCamelKey } from '#utils/case.js';
+import { properties as groupProperties, unique as groupUnique } from '#schemas/entity/group.js';
+import { properties as userProperties, unique as userUnique } from '#schemas/entity/user.js';
+import { camelToSnakeKey, snakeToCamelKey } from '#utils/case.js';
 import { UUID_REGEXP } from '#utils/id.js';
 import { compact, pick } from '#utils/object.js';
 import { isNonEmptyString } from '#utils/type.js';
@@ -11,7 +11,11 @@ import assert from 'node:assert/strict';
 import { before, describe, test } from 'node:test';
 
 const NULLABLE = 'YES';
+const UNIQUE = 'YES';
 const NULL_TYPE = 'null';
+
+const INDEX_PART_SEPARATOR = ', ';
+const INDEX_COLUMN_REGEXP = /^\w+/;
 
 const VARCHAR_REGEXP = /^varchar\((\d+)\)$/;
 const LIST_CHECK_REGEXP = /^`\w+`(?: collate \w+)? in \((.+)\)$/;
@@ -20,7 +24,7 @@ const QUOTED_VALUE_REGEXP = /'([^']*)'/g;
 // What a type of a column says of its property, in the words of JSON Schema.
 const TYPES = Object.freeze({
   uuid: { type: 'string', pattern: UUID_REGEXP.source },
-  'datetime(3)': { type: 'string', format: 'date-time' },
+  'datetime(3)': { type: 'string', format: 'date-time-utc' },
   'tinyint(1)': { type: 'boolean' },
 });
 
@@ -79,6 +83,20 @@ function assertDescribes(properties, table) {
   });
 }
 
+// The database names the index a duplicate broke, and unique turns that name into the field of the API.
+function assertUniqueIndexes(unique, table) {
+  Object.entries(unique).forEach(([name, field]) => {
+    const index = table.indexes[name];
+
+    assert.ok(index, `The table has no index ${name}`);
+    assert.equal(index.unique, UNIQUE, name);
+
+    const columns = index.columns.split(INDEX_PART_SEPARATOR).map((part) => INDEX_COLUMN_REGEXP.exec(part)[0]);
+
+    assert.ok(columns.includes(camelToSnakeKey(field)), `${name} is not on the column of ${field}`);
+  });
+}
+
 describe('the entity schemas', { skip: testDb.skip }, () => {
   let tables;
 
@@ -94,5 +112,10 @@ describe('the entity schemas', { skip: testDb.skip }, () => {
 
   test('describe a group as the table groups holds one', () => {
     assertDescribes(groupProperties, tables.groups);
+  });
+
+  test('name in unique the unique indexes of their tables, each on the column of the field a duplicate is reported on', () => {
+    assertUniqueIndexes(userUnique, tables.users);
+    assertUniqueIndexes(groupUnique, tables.groups);
   });
 });

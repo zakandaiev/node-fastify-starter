@@ -1,5 +1,7 @@
 import { runNode } from '#root/tests/helper/process.js';
 import {
+  ISO_DATE_LENGTH,
+  ISO_DATE_TIME_MAX_LENGTH,
   addToDate,
   convertStringToMs,
   convertStringToSeconds,
@@ -9,6 +11,7 @@ import {
   isExpired,
   isFuture,
   isPast,
+  isUtcDateTime,
   nowUtc,
   parseStrictUtc,
   toDate,
@@ -66,6 +69,71 @@ const NOT_MOMENTS = [
 
 const NOT_DURATIONS = ['', 'm', '10', '10 m', '10min', '1M', 600, null, ['10m']];
 
+const LONGEST_UTC_DATE_TIME = '2026-11-20T10:00:00.123456789+00:00';
+
+const UTC_DATE_TIMES = [
+  MOMENT,
+  '2026-01-31T10:20:30.456+00:00',
+  '2026-01-31T10:20:30Z',
+  '2026-01-31T10:20:30+00:00',
+  '2026-01-31T10:20:30.4Z',
+  '2024-02-29T23:59:59.999Z',
+  '0000-01-01T00:00:00Z',
+  '9999-12-31T23:59:59.999999999Z',
+  LONGEST_UTC_DATE_TIME,
+];
+
+const NOT_UTC_DATE_TIMES = Object.freeze({
+  otherOffsets: [
+    '2026-01-31T12:20:30+02:00',
+    '2026-01-31T05:20:30-05:00',
+    '2026-01-31T10:50:30+00:30',
+    '2026-01-31T10:20:30-00:00',
+    '2026-01-31T10:20:30+0000',
+    '2026-01-31T10:20:30+00',
+    '2026-01-31T10:20:30z',
+  ],
+  zoneless: ['2026-01-31T10:20:30', '2026-01-31T10:20:30.456', '2026-01-31 10:20:30'],
+  dateOnly: ['2026-01-31', '2026-01-31Z', '2026-01-31+00:00', '2026-01-31T10:20Z', '2026-01-31T10Z'],
+  impossible: [
+    '2026-02-30T00:00:00Z',
+    '2026-02-29T00:00:00Z',
+    '2026-04-31T00:00:00+00:00',
+    '2026-13-01T00:00:00Z',
+    '2026-01-00T00:00:00Z',
+    '1900-02-29T00:00:00Z',
+    '2026-01-15T24:00:00Z',
+    '2026-01-15T10:60:00Z',
+    '2016-12-31T23:59:60Z',
+  ],
+  malformed: [
+    '',
+    ' 2026-01-31T10:20:30Z',
+    '2026-01-31T10:20:30Z ',
+    '2026-01-31 10:20:30Z',
+    '2026-01-31T10:20:30.Z',
+    '2026-01-31T10:20:30.1234567890Z',
+    'Sat, 31 Jan 2026 10:20:30 GMT',
+  ],
+});
+
+const NOT_STRING_MOMENTS = [
+  new Date(MOMENT_MS),
+  MOMENT_MS,
+  0,
+  10n,
+  null,
+  undefined,
+  true,
+  {},
+  [MOMENT],
+  { toString: () => MOMENT },
+  Symbol(MOMENT),
+  Object.create(null),
+  // eslint-disable-next-line no-new-wrappers -- the wrapper object is the case under test
+  new String(MOMENT),
+];
+
 // New York is behind UTC and moves its clocks on this night, Kolkata is ahead of UTC by a half-hour offset.
 const LOCAL_MIDNIGHTS = Object.freeze({
   'America/New_York': '2026-03-08T05:00:00.000Z',
@@ -114,6 +182,22 @@ function assertInstant(run) {
   run();
 
   assert.ok(performance.now() - startedAt < INSTANT_MS);
+}
+
+function assertAnswers(read, values, expected) {
+  values.forEach((value) => {
+    assert.equal(read(value), expected, inspect(value));
+  });
+}
+
+function isReadByParseStrictUtc(value) {
+  try {
+    parseStrictUtc(value);
+  } catch {
+    return false;
+  }
+
+  return true;
 }
 
 describe('nowUtc', () => {
@@ -532,6 +616,89 @@ describe('parseStrictUtc', () => {
         `2026-01-31T10:20:30${'+00:00'.repeat(LONG)}`,
         `${'1'.repeat(LONG)}Z`,
       ]);
+    });
+  });
+});
+
+describe('isUtcDateTime', () => {
+  test('accepts a date-time that ends with "Z" or "+00:00", with a fraction of one to nine digits or none', () => {
+    assertAnswers(isUtcDateTime, UTC_DATE_TIMES, true);
+  });
+
+  test('refuses another offset, however close to UTC, "-00:00" and a lower-case "z" included', () => {
+    assertAnswers(isUtcDateTime, NOT_UTC_DATE_TIMES.otherOffsets, false);
+  });
+
+  test('refuses a date-time without a zone', () => {
+    assertAnswers(isUtcDateTime, NOT_UTC_DATE_TIMES.zoneless, false);
+  });
+
+  test('refuses a date alone and a time without seconds, with a zone or without one', () => {
+    assertAnswers(isUtcDateTime, NOT_UTC_DATE_TIMES.dateOnly, false);
+  });
+
+  test('refuses a calendar date or a time of day that does not exist', () => {
+    assertAnswers(isUtcDateTime, NOT_UTC_DATE_TIMES.impossible, false);
+  });
+
+  test('refuses whitespace around the value, an empty or an overlong fraction and a free form', () => {
+    assertAnswers(isUtcDateTime, NOT_UTC_DATE_TIMES.malformed, false);
+  });
+
+  test('refuses what is not a string, a Date and a timestamp included, and never throws', () => {
+    assertAnswers(isUtcDateTime, [...NOT_STRING_MOMENTS, ...NOT_MOMENTS], false);
+  });
+
+  test('answers true exactly where parseStrictUtc returns a Date and false where it throws', () => {
+    [...UTC_DATE_TIMES, ...Object.values(NOT_UTC_DATE_TIMES).flat(), ...NOT_STRING_MOMENTS, ...NOT_MOMENTS].forEach((value) => {
+      assert.equal(isUtcDateTime(value), isReadByParseStrictUtc(value), inspect(value));
+    });
+  });
+
+  test('answers a long hostile string in linear time', () => {
+    assertInstant(() => {
+      assertAnswers(isUtcDateTime, [
+        `2026-01-31T10:20:30.${'9'.repeat(LONG)}Z`,
+        `2026-01-31T10:20:30${'+00:00'.repeat(LONG)}`,
+        `${'1'.repeat(LONG)}Z`,
+        `${'2026-01-31T10:20:30'.repeat(LONG)}+00:00`,
+      ], false);
+    });
+  });
+});
+
+describe('ISO_DATE_TIME_MAX_LENGTH', () => {
+  test('is the length of the longest text isUtcDateTime accepts: nine digits of a fraction and the offset "+00:00"', () => {
+    assert.equal(LONGEST_UTC_DATE_TIME.length, ISO_DATE_TIME_MAX_LENGTH);
+    assert.equal(isUtcDateTime(LONGEST_UTC_DATE_TIME), true);
+    UTC_DATE_TIMES.forEach((value) => assert.ok(value.length <= ISO_DATE_TIME_MAX_LENGTH, value));
+  });
+
+  test('leaves no room for a longer text: one more digit of the fraction or of the year, an expanded year or a trailing character is refused', () => {
+    [
+      '2026-11-20T10:00:00.1234567890+00:00',
+      '12026-11-20T10:00:00.123456789+00:00',
+      '+012026-11-20T10:00:00.123456789+00:00',
+      `${LONGEST_UTC_DATE_TIME} `,
+      `${LONGEST_UTC_DATE_TIME}Z`,
+    ].forEach((value) => {
+      assert.ok(value.length > ISO_DATE_TIME_MAX_LENGTH, value);
+      assert.equal(isUtcDateTime(value), false, value);
+    });
+  });
+});
+
+describe('ISO_DATE_LENGTH', () => {
+  test('is the length of a calendar date "YYYY-MM-DD": the date alone toDate reads and the date part of toUtcIso', () => {
+    assert.equal('2026-01-31'.length, ISO_DATE_LENGTH);
+    assert.equal(toUtcIso('2026-01-31'), '2026-01-31T00:00:00.000Z');
+    assert.equal(toUtcIso(MOMENT).indexOf('T'), ISO_DATE_LENGTH);
+    assert.equal(toUtcIso(YEAR_9999_END_MS).indexOf('T'), ISO_DATE_LENGTH);
+  });
+
+  test('is the only length of a date alone toDate reads: one digit less or more is not a date', () => {
+    ['2026-1-31', '2026-01-1', '02026-01-31', '2026-001-31'].forEach((value) => {
+      assert.equal(toDate(value), null, value);
     });
   });
 });

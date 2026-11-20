@@ -3,8 +3,8 @@ import { createContext } from '#core/context/index.js';
 import { assertErrorConfig, handleClientError, handleError } from '#core/error/handler.js';
 import { createSchemaErrorFormatter } from '#core/error/validation.js';
 import { createLogger } from '#core/logger/index.js';
-import { useFiniteKeyword } from '#core/schema/finite.js';
 import { createRouteHook } from '#core/schema/route.js';
+import { buildValidator } from '#core/schema/validator.js';
 import { uuidv7 } from '#utils/id.js';
 import autoload from '@fastify/autoload';
 import Fastify, { LogController } from 'fastify';
@@ -29,11 +29,10 @@ function createFastify(config) {
     routerOptions: {
       maxParamLength: config.app.maxParamLength,
     },
-    ajv: {
-      customOptions: {
-        allErrors: true,
+    schemaController: {
+      compilersFactory: {
+        buildValidator,
       },
-      plugins: [useFiniteKeyword],
     },
     schemaErrorFormatter: createSchemaErrorFormatter(config.app.validation.maxErrors),
     frameworkErrors: handleError,

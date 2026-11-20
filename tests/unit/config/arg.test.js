@@ -24,8 +24,21 @@ describe('readArgs', () => {
   });
 
   test('rejects an empty host and an argument without a value', () => {
-    assert.throws(() => readArgs(['host'], ['--host=']), /--host must not be empty/);
+    assert.throws(() => readArgs(['host'], ['--host=']), { message: '--host must not be empty' });
     assert.throws(() => readArgs(['host'], ['--host']), { code: 'ERR_PARSE_ARGS_INVALID_OPTION_VALUE' });
+  });
+
+  test('reads --output as the path it was given', () => {
+    assert.deepEqual(readArgs(['output'], ['--output=docs/openapi.json']), { output: 'docs/openapi.json' });
+    assert.deepEqual(readArgs(['output'], ['--output', 'D:\\API Docs\\openapi.json']), { output: 'D:\\API Docs\\openapi.json' });
+    assert.deepEqual(readArgs(['output'], ['--output=first.json', '--output=second.json']), { output: 'second.json' });
+    assert.deepEqual(readArgs(['output'], []), {});
+  });
+
+  test('rejects an empty --output and one without a value, by its own name', () => {
+    assert.throws(() => readArgs(['output'], ['--output=']), { message: '--output must not be empty' });
+    assert.throws(() => readArgs(['output'], ['--output']), { code: 'ERR_PARSE_ARGS_INVALID_OPTION_VALUE' });
+    assert.throws(() => readArgs(['output', 'host'], ['--output=out.json', '--host=']), { message: '--host must not be empty' });
   });
 
   test('rejects an argument the entrypoint did not ask for', () => {

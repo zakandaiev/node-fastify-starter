@@ -1,14 +1,33 @@
+import { PAGINATION as PAGINATION_CONFIG } from '#config/pagination.js';
+import { SCHEMA_LIMITS } from '#config/schema.js';
 import { createEnvelope } from '#core/response/index.js';
+import { createSchema } from '#core/schema/create-schema.js';
 import { assertRouteContract } from '#core/schema/route.js';
 import { ERROR_CODE } from '#enums/error-code.js';
 import { buildTestApp } from '#root/tests/helper/app.js';
 import { isDeepFrozen } from '#root/tests/helper/object.js';
 import { errorEnvelope, listEnvelope, successEnvelope } from '#schemas/common/envelope.js';
-import { dateTimeUtc, email, uuid } from '#schemas/common/field.js';
+import {
+  dateTimeUtc,
+  email,
+  enumOf,
+  isoDate,
+  json,
+  nullable,
+  omitFields,
+  pickFields,
+  text,
+  uuid,
+  withDescription,
+  withoutNull,
+} from '#schemas/common/field.js';
 import { pagination } from '#schemas/common/pagination.js';
+import * as paginationSchema from '#schemas/common/pagination.js';
 import { PRIMITIVE_TYPES, primitiveOrList, validation } from '#schemas/common/validation.js';
-import { uuidv7 } from '#utils/id.js';
-import { isArray, isObject } from '#utils/type.js';
+import { UUID_REGEXP, uuidv7 } from '#utils/id.js';
+import { freezeDeep, omit } from '#utils/object.js';
+import { isArray, isNonEmptyString, isObject } from '#utils/type.js';
+import { EMAIL_MAX_LENGTH } from '#utils/validate.js';
 import fastJson from 'fast-json-stringify';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
@@ -16,6 +35,29 @@ import { describe, test } from 'node:test';
 const REQUEST_ID = '019a0000-0000-7000-8000-000000000000';
 const CANONICAL_ID = '019a1b2c-3d4e-7f50-8a6b-7c8d9e0f1a2b';
 const NIL_ID = '00000000-0000-0000-0000-000000000000';
+
+const ISO_DAY = '2026-11-19';
+const LONGEST_UTC_DATE_TIME = '2026-11-20T10:00:00.123456789+00:00';
+const EMAIL_DOMAIN = '@example.com';
+
+const STATUSES = Object.freeze(['active', 'blocked']);
+
+const PERSON_FIELDS = freezeDeep({
+  id: uuid('Person id'),
+  email: email('Email'),
+  firstName: text('First name', { maxLength: 100 }),
+  status: enumOf(STATUSES, 'Status'),
+});
+
+const PROFILE = Object.freeze({
+  theme: 'dark',
+  nested: Object.freeze({
+    tags: Object.freeze(['a', 'b']),
+    counts: Object.freeze({ a: 1 }),
+    isSet: false,
+    empty: null,
+  }),
+});
 
 const NON_CANONICAL_IDS = [
   '019A1B2C-3D4E-7F50-8A6B-7C8D9E0F1A2B',
@@ -200,12 +242,35 @@ function withoutRequestId(body) {
   return { ...body, meta: { ...body.meta, requestId: null } };
 }
 
-describe('uuid', () => {
-  test('describes a string with a pattern', () => {
-    const schema = uuid();
+// Each payload as the JSON body of a route that echoes it, through the validator of the app.
+async function postFields(t, properties, payloads) {
+  const fastify = await buildTestApp();
 
-    assert.equal(schema.type, 'string');
-    assert.equal(typeof schema.pattern, 'string');
+  t.after(() => fastify.close());
+  fastify.post('/fields', { schema: { body: { type: 'object', properties } } }, (request) => request.body);
+
+  return Promise.all(payloads.map((payload) => fastify.inject({ method: 'POST', url: '/fields', payload })));
+}
+
+function readFailures(response) {
+  assert.equal(response.statusCode, 422, response.body);
+
+  return response.json().validation.map(({ column, operator }) => [column, operator]);
+}
+
+function readLimits(response) {
+  assert.equal(response.statusCode, 422, response.body);
+
+  return response.json().validation.map(({ column, operator, operatorValue }) => [column, operator, operatorValue]);
+}
+
+function createEmail(length) {
+  return `${'a'.repeat(length - EMAIL_DOMAIN.length)}${EMAIL_DOMAIN}`;
+}
+
+describe('uuid', () => {
+  test('describes a string with a pattern and the length of the canonical form', () => {
+    assert.deepEqual(uuid(), { type: 'string', maxLength: CANONICAL_ID.length, pattern: UUID_REGEXP.source });
   });
 
   test('accepts the canonical form only: lower case with hyphens', () => {
@@ -222,11 +287,8 @@ describe('uuid', () => {
 });
 
 describe('email', () => {
-  test('describes a string in the email format', () => {
-    const schema = email();
-
-    assert.equal(schema.type, 'string');
-    assert.equal(schema.format, 'email');
+  test('describes a string in the email format of the app, as long as the longest address it takes', () => {
+    assert.deepEqual(email(), { type: 'string', maxLength: EMAIL_MAX_LENGTH, format: 'email' });
   });
 
   test('carries a description only when one is given', () => {
@@ -236,16 +298,379 @@ describe('email', () => {
 });
 
 describe('dateTimeUtc', () => {
-  test('describes a string in a date-time format', () => {
-    const schema = dateTimeUtc();
-
-    assert.equal(schema.type, 'string');
-    assert.match(schema.format, /^date-time/);
+  test('describes a string in the UTC date-time format, as long as the longest form it reads', () => {
+    assert.deepEqual(dateTimeUtc(), { type: 'string', maxLength: LONGEST_UTC_DATE_TIME.length, format: 'date-time-utc' });
   });
 
   test('carries a description only when one is given', () => {
     assert.equal(Object.hasOwn(dateTimeUtc(), 'description'), false);
     assert.deepEqual(dateTimeUtc('Created at'), { ...dateTimeUtc(), description: 'Created at' });
+  });
+});
+
+describe('isoDate', () => {
+  test('describes a string in the date format, as long as a date', () => {
+    assert.deepEqual(isoDate(), { type: 'string', maxLength: ISO_DAY.length, format: 'date' });
+  });
+
+  test('carries a description only when one is given', () => {
+    assert.equal(Object.hasOwn(isoDate(), 'description'), false);
+    assert.deepEqual(isoDate('Birthday'), { ...isoDate(), description: 'Birthday' });
+  });
+
+  test('takes a date of the calendar only, and answers a date-time with the error of the length alone', async (t) => {
+    const [leapDay, day, missingDay, dotted, dateTime] = await postFields(t, { day: isoDate() }, [
+      { day: '2024-02-29' },
+      { day: ISO_DAY },
+      { day: '2026-02-29' },
+      { day: '19.11.2026' },
+      { day: `${ISO_DAY}T10:00:00Z` },
+    ]);
+
+    assert.deepEqual([leapDay.statusCode, day.statusCode], [200, 200]);
+    assert.deepEqual(day.json(), { day: ISO_DAY });
+    assert.deepEqual(readFailures(missingDay), [['day', 'format']]);
+    assert.deepEqual(readFailures(dotted), [['day', 'format']]);
+    assert.deepEqual(readLimits(dateTime), [['day', 'maxLength', ISO_DAY.length]]);
+  });
+});
+
+describe('text', () => {
+  test('describes a string of 1 to SCHEMA_LIMITS.textMaxLength characters when no lengths are given', () => {
+    assert.deepEqual(text(), { type: 'string', minLength: 1, maxLength: SCHEMA_LIMITS.textMaxLength });
+  });
+
+  test('takes the lengths of a column, an empty text among them when it is asked for', () => {
+    assert.deepEqual(text(undefined, { maxLength: 100 }), { type: 'string', minLength: 1, maxLength: 100 });
+    assert.deepEqual(text(undefined, { minLength: 0, maxLength: 10 }), { type: 'string', minLength: 0, maxLength: 10 });
+    assert.deepEqual(text(undefined, { minLength: 2, maxLength: 2 }), { type: 'string', minLength: 2, maxLength: 2 });
+  });
+
+  test('refuses lengths that are not whole numbers, a maxLength of 0 and a minLength above the maxLength', () => {
+    const invalid = [
+      { minLength: -1 },
+      { minLength: 1.5 },
+      { minLength: '1' },
+      { minLength: null },
+      { minLength: SCHEMA_LIMITS.textMaxLength + 1 },
+      { maxLength: 0 },
+      { maxLength: 2.5 },
+      { maxLength: Infinity },
+      { maxLength: '100' },
+      { maxLength: null },
+      { minLength: 5, maxLength: 4 },
+    ];
+
+    invalid.forEach((options) => {
+      assert.throws(() => text('Name', options), { name: 'TypeError', message: /^text\(/ }, String(Object.values(options)));
+    });
+  });
+
+  test('carries a description only when one is given', () => {
+    assert.equal(Object.hasOwn(text(), 'description'), false);
+    assert.deepEqual(text('Name', { maxLength: 100 }), { ...text(undefined, { maxLength: 100 }), description: 'Name' });
+  });
+
+  test('refuses in a request an empty text, one over its maxLength, and null unless the field is nullable', async (t) => {
+    const properties = { name: text('Name'), nickname: nullable(text('Nickname', { maxLength: 3 })) };
+    const [longest, empty, tooLong, cleared] = await postFields(t, properties, [
+      { name: 'a'.repeat(SCHEMA_LIMITS.textMaxLength), nickname: 'abc' },
+      { name: '', nickname: '' },
+      { name: 'a'.repeat(SCHEMA_LIMITS.textMaxLength + 1), nickname: 'abcd' },
+      { name: null, nickname: null },
+    ]);
+
+    assert.equal(longest.statusCode, 200);
+    assert.deepEqual(readFailures(empty), [['name', 'minLength'], ['nickname', 'minLength']]);
+    assert.deepEqual(readLimits(tooLong), [['name', 'maxLength', SCHEMA_LIMITS.textMaxLength], ['nickname', 'maxLength', 3]]);
+    assert.deepEqual(readFailures(cleared), [['name', 'type']]);
+  });
+});
+
+describe('enumOf', () => {
+  test('describes a string out of a list of values', () => {
+    assert.deepEqual(enumOf(STATUSES), { type: 'string', enum: ['active', 'blocked'] });
+  });
+
+  test('keeps a copy of the list: a change to the list later does not reach the schema', () => {
+    const values = [...STATUSES];
+    const schema = enumOf(values);
+
+    values.push('deleted');
+
+    assert.deepEqual(schema.enum, STATUSES);
+  });
+
+  test('refuses a list that is empty, holds what is not a string or holds a value twice', () => {
+    const invalid = [undefined, null, 'active', {}, [], [1], ['active', null], ['active', 'active']];
+
+    invalid.forEach((values) => {
+      assert.throws(() => enumOf(values), { name: 'TypeError', message: /^enumOf\(/ }, JSON.stringify(values));
+    });
+  });
+
+  test('carries a description only when one is given', () => {
+    assert.equal(Object.hasOwn(enumOf(STATUSES), 'description'), false);
+    assert.deepEqual(enumOf(STATUSES, 'Status'), { ...enumOf(STATUSES), description: 'Status' });
+  });
+
+  test('refuses in a request a value outside the list, in another case, and a number in place of one', async (t) => {
+    const [active, unknown, upperCase, number] = await postFields(t, { status: enumOf(STATUSES) }, [
+      { status: 'active' },
+      { status: 'deleted' },
+      { status: 'ACTIVE' },
+      { status: 1 },
+    ]);
+
+    assert.equal(active.statusCode, 200);
+    assert.deepEqual(readFailures(unknown), [['status', 'enum']]);
+    assert.deepEqual(readFailures(upperCase), [['status', 'enum']]);
+    assert.deepEqual(readFailures(number), [['status', 'type'], ['status', 'enum']]);
+  });
+});
+
+describe('json', () => {
+  test('describes an object of any keys, with the marker that AJV and the route contract read', () => {
+    assert.deepEqual(json(), { type: 'object', additionalProperties: true, json: true });
+  });
+
+  test('carries a description only when one is given', () => {
+    assert.equal(Object.hasOwn(json(), 'description'), false);
+    assert.deepEqual(json('Profile'), { ...json(), description: 'Profile' });
+  });
+
+  test('lets an object of any depth through a request as it is, and refuses what is not an object', async (t) => {
+    const [kept, list, word, number, empty] = await postFields(t, { profile: json('Profile') }, [
+      { profile: PROFILE },
+      { profile: ['dark'] },
+      { profile: 'dark' },
+      { profile: 1 },
+      { profile: null },
+    ]);
+
+    assert.equal(kept.statusCode, 200);
+    assert.deepEqual(kept.json(), { profile: PROFILE });
+    [list, word, number, empty].forEach((response) => assert.deepEqual(readFailures(response), [['profile', 'type']]));
+  });
+
+  test('passes the route contract as a named field of data, also a nullable or a nested one, and nowhere else', () => {
+    const named = {
+      type: 'object',
+      properties: {
+        id: { type: 'integer' },
+        profile: json('Profile'),
+        settings: nullable(json('Settings')),
+        owner: { type: 'object', properties: { profile: json('Profile') } },
+      },
+    };
+    const refused = {
+      data: successEnvelope(json()),
+      'nullable data': successEnvelope(nullable(json())),
+      'the items of data': successEnvelope({ type: 'array', items: json() }),
+      'the rows of a list': listEnvelope(json()),
+      'a map of any keys': successEnvelope({ type: 'object', additionalProperties: json() }),
+      'a map of a pattern': successEnvelope({ type: 'object', patternProperties: { '^meta_': json() } }),
+    };
+
+    assert.doesNotThrow(() => assertRouteContract(createRoute(successEnvelope(named))));
+    Object.entries(refused).forEach(([name, response]) => {
+      assert.throws(() => assertRouteContract(createRoute(response)), /data/, name);
+    });
+  });
+
+  test('goes out whole as a field of a response, while the fields around it are filtered', async (t) => {
+    const fastify = await buildTestApp();
+    t.after(() => fastify.close());
+
+    const data = { type: 'object', properties: { id: { type: 'integer' }, profile: json('Profile') } };
+
+    fastify.get('/api/v1/profiles', {
+      schema: { response: { 200: successEnvelope(data) } },
+      security: PUBLIC,
+    }, (request, reply) => reply.ok({ id: 1, profile: PROFILE, passwordHash: '$argon2id$stored-hash' }));
+
+    const response = await fastify.inject('/api/v1/profiles');
+
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.json().data, { id: 1, profile: PROFILE });
+  });
+});
+
+describe('withoutNull', () => {
+  test('takes "null" out of the type and null out of the enum, the reverse of nullable()', () => {
+    const status = enumOf(['active', 'blocked'], 'Status');
+
+    assert.deepEqual(withoutNull(nullable(status)), status);
+    assert.deepEqual(withoutNull({ type: ['integer', 'null'], minimum: 0 }), { type: 'integer', minimum: 0 });
+    assert.deepEqual(withoutNull({ type: ['string', 'integer', 'null'] }), { type: ['string', 'integer'] });
+    assert.deepEqual(withoutNull(text('Name')), text('Name'));
+  });
+
+  test('leaves a field without a type as it is and does not change a frozen input', () => {
+    const typeless = freezeDeep({ minimum: 0 });
+    const frozen = freezeDeep(nullable(text('Name')));
+
+    assert.deepEqual(withoutNull(typeless), typeless);
+    assert.deepEqual(withoutNull(frozen), text('Name'));
+    assert.deepEqual(frozen.type, ['string', 'null']);
+  });
+
+  test('refuses what is not the schema of a field', () => {
+    [undefined, null, 'string', ['string']].forEach((field, index) => {
+      assert.throws(() => withoutNull(field), { name: 'TypeError', message: /withoutNull\(field\) requires the schema of a field/ }, String(index));
+    });
+  });
+});
+
+describe('nullable', () => {
+  test('adds null to the type of a field and keeps the rest of it', () => {
+    assert.deepEqual(nullable(text('Name', { maxLength: 100 })), { ...text('Name', { maxLength: 100 }), type: ['string', 'null'] });
+    assert.deepEqual(nullable({ type: ['string', 'integer'] }), { type: ['string', 'integer', 'null'] });
+  });
+
+  test('adds null to an enum as well: AJV checks the list after the type', () => {
+    assert.deepEqual(nullable(enumOf(STATUSES, 'Status')), { type: ['string', 'null'], enum: ['active', 'blocked', null], description: 'Status' });
+  });
+
+  test('changes nothing in a field that takes null already', () => {
+    const field = nullable(enumOf(STATUSES));
+    const openObject = { type: ['null', 'object'], additionalProperties: true };
+
+    assert.deepEqual(nullable(field), field);
+    assert.deepEqual(nullable(openObject), openObject);
+  });
+
+  test(
+    'adds null to the enum of a field whose type takes null already',
+    () => {
+      assert.deepEqual(nullable({ type: ['string', 'null'], enum: STATUSES }), { type: ['string', 'null'], enum: ['active', 'blocked', null] });
+    },
+  );
+
+  test(
+    'lists null once in an enum that holds it already',
+    () => {
+      assert.deepEqual(nullable({ type: 'string', enum: ['active', null] }), { type: ['string', 'null'], enum: ['active', null] });
+    },
+  );
+
+  test('leaves the field it is given as it was', () => {
+    const field = freezeDeep(enumOf(STATUSES));
+
+    assert.notEqual(nullable(field), field);
+    assert.deepEqual(field, enumOf(STATUSES));
+  });
+
+  test('refuses what is not the schema of a field that names its type', () => {
+    const invalid = [undefined, null, 'string', ['string'], {}, { enum: STATUSES }];
+
+    invalid.forEach((field) => {
+      assert.throws(() => nullable(field), { name: 'TypeError', message: /^nullable\(/ }, JSON.stringify(field));
+    });
+  });
+
+  test('lets null through a request, and still refuses what the field refuses', async (t) => {
+    const properties = { status: nullable(enumOf(STATUSES)), nickname: nullable(text('Nickname')) };
+    const [cleared, refused] = await postFields(t, properties, [
+      { status: null, nickname: null },
+      { status: 'deleted', nickname: '' },
+    ]);
+
+    assert.equal(cleared.statusCode, 200);
+    assert.deepEqual(cleared.json(), { status: null, nickname: null });
+    assert.deepEqual(readFailures(refused), [['status', 'enum'], ['nickname', 'minLength']]);
+  });
+});
+
+describe('withDescription', () => {
+  test('returns the schema itself when no description is given', () => {
+    const schema = { type: 'string' };
+
+    assert.equal(withDescription(schema), schema);
+  });
+
+  test('returns a copy with the description, and leaves the schema as it was', () => {
+    const schema = Object.freeze({ type: 'string' });
+
+    assert.deepEqual(withDescription(schema, 'Name'), { type: 'string', description: 'Name' });
+    assert.deepEqual(schema, { type: 'string' });
+  });
+
+  test('replaces the description the schema has', () => {
+    assert.deepEqual(withDescription({ type: 'string', description: 'Name' }, 'First name'), { type: 'string', description: 'First name' });
+  });
+});
+
+describe('pickFields', () => {
+  test('takes the named fields, in the order of the names', () => {
+    const picked = pickFields(PERSON_FIELDS, ['status', 'id']);
+
+    assert.deepEqual(picked, { status: PERSON_FIELDS.status, id: PERSON_FIELDS.id });
+    assert.deepEqual(Object.keys(picked), ['status', 'id']);
+  });
+
+  test('takes no field for an empty list of names', () => {
+    assert.deepEqual(pickFields(PERSON_FIELDS, []), {});
+  });
+});
+
+describe('omitFields', () => {
+  test('leaves out the named fields and keeps the rest in their order', () => {
+    const rest = omitFields(PERSON_FIELDS, ['email']);
+
+    assert.deepEqual(rest, { id: PERSON_FIELDS.id, firstName: PERSON_FIELDS.firstName, status: PERSON_FIELDS.status });
+    assert.deepEqual(Object.keys(rest), ['id', 'firstName', 'status']);
+  });
+
+  test('keeps every field for an empty list of names', () => {
+    assert.deepEqual(omitFields(PERSON_FIELDS, []), PERSON_FIELDS);
+  });
+});
+
+describe('pickFields and omitFields', () => {
+  const selectors = [pickFields, omitFields];
+
+  test('throw on a name that is not a field, one that only the prototype has among them', () => {
+    selectors.forEach((selectFields) => {
+      ['nickname', 'toString', 'constructor', '__proto__'].forEach((name) => {
+        assert.throws(
+          () => selectFields(PERSON_FIELDS, ['id', name]),
+          { name: 'TypeError', message: new RegExp(`names a field that is not there: "${name}"`) },
+          `${selectFields.name}: ${name}`,
+        );
+      });
+    });
+  });
+
+  test('throw on a name given twice', () => {
+    selectors.forEach((selectFields) => {
+      assert.throws(() => selectFields(PERSON_FIELDS, ['id', 'email', 'id']), { name: 'TypeError', message: /names a field twice/ }, selectFields.name);
+    });
+  });
+
+  test('throw on fields that are not a map, and on names that are not a list of strings', () => {
+    const invalid = [
+      [undefined, []],
+      [null, ['id']],
+      [[], []],
+      ['id', ['id']],
+      [PERSON_FIELDS, undefined],
+      [PERSON_FIELDS, 'id'],
+      [PERSON_FIELDS, [1]],
+    ];
+
+    selectors.forEach((selectFields) => {
+      invalid.forEach(([properties, keys]) => {
+        assert.throws(() => selectFields(properties, keys), { name: 'TypeError', message: /requires a map of fields and a list of their names/ }, selectFields.name);
+      });
+    });
+  });
+
+  test('leave the map they are given as it was', () => {
+    selectors.forEach((selectFields) => {
+      assert.notEqual(selectFields(PERSON_FIELDS, ['id']), PERSON_FIELDS);
+      assert.deepEqual(Object.keys(PERSON_FIELDS), ['id', 'email', 'firstName', 'status']);
+    });
   });
 });
 
@@ -327,6 +752,51 @@ describe('fields in a route of the app', () => {
     assert.deepEqual(responses.slice(1).map((response) => response.json().code), ['NOT_FOUND_ERROR', 'NOT_FOUND_ERROR', 'NOT_FOUND_ERROR']);
     assert.deepEqual(failedParts, ['params', 'params', 'params']);
   });
+
+  test('answer a value over the length of its field with the error of the length alone, never with its pattern or format', async (t) => {
+    const [longest, tooLong] = await postFields(t, USER_BODY_SCHEMA.properties, [
+      { id: NIL_ID, email: createEmail(EMAIL_MAX_LENGTH), createdAt: LONGEST_UTC_DATE_TIME },
+      { id: `${CANONICAL_ID}0`, email: createEmail(EMAIL_MAX_LENGTH + 1), createdAt: '2026-11-20T10:00:00.1234567890+00:00' },
+    ]);
+
+    assert.equal(longest.statusCode, 200);
+    assert.deepEqual(readLimits(tooLong), [
+      ['id', 'maxLength', CANONICAL_ID.length],
+      ['email', 'maxLength', EMAIL_MAX_LENGTH],
+      ['createdAt', 'maxLength', LONGEST_UTC_DATE_TIME.length],
+    ]);
+  });
+
+  test('take a date-time in UTC only: with Z or +00:00, down to nanoseconds', async (t) => {
+    const accepted = ['2026-11-13T10:00:00Z', '2026-11-13T10:00:00.000Z', '2026-11-13T10:00:00+00:00', LONGEST_UTC_DATE_TIME];
+    const refused = [
+      '2026-11-13T12:00:00+02:00',
+      '2026-11-13T10:00:00-00:00',
+      '2026-11-13T10:00:00',
+      '2026-11-13T10:00:00z',
+      '2026-11-13 10:00:00Z',
+      '2026-11-13',
+      '2026-02-30T10:00:00Z',
+      '2026-11-13T24:00:00Z',
+    ];
+    const responses = await postFields(t, { createdAt: dateTimeUtc() }, [...accepted, ...refused].map((createdAt) => ({ createdAt })));
+
+    assert.deepEqual(responses.slice(0, accepted.length).map((response) => response.json()), accepted.map((createdAt) => ({ createdAt })));
+    responses.slice(accepted.length).forEach((response, index) => {
+      assert.deepEqual(readFailures(response), [['createdAt', 'format']], refused[index]);
+    });
+  });
+
+  test('take an email in any script, checked as it is stored: trimmed and in lower case, and keep it as it came', async (t) => {
+    const accepted = ['anna@example.com', 'анна@приклад.укр', 'anna+news@mail.example.com', ' Anna@Example.COM '];
+    const refused = ['anna.example.com', 'anna@example', 'anna@@example.com', 'anna kovalenko@example.com', '@example.com', 'anna@'];
+    const responses = await postFields(t, { email: email() }, [...accepted, ...refused].map((address) => ({ email: address })));
+
+    assert.deepEqual(responses.slice(0, accepted.length).map((response) => response.json()), accepted.map((address) => ({ email: address })));
+    responses.slice(accepted.length).forEach((response, index) => {
+      assert.deepEqual(readFailures(response), [['email', 'format']], refused[index]);
+    });
+  });
 });
 
 describe('pagination', () => {
@@ -355,6 +825,48 @@ describe('pagination', () => {
 
     assert.deepEqual(serialize(pagination, PAGINATION), PAGINATION);
     assert.deepEqual(serialize(pagination, emptyPage), emptyPage);
+  });
+
+  test('gives a list query its limit and offset, within the bounds of the config and with their defaults', () => {
+    const { properties } = paginationSchema;
+
+    assert.deepEqual(Object.keys(properties), ['limit', 'offset']);
+    assert.deepEqual(omit(properties.limit, ['description']), {
+      type: 'integer',
+      minimum: 1,
+      maximum: PAGINATION_CONFIG.maxLimit,
+      default: PAGINATION_CONFIG.defaultLimit,
+    });
+    assert.deepEqual(omit(properties.offset, ['description']), {
+      type: 'integer',
+      minimum: 0,
+      maximum: PAGINATION_CONFIG.maxOffset,
+      default: 0,
+    });
+    Object.values(properties).forEach((field) => assert.ok(isNonEmptyString(field.description)));
+  });
+
+  test('gives an example of its fields that the validator of the app lets through as it is', async (t) => {
+    const [response] = await postFields(t, paginationSchema.properties, [paginationSchema.example]);
+
+    assert.equal(response.statusCode, 200, response.body);
+    assert.deepEqual(response.json(), paginationSchema.example);
+    assert.deepEqual(Object.keys(paginationSchema.example), Object.keys(paginationSchema.properties));
+  });
+
+  test('is a source of createSchema as an entity schema is: the module itself, imported whole', () => {
+    const schema = createSchema(paginationSchema).query(['limit', 'offset']).response(204).build();
+
+    assert.deepEqual(schema.querystring, {
+      type: 'object',
+      properties: { limit: paginationSchema.properties.limit, offset: paginationSchema.properties.offset },
+      additionalProperties: false,
+    });
+  });
+
+  test('freezes the fields of the query and the example to their leaves: every list shares them', () => {
+    assert.ok(isDeepFrozen(paginationSchema.properties));
+    assert.ok(isDeepFrozen(paginationSchema.example));
   });
 });
 
@@ -420,11 +932,11 @@ describe('successEnvelope', () => {
   });
 
   test('writes null for data declared as null or as nullable', () => {
-    const nullable = { ...ITEM_SCHEMA, type: ['object', 'null'] };
+    const nullableItem = { ...ITEM_SCHEMA, type: ['object', 'null'] };
 
     assert.deepEqual(serialize(successEnvelope({ type: 'null' }), createEnvelope()), { status: 'success', data: null });
-    assert.deepEqual(serialize(successEnvelope(nullable), createEnvelope()), { status: 'success', data: null });
-    assert.deepEqual(serialize(successEnvelope(nullable), createEnvelope({ data: ITEM_ROW })), { status: 'success', data: ITEM });
+    assert.deepEqual(serialize(successEnvelope(nullableItem), createEnvelope()), { status: 'success', data: null });
+    assert.deepEqual(serialize(successEnvelope(nullableItem), createEnvelope({ data: ITEM_ROW })), { status: 'success', data: ITEM });
   });
 
   test('takes any typed data: a scalar, an array of rows', () => {

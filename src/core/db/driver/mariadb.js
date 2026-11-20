@@ -38,6 +38,9 @@ const BOOLEAN_TYPE = 'TINY';
 const BOOLEAN_LENGTH = 1;
 const BOOLEAN_TRUE = '1';
 
+// On the wire a JSON column of MariaDB is LONGTEXT: only the extended metadata of the field tells it is JSON.
+const JSON_FORMAT = 'json';
+
 const MIN_VERSION = Object.freeze({ major: 12, minor: 3 });
 const VERSION_REGEXP = /^(\d+)\.(\d+)\.\d+(?:-\d+)?-MariaDB/;
 const SQL_MODE_SEPARATOR = ',';
@@ -51,6 +54,10 @@ const SCRIPT_LEFT_DATABASE_CODE = 'SCRIPT_LEFT_DATABASE';
 
 const SEVERAL_STATEMENTS_MESSAGE = 'script.query(sql, binding) takes one statement with no semicolon inside it: a compound statement (BEGIN ... END, IF ... END IF) and a text of several are run with script.run(text)';
 const SEVERAL_STATEMENTS_CODE = 'SEVERAL_STATEMENTS';
+
+const UNREADABLE_JSON_MESSAGE = 'holds a text the server takes for JSON and JSON.parse refuses';
+const UNREADABLE_JSON_CODE = 'UNREADABLE_JSON';
+const EXPRESSION_COLUMN = 'A column named by its expression';
 
 const NAME_REGEXP = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
 const NAME_QUOTE = '`';
@@ -99,8 +106,29 @@ const SCRIPT_SAVEPOINT = 'script_start';
 const SAVEPOINT_SQL = `SAVEPOINT ${SCRIPT_SAVEPOINT}`;
 const UNDO_SQL = `ROLLBACK TO SAVEPOINT ${SCRIPT_SAVEPOINT}`;
 
+// MariaDB keeps as JSON more than JSON.parse reads ("1.", "[1e]", "\d" in a string). Thrown in the row parser of
+// mysql2, the error would leave the rest of the result set to a connection with no statement to read it, and the
+// connection would be lost. run() fails the statement after its last row; a script drops its rows unread.
+function readJson(field, next, onUnreadable) {
+  try {
+    return next();
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) {
+      throw error;
+    }
+
+    onUnreadable?.(field.name);
+
+    return null;
+  }
+}
+
 // field.string() reads NULL as null: compared straight to "1" it would come back as false.
-function castField(field, next) {
+function castField(field, next, onUnreadableJson) {
+  if (field.extendedFormat === JSON_FORMAT) {
+    return readJson(field, next, onUnreadableJson);
+  }
+
   if (field.type !== BOOLEAN_TYPE || field.length !== BOOLEAN_LENGTH) {
     return next();
   }
@@ -192,11 +220,27 @@ export async function initSession(connection) {
   return true;
 }
 
+// An expression with no alias names its column by its own text, and so by the values written into the statement.
+function createUnreadableJsonError(name) {
+  const column = NAME_REGEXP.test(name)
+    ? `The column "${name}"`
+    : EXPRESSION_COLUMN;
+
+  return new DbError(`${column} ${UNREADABLE_JSON_MESSAGE}`, { code: UNREADABLE_JSON_CODE });
+}
+
 // mysql2 drops a connection it has lost, but not one the server closed after an error of the class 08
 // (a packet too large): left in the pool, it would fail the statement of the next caller.
 async function run(connection, text) {
+  let unreadableColumn = null;
+  let result;
+
+  function markUnreadable(name) {
+    unreadableColumn ??= name;
+  }
+
   try {
-    return await connection.query(text);
+    result = await connection.query({ sql: text, typeCast: (field, next) => castField(field, next, markUnreadable) });
   } catch (error) {
     const dbError = toDbError(error);
 
@@ -206,6 +250,12 @@ async function run(connection, text) {
 
     throw dbError;
   }
+
+  if (unreadableColumn !== null) {
+    throw createUnreadableJsonError(unreadableColumn);
+  }
+
+  return result;
 }
 
 async function connect(pool) {

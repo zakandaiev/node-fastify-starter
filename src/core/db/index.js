@@ -9,6 +9,7 @@ import {
 } from '#core/db/transaction.js';
 import { camelToSnakeKey, rowToCamel } from '#utils/case.js';
 import { convertStringToMs } from '#utils/date.js';
+import { UUID_LENGTH } from '#utils/id.js';
 import {
   isArray,
   isNonEmptyArray,
@@ -45,7 +46,6 @@ const DURATION_KEYS = Object.freeze([
 
 // A UUID follows the prefix in the name of the database "verify" builds, and a name holds 64 characters.
 const DATABASE_NAME_MAX_LENGTH = 64;
-const UUID_LENGTH = 36;
 const REFERENCE_PREFIX_MAX_LENGTH = DATABASE_NAME_MAX_LENGTH - UUID_LENGTH;
 const REFERENCE_PREFIX_REGEXP = new RegExp(`^[A-Za-z_][A-Za-z0-9_]{0,${REFERENCE_PREFIX_MAX_LENGTH - 1}}$`);
 

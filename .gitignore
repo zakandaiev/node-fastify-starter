@@ -25,4 +25,5 @@ Thumbs.db
 .eslintcache
 /coverage/
 /upload/
+/openapi.json
 node_modules/

@@ -2,7 +2,7 @@ import { normalizeEmail, normalizePhone } from '#utils/string.js';
 import { isString } from '#utils/type.js';
 import { BlockList, isIP } from 'node:net';
 
-const EMAIL_MAX_LENGTH = 254;
+export const EMAIL_MAX_LENGTH = 254;
 // Minimal on purpose: the real filter is the delivery of a message. A label cannot hold a dot, so the match is linear.
 const EMAIL_REGEXP = /^[^\s@\p{Cc}]+@[^\s@.\p{Cc}]+(?:\.[^\s@.\p{Cc}]+)+$/v;
 

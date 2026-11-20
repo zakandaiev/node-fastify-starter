@@ -1,7 +1,14 @@
+import {
+  dropSchemaMarkers,
+  isJsonField,
+  readDocumentedSchema,
+  rememberSourceSchema,
+} from '#core/schema/docs.js';
 import { assertRouteContract, createRouteHook } from '#core/schema/route.js';
 import { pingSchema } from '#root/src/routes/v1/system/controller.js';
 import { buildTestApp } from '#root/tests/helper/app.js';
 import { errorEnvelope, listEnvelope, successEnvelope } from '#schemas/common/envelope.js';
+import { json, nullable } from '#schemas/common/field.js';
 import { freezeDeep } from '#utils/object.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
@@ -23,8 +30,33 @@ const ROW = Object.freeze({
 const FILTERED_ROW = Object.freeze({ id: 1, name: 'Anna' });
 const LEAK = /row-secret/;
 
+const CODE_PATTERN = '^[a-z]+$';
+const LONG_CODE = 'A'.repeat(1000);
+const TEXT_LIMIT_MESSAGE = 'a request string with a pattern or a format needs a length limit';
+
+// What json() leaves for the API docs once its marker is gone.
+const FREE_JSON = Object.freeze({ type: 'object', additionalProperties: true });
+
 function createItem() {
   return { type: 'object', properties: { id: { type: 'integer' }, name: { type: 'string' } } };
+}
+
+function createCodeQuery() {
+  return {
+    type: 'object',
+    properties: {
+      code: { type: 'string', maxLength: 5, pattern: CODE_PATTERN },
+      limit: { type: 'integer' },
+    },
+  };
+}
+
+function createUngatedBody() {
+  return { type: 'object', properties: { code: { type: 'string', pattern: CODE_PATTERN } } };
+}
+
+function readErrors(response) {
+  return response.json().validation.map(({ column, operator, operatorValue }) => ({ column, operator, operatorValue }));
 }
 
 function createRoute(overrides = {}) {
@@ -169,6 +201,174 @@ describe('createRouteHook', () => {
     assert.throws(() => checkRoute({ method: 'GET', url: '/status' }), /security/);
     assert.doesNotThrow(() => checkRoute({ method: 'GET', url: '/api/items' }));
     assert.doesNotThrow(() => checkRoute({ method: 'GET', url: '/health' }));
+  });
+
+  test('the hook gates the expensive keywords of a request and guards the gated copy', () => {
+    const schema = freezeDeep({ querystring: createCodeQuery() });
+    const routeOptions = { method: 'GET', url: '/items', schema };
+
+    createRouteHook(PREFIXES)(routeOptions);
+
+    assert.deepEqual(routeOptions.schema, {
+      querystring: {
+        type: 'object',
+        properties: {
+          code: {
+            type: 'string',
+            maxLength: 5,
+            allOf: [{ if: { maxLength: 5 }, then: { maxLength: 5, pattern: CODE_PATTERN }, finite: true }],
+            finite: true,
+          },
+          limit: { type: 'integer', finite: true },
+        },
+      },
+    });
+    assert.deepEqual(schema, { querystring: createCodeQuery() });
+  });
+
+  test('the hook names the route, the part and the pointer when the gate refuses a schema, under a prefix or not', () => {
+    const checkRoute = createRouteHook(PREFIXES);
+    const body = createUngatedBody();
+    const routeOptions = { method: 'POST', url: '/items', schema: { body } };
+    const ids = { type: 'array', uniqueItems: true, items: { type: 'integer' } };
+
+    assert.throws(() => checkRoute(routeOptions), (error) => {
+      assert.equal(error.name, 'Error');
+      assert.equal(error.message, `Route POST /items: "body" #/properties/code has "pattern" without "maxLength": ${TEXT_LIMIT_MESSAGE}`);
+      assert.equal(error.cause.name, 'TypeError');
+
+      return true;
+    });
+    assert.equal(routeOptions.schema.body, body);
+    assert.throws(
+      () => checkRoute(createRoute({ method: ['GET', 'POST'], schema: { querystring: { type: 'object', properties: { ids } } } })),
+      {
+        message: 'Route GET,POST /api/v1/items: "querystring" #/properties/ids has "uniqueItems" without "maxItems": '
+          + 'a request array compared item by item needs a limit',
+      },
+    );
+  });
+
+  test('refuses a header named in upper case wherever a headers schema names one, with the pointer', () => {
+    const checkRoute = createRouteHook(PREFIXES);
+    const cases = [
+      [{ type: 'object', properties: { 'X-Page': { type: 'integer' } } }, '#', 'X-Page'],
+      [{ type: 'object', required: ['X-Page'] }, '#', 'X-Page'],
+      [{ type: 'object', dependencies: { 'X-Page': ['x-size'] } }, '#', 'X-Page'],
+      [{ type: 'object', dependencies: { 'x-page': ['X-Size'] } }, '#', 'X-Size'],
+      [{ type: 'object', anyOf: [{ required: ['X-Api-Key'] }, { required: ['authorization'] }] }, '#/anyOf/0', 'X-Api-Key'],
+      [{ type: 'object', propertyNames: { not: { enum: ['X-Forwarded-Host'] } } }, '#/propertyNames/not', 'X-Forwarded-Host'],
+      [{ type: 'object', propertyNames: { const: 'X-Only' } }, '#/propertyNames', 'X-Only'],
+    ];
+
+    cases.forEach(([headers, pointer, name]) => {
+      assert.throws(
+        () => checkRoute(createRoute({ schema: { headers } })),
+        { message: `Route GET /api/v1/items: "headers" ${pointer} names the header "${name}": write it in lower case, "${name.toLowerCase()}", as Node gives it` },
+        name,
+      );
+    });
+  });
+
+  test('takes header names in lower case, and a field named "propertyNames" in a body is not a header', () => {
+    const checkRoute = createRouteHook(PREFIXES);
+    const headers = {
+      type: 'object',
+      required: ['x-page'],
+      properties: { 'x-page': { type: 'integer' } },
+      dependencies: { 'x-page': ['x-size'] },
+      propertyNames: { not: { enum: ['x-forwarded-host'] } },
+    };
+    const body = { type: 'object', properties: { propertyNames: { type: 'string', enum: ['Upper'] } } };
+
+    assert.doesNotThrow(() => checkRoute(createRoute({ schema: { ...createRoute().schema, headers, body } })));
+  });
+
+  test('refuses a media type of a body in the content form that Fastify would never match: upper case or parameters', () => {
+    const checkRoute = createRouteHook(PREFIXES);
+    const schema = { type: 'object', properties: { name: { type: 'string', maxLength: 10 } } };
+
+    ['Application/JSON', 'application/json; charset=utf-8', 'multipart/form-data; boundary=x'].forEach((mediaType) => {
+      assert.throws(
+        () => checkRoute(createRoute({ method: 'POST', schema: { body: { content: { [mediaType]: { schema } } } } })),
+        { message: `Route POST /api/v1/items: "body" names the media type "${mediaType}": write it as Fastify matches it, in lower case and without parameters` },
+        mediaType,
+      );
+    });
+  });
+});
+
+describe('body in the content form', () => {
+  const BODY = Object.freeze({
+    content: {
+      'application/json': { schema: { type: 'object', required: ['name'], properties: { name: { type: 'string', maxLength: 10 } } } },
+    },
+  });
+
+  async function createBodyApp(t) {
+    const fastify = await createApp(t);
+    const received = [];
+
+    fastify.post('/items', { schema: { body: BODY } }, (request) => {
+      received.push(request.body);
+
+      return { isReceived: true };
+    });
+
+    return { fastify, received };
+  }
+
+  test('answers 415 to a media type the body does not name, and to a request without a body, before the handler', async (t) => {
+    const { fastify, received } = await createBodyApp(t);
+    const [text, empty] = await Promise.all([
+      fastify.inject({
+        method: 'POST', url: '/items', payload: 'name', headers: { 'content-type': 'text/plain' },
+      }),
+      fastify.inject({ method: 'POST', url: '/items' }),
+    ]);
+
+    [text, empty].forEach((response) => {
+      assert.equal(response.statusCode, 415);
+      assert.equal(response.json().code, 'UNSUPPORTED_MEDIA_TYPE_ERROR');
+    });
+    assert.deepEqual(received, []);
+  });
+
+  test('validates a body under a media type it names, with or without parameters in the request', async (t) => {
+    const { fastify, received } = await createBodyApp(t);
+    const [valid, withCharset, invalid] = await Promise.all([
+      fastify.inject({ method: 'POST', url: '/items', payload: { name: 'Anna' } }),
+      fastify.inject({
+        method: 'POST', url: '/items', payload: '{"name":"Anna"}', headers: { 'content-type': 'Application/JSON; charset=utf-8' },
+      }),
+      fastify.inject({ method: 'POST', url: '/items', payload: {} }),
+    ]);
+
+    assert.deepEqual([valid.statusCode, withCharset.statusCode, invalid.statusCode], [200, 200, 422]);
+    assert.deepEqual(invalid.json().validation.map(({ column, operator }) => ({ column, operator })), [{ column: 'name', operator: 'required' }]);
+    assert.deepEqual(received, [{ name: 'Anna' }, { name: 'Anna' }]);
+  });
+
+  test('keeps the preValidation hooks the route brings, after its own check', async (t) => {
+    const fastify = await createApp(t);
+    const calls = [];
+
+    fastify.post('/items', {
+      schema: { body: BODY },
+      preValidation: async () => {
+        calls.push('route');
+      },
+    }, () => ({ isReceived: true }));
+
+    const [declared, undeclared] = await Promise.all([
+      fastify.inject({ method: 'POST', url: '/items', payload: { name: 'Anna' } }),
+      fastify.inject({
+        method: 'POST', url: '/items', payload: 'name', headers: { 'content-type': 'text/plain' },
+      }),
+    ]);
+
+    assert.deepEqual([declared.statusCode, undeclared.statusCode], [200, 415]);
+    assert.deepEqual(calls, ['route']);
   });
 });
 
@@ -536,8 +736,34 @@ describe('assertRouteContract: typed data', () => {
       name: 'Error',
       message: 'Route GET /api/v1/items has no typed "data" in the response schema of 200: every schema needs a "type", '
         + 'an object also "properties", an array "items"; $ref, {} and additionalProperties: true are not accepted, '
-        + 'nor additionalProperties: false on or under anyOf, oneOf, allOf, then and else',
+        + 'nor additionalProperties: false on or under anyOf, oneOf, allOf, then and else; '
+        + 'a field of free JSON is declared with json()',
     });
+  });
+
+  test('accepts json() as a named field, in the properties of the items of a list too, and nullable(json())', () => {
+    assertTyped({
+      'a property': { type: 'object', properties: { id: { type: 'integer' }, profile: json() } },
+      'a property with a description': { type: 'object', properties: { meta: json('Free settings') } },
+      'a nullable property': { type: 'object', properties: { profile: nullable(json()) } },
+      'a property of the items of a list': { type: 'array', items: { type: 'object', properties: { payload: json() } } },
+      'a property of a nested object': { type: 'object', properties: { owner: { type: 'object', properties: { settings: json() } } } },
+    });
+    assertAccepted({ 'a list of items with a json() field': { 200: listEnvelope({ type: 'object', properties: { id: { type: 'integer' }, meta: json() } }) } });
+  });
+
+  test('refuses json() as data itself, as the items of a list, as a map of any keys and as a branch', () => {
+    assertUntyped({
+      'data itself': json(),
+      'nullable data itself': nullable(json()),
+      'the items of a list': { type: 'array', items: json() },
+      additionalProperties: { type: 'object', additionalProperties: json() },
+      'additionalProperties next to properties': { type: 'object', properties: { id: { type: 'integer' } }, additionalProperties: json() },
+      patternProperties: { type: 'object', patternProperties: { '^meta_': json() } },
+      'a branch of data': { anyOf: [json(), { type: 'null' }] },
+      'a branch of a property': { type: 'object', properties: { profile: { anyOf: [json(), { type: 'null' }] } } },
+    });
+    assertRefused({ 'a list of json()': { 200: listEnvelope(json()) } }, NO_TYPED_DATA);
   });
 
   test('requires the options of a route', () => {
@@ -581,6 +807,193 @@ describe('assertRouteContract: response by media type', () => {
       'no media type': { 200: { content: {} } },
       'untyped Application/JSON': { 200: { content: { 'Application/JSON': { schema: successEnvelope({}) } } } },
     }, NO_TYPED_DATA);
+  });
+});
+
+describe('isJsonField and rememberSourceSchema', () => {
+  test('isJsonField tells the field of json() from any other schema', () => {
+    assert.equal(isJsonField(json()), true);
+    assert.equal(isJsonField(nullable(json('Meta'))), true);
+    [FREE_JSON, { json: 'true' }, null, undefined, 'json', [json()]].forEach((value, index) => assert.equal(isJsonField(value), false, String(index)));
+  });
+
+  test('rememberSourceSchema returns the route schema and makes readDocumentedSchema show the source', () => {
+    const source = { querystring: { type: 'object', properties: { code: { type: 'string', maxLength: 5, pattern: CODE_PATTERN } } } };
+    const prepared = { querystring: { type: 'object', properties: { code: { type: 'string', maxLength: 5 } } } };
+
+    assert.equal(rememberSourceSchema(prepared, source), prepared);
+    assert.deepEqual(readDocumentedSchema(prepared), source);
+  });
+
+  test('rememberSourceSchema refuses what is not a schema object', () => {
+    [[null, {}], [{}, null], ['schema', {}]].forEach(([routeSchema, source], index) => {
+      assert.throws(() => rememberSourceSchema(routeSchema, source), { name: 'TypeError', message: /rememberSourceSchema/ }, String(index));
+    });
+  });
+});
+
+describe('dropSchemaMarkers', () => {
+  test('takes the json marker off every field at any depth and keeps a field named "json"', () => {
+    const schema = freezeDeep({
+      type: 'object',
+      properties: {
+        profile: json('Profile'),
+        json: { type: 'string', maxLength: 10 },
+        items: { type: 'array', items: { type: 'object', properties: { meta: nullable(json()) } } },
+      },
+    });
+
+    assert.deepEqual(dropSchemaMarkers(schema), {
+      type: 'object',
+      properties: {
+        profile: { type: 'object', additionalProperties: true, description: 'Profile' },
+        json: { type: 'string', maxLength: 10 },
+        items: { type: 'array', items: { type: 'object', properties: { meta: { type: ['object', 'null'], additionalProperties: true } } } },
+      },
+    });
+  });
+
+  test('leaves a schema without the marker equal to what it was, and what is not a schema as it is', () => {
+    const schema = { type: 'object', properties: { name: { type: 'string', maxLength: 10 } } };
+
+    assert.deepEqual(dropSchemaMarkers(schema), schema);
+    [true, false, null, undefined].forEach((value) => assert.equal(dropSchemaMarkers(value), value));
+  });
+});
+
+describe('readDocumentedSchema', () => {
+  test('returns the schema the author wrote, before the gate and the finite guards', () => {
+    const querystring = createCodeQuery();
+    const response = { 200: successEnvelope(createItem()) };
+    const routeOptions = createRoute({ schema: freezeDeep({ querystring, response }) });
+
+    createRouteHook(PREFIXES)(routeOptions);
+
+    assert.notDeepEqual(routeOptions.schema.querystring, querystring);
+    assert.deepEqual(readDocumentedSchema(routeOptions.schema), { querystring: createCodeQuery(), response });
+  });
+
+  test('drops the json marker in every request part and every response, wherever it sits', () => {
+    const routeOptions = createRoute({
+      schema: {
+        body: {
+          type: 'object',
+          properties: {
+            profile: json(),
+            tags: { type: 'array', items: json() },
+            extra: { type: 'object', additionalProperties: json() },
+          },
+        },
+        headers: { type: 'object', properties: { 'x-meta': json() } },
+        response: {
+          200: successEnvelope({ type: 'object', properties: { id: { type: 'integer' }, profile: nullable(json('Free settings')) } }),
+        },
+      },
+    });
+
+    createRouteHook(PREFIXES)(routeOptions);
+
+    assert.deepEqual(readDocumentedSchema(routeOptions.schema), {
+      body: {
+        type: 'object',
+        properties: {
+          profile: FREE_JSON,
+          tags: { type: 'array', items: FREE_JSON },
+          extra: { type: 'object', additionalProperties: FREE_JSON },
+        },
+      },
+      headers: { type: 'object', properties: { 'x-meta': FREE_JSON } },
+      response: {
+        200: successEnvelope({
+          type: 'object',
+          properties: {
+            id: { type: 'integer' },
+            profile: { type: ['object', 'null'], additionalProperties: true, description: 'Free settings' },
+          },
+        }),
+      },
+    });
+  });
+
+  test('drops the json marker in a body and a response in the content form, and keeps what a media type says besides', () => {
+    const examples = { sample: { value: { profile: { theme: 'dark' } } } };
+    const routeOptions = createRoute({
+      schema: {
+        body: { content: { 'application/json': { schema: { type: 'object', properties: { profile: json() } }, examples } } },
+        response: {
+          200: {
+            description: 'The item',
+            content: { 'application/json': { schema: successEnvelope({ type: 'object', properties: { profile: json() } }), examples } },
+          },
+          204: { type: 'null' },
+        },
+      },
+    });
+
+    createRouteHook(PREFIXES)(routeOptions);
+
+    const documented = readDocumentedSchema(routeOptions.schema);
+
+    assert.deepEqual(documented, {
+      body: { content: { 'application/json': { schema: { type: 'object', properties: { profile: FREE_JSON } }, examples } } },
+      response: {
+        200: {
+          description: 'The item',
+          content: { 'application/json': { schema: successEnvelope({ type: 'object', properties: { profile: FREE_JSON } }), examples } },
+        },
+        204: { type: 'null' },
+      },
+    });
+    assert.equal(documented.body.content['application/json'].examples, examples);
+    assert.equal(documented.response[200].content['application/json'].examples, examples);
+  });
+
+  test('names the query querystring, as Fastify does at ready()', () => {
+    const query = createCodeQuery();
+    const routeOptions = createRoute({ schema: { query, response: { 200: successEnvelope(createItem()) } } });
+
+    createRouteHook(PREFIXES)(routeOptions);
+
+    const documented = readDocumentedSchema(routeOptions.schema);
+
+    assert.deepEqual(documented.querystring, query);
+    assert.equal(Object.hasOwn(documented, 'query'), false);
+    assert.deepEqual(readDocumentedSchema({ querystring: query }), { querystring: query });
+  });
+
+  test('reads a schema the hook has not seen as it is, without the json marker and without writing to it', () => {
+    const routeSchema = freezeDeep({ tags: ['Items'], body: { type: 'object', properties: { profile: json() } } });
+
+    assert.deepEqual(readDocumentedSchema(routeSchema), { tags: ['Items'], body: { type: 'object', properties: { profile: FREE_JSON } } });
+    assert.deepEqual(routeSchema.body.properties.profile, json());
+  });
+
+  test('requires the schema object of a route', () => {
+    [undefined, null, 'schema', [{ body: createItem() }]].forEach((routeSchema) => {
+      assert.throws(() => readDocumentedSchema(routeSchema), { name: 'TypeError', message: /requires the schema object of a route/ });
+    });
+  });
+
+  // Fastify writes the querystring alias and a mark of its own into the schema object of a route at ready():
+  // the source is still found by that object.
+  test('reads the source of a route the app registered, also after ready() and for its HEAD twin', async (t) => {
+    const fastify = await createApp(t);
+    const routes = [];
+    const response = { 200: successEnvelope({ type: 'object', properties: { id: { type: 'integer' }, profile: json() } }) };
+
+    fastify.addHook('onRoute', (routeOptions) => {
+      routes.push(routeOptions);
+    });
+    fastify.get('/api/v1/items', { schema: { query: createCodeQuery(), response }, security: PUBLIC }, readRow);
+    await fastify.ready();
+
+    assert.deepEqual(routes.map(({ method }) => method), ['GET', 'HEAD']);
+    routes.forEach((routeOptions) => {
+      assert.deepEqual(readDocumentedSchema(routeOptions.schema), {
+        querystring: createCodeQuery(),
+        response: { 200: successEnvelope({ type: 'object', properties: { id: { type: 'integer' }, profile: FREE_JSON } }) },
+      }, routeOptions.method);
+    });
   });
 });
 
@@ -720,6 +1133,74 @@ describe('route contract in the app', () => {
     assert.equal(exported.statusCode, 200);
     assert.equal(exported.headers['content-type'], 'text/csv');
     assert.equal(exported.body, 'id\n1\n');
+  });
+
+  test('a request string with a pattern and no maxLength makes fastify.post() throw and is not registered', async (t) => {
+    const fastify = await createApp(t);
+
+    assert.throws(
+      () => fastify.post('/api/v1/items', { schema: { body: createUngatedBody(), response: { 200: successEnvelope(createItem()) } }, security: PUBLIC }, readRow),
+      { message: `Route POST /api/v1/items: "body" #/properties/code has "pattern" without "maxLength": ${TEXT_LIMIT_MESSAGE}` },
+    );
+    assert.throws(() => fastify.post('/items', { schema: { body: createUngatedBody() } }, readRow), /^Error: Route POST \/items: "body" #\/properties\/code/);
+    assert.equal(fastify.hasRoute({ method: 'POST', url: '/api/v1/items' }), false);
+    assert.equal(fastify.hasRoute({ method: 'POST', url: '/items' }), false);
+  });
+
+  test('answers a gated string over its limit with the maxLength entry alone, and one within it by the pattern', async (t) => {
+    const fastify = await createApp(t);
+
+    fastify.get('/api/v1/items', { schema: { querystring: createCodeQuery(), response: { 200: successEnvelope(createItem()) } }, security: PUBLIC }, readRow);
+
+    const [long, wrong, valid] = await Promise.all([
+      fastify.inject(`/api/v1/items?code=${LONG_CODE}`),
+      fastify.inject('/api/v1/items?code=ABC'),
+      fastify.inject('/api/v1/items?code=abc'),
+    ]);
+
+    assert.equal(long.statusCode, 422);
+    assert.deepEqual(readErrors(long), [{ column: 'code', operator: 'maxLength', operatorValue: 5 }]);
+    assert.equal(wrong.statusCode, 422);
+    assert.deepEqual(readErrors(wrong), [{ column: 'code', operator: 'pattern', operatorValue: CODE_PATTERN }]);
+    assert.equal(valid.statusCode, 200);
+    assert.deepEqual(valid.json().data, FILTERED_ROW);
+  });
+
+  test('registers the HEAD twin of a GET route with a gated querystring, and the twin answers', async (t) => {
+    const fastify = await createApp(t);
+
+    fastify.get('/api/v1/items', { schema: { querystring: createCodeQuery(), response: { 200: successEnvelope(createItem()) } }, security: PUBLIC }, readRow);
+
+    const [valid, long, wrong] = await Promise.all([
+      fastify.inject({ method: 'HEAD', url: '/api/v1/items?code=abc' }),
+      fastify.inject({ method: 'HEAD', url: `/api/v1/items?code=${LONG_CODE}` }),
+      fastify.inject({ method: 'HEAD', url: '/api/v1/items?code=ABC' }),
+    ]);
+
+    assert.equal(fastify.hasRoute({ method: 'HEAD', url: '/api/v1/items' }), true);
+    assert.equal(valid.statusCode, 200);
+    assert.equal(valid.body, '');
+    assert.equal(long.statusCode, 422);
+    assert.equal(wrong.statusCode, 422);
+  });
+
+  test('lets a json() field out whole as the free JSON of its column, and still filters the fields next to it', async (t) => {
+    const fastify = await createApp(t);
+    const data = {
+      type: 'object',
+      properties: {
+        id: { type: 'integer' },
+        owner: json(),
+        profile: nullable(json()),
+      },
+    };
+
+    fastify.get('/api/v1/items', { schema: { response: { 200: successEnvelope(data) } }, security: PUBLIC }, (request, reply) => reply.ok({ ...ROW, profile: null }));
+
+    const response = await fastify.inject('/api/v1/items');
+
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.json().data, { id: 1, owner: ROW.owner, profile: null });
   });
 
   test('registers the HEAD twin of a valid GET route', async (t) => {

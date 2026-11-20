@@ -1,4 +1,5 @@
 import {
+  UUID_LENGTH,
   UUID_REGEXP,
   isUuid,
   uuidTimestamp,
@@ -344,6 +345,21 @@ describe('isUuid', () => {
     assert.equal(isUuid(`${RFC_V7}${'-0'.repeat(500000)}`), false);
     assert.equal(isUuid(`${'0'.repeat(1000000)}${RFC_V7}`), false);
     assert.ok(performance.now() - startedAt < 1000);
+  });
+});
+
+describe('UUID_LENGTH', () => {
+  test('equals the length of every id uuidv7() makes', () => {
+    generate(1000).forEach((id) => assert.equal(id.length, UUID_LENGTH, id));
+  });
+
+  test('equals the length of every text isUuid accepts, and one character less or more is refused', () => {
+    [...Object.values(RFC_SAMPLES), NIL, MAX, randomUUID()].forEach((value) => {
+      assert.equal(value.length, UUID_LENGTH, value);
+      assert.equal(isUuid(value), true, value);
+      assert.equal(isUuid(value.slice(1)), false, value);
+      assert.equal(isUuid(`${value}0`), false, value);
+    });
   });
 });
 

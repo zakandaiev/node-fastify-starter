@@ -1,5 +1,6 @@
 import {
   escapeHtml,
+  escapeRegExp,
   formatBytes,
   mask,
   normalizeEmail,
@@ -19,6 +20,24 @@ const FLAG = '\u{1F1FA}\u{1F1E6}';
 const TONED_THUMB = '\u{1F44D}\u{1F3FD}';
 const KEYCAP = '1\u{FE0F}\u{20E3}';
 const E_ACUTE_DECOMPOSED = 'e\u{301}';
+
+const REGEXP_SYNTAX_CHARACTERS = Object.freeze(['\\', '^', '$', '.', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|', '/']);
+
+const LITERAL_PATTERNS = Object.freeze([
+  ['a.b', 'axb'],
+  ['(x)', 'x'],
+  ['[a-z]+', 'abc'],
+  ['^start$', 'start'],
+  ['a|b', 'a'],
+  ['x{1,2}', 'xx'],
+  ['a+', 'aa'],
+  ['colou?r', 'color'],
+  ['C:\\path\\file.txt', 'C:\\path\\fileXtxt'],
+  ['https://example.com/a?b=1', 'https://example.com/b=1'],
+  ['user-name_1', 'user-name_2'],
+  [`Привіт.${GRIN}`, `Привіт!${GRIN}`],
+  [REGEXP_SYNTAX_CHARACTERS.join(''), ''],
+]);
 
 const EMAIL_HTML = `<!DOCTYPE html>
 <html lang="en">
@@ -117,6 +136,49 @@ describe('escapeHtml', () => {
     const { result, elapsedMs } = measure(() => escapeHtml('<&>"\''.repeat(HOSTILE_REPEATS * 2)));
 
     assert.equal(result, '&lt;&amp;&gt;&quot;&#39;'.repeat(HOSTILE_REPEATS * 2));
+    assert.ok(elapsedMs < TIME_LIMIT_MS, `took ${elapsedMs} ms`);
+  });
+});
+
+describe('escapeRegExp', () => {
+  test('escapes every syntax character of a regular expression with a backslash', () => {
+    REGEXP_SYNTAX_CHARACTERS.forEach((char) => {
+      assert.equal(escapeRegExp(char), `\\${char}`, char);
+    });
+
+    assert.equal(escapeRegExp(REGEXP_SYNTAX_CHARACTERS.join('')), REGEXP_SYNTAX_CHARACTERS.map((char) => `\\${char}`).join(''));
+  });
+
+  test('gives a pattern that, compiled with the "u" flag, matches its input literally and nothing else', () => {
+    LITERAL_PATTERNS.forEach(([input, nearMiss]) => {
+      const pattern = new RegExp(`^${escapeRegExp(input)}$`, 'u');
+
+      assert.equal(pattern.test(input), true, input);
+      assert.equal(pattern.test(nearMiss), false, nearMiss);
+    });
+  });
+
+  test('leaves letters, digits and every other character readable, a leading letter or digit included', () => {
+    const text = `Hello World 123 Привіт 世界 ${GRIN} -_,:;=!#@%&~\`'"<>`;
+
+    assert.equal(escapeRegExp(text), text);
+    assert.equal(escapeRegExp('abc'), 'abc');
+    assert.equal(escapeRegExp('1st'), '1st');
+    assert.equal(escapeRegExp(''), '');
+    assert.equal(escapeRegExp('a.b'), 'a\\.b');
+  });
+
+  test('turns null and undefined into an empty string and converts other values', () => {
+    assert.equal(escapeRegExp(null), '');
+    assert.equal(escapeRegExp(undefined), '');
+    assert.equal(escapeRegExp(1.5), '1\\.5');
+    assert.equal(escapeRegExp(['a.b']), '\\["a\\.b"\\]');
+  });
+
+  test('escapes a huge hostile string in linear time', () => {
+    const { result, elapsedMs } = measure(() => escapeRegExp('.*+?'.repeat(HOSTILE_REPEATS)));
+
+    assert.equal(result, '\\.\\*\\+\\?'.repeat(HOSTILE_REPEATS));
     assert.ok(elapsedMs < TIME_LIMIT_MS, `took ${elapsedMs} ms`);
   });
 });

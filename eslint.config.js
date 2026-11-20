@@ -90,6 +90,11 @@ const CORE_LAYER = {
   message: 'core must not import modules.',
 };
 
+const SCHEMAS_LAYER = {
+  regex: '^#(core|modules)/',
+  message: 'schemas sit below core: they must not import core or modules.',
+};
+
 function toDynamicImport({ regex, message }) {
   return {
     selector: `ImportExpression[source.value=/${regex.replaceAll('/', '\\x2F')}/]`,
@@ -168,6 +173,10 @@ export default [
   {
     files: [`src/core/**/${JS_FILES}`],
     rules: restrictImports([ROOT_IMPORT, CORE_LAYER]),
+  },
+  {
+    files: [`src/schemas/**/${JS_FILES}`],
+    rules: restrictImports([ROOT_IMPORT, SCHEMAS_LAYER]),
   },
   {
     files: ['src/config/env.js'],

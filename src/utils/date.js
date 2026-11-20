@@ -28,6 +28,10 @@ const ISO_YEAR_MAX = 9999;
 const UTC_MIDNIGHT = 'T00:00:00Z';
 const UTC_ZONES = Object.freeze(['Z', '+00:00']);
 
+// The longest text DATE_TIME_REGEXP reads: "2026-11-20T10:00:00.123456789+00:00".
+export const ISO_DATE_TIME_MAX_LENGTH = 35;
+export const ISO_DATE_LENGTH = 10;
+
 const DATE_ONLY_REGEXP = /^\d{4}-\d{2}-\d{2}$/;
 const DATE_TIME_REGEXP = /^(?<wallClock>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(?<fraction>\d{1,9}))?(?:Z|(?<sign>[+-])(?<offsetHours>[01]\d|2[0-3]):(?<offsetMinutes>[0-5]\d))$/;
 
@@ -113,10 +117,18 @@ export function toUtcIso(value) {
     : null;
 }
 
-export function parseStrictUtc(value) {
-  const date = isString(value) && UTC_ZONES.some((zone) => value.endsWith(zone))
+function readStrictUtc(value) {
+  return isString(value) && UTC_ZONES.some((zone) => value.endsWith(zone))
     ? toDate(value)
     : null;
+}
+
+export function isUtcDateTime(value) {
+  return readStrictUtc(value) !== null;
+}
+
+export function parseStrictUtc(value) {
+  const date = readStrictUtc(value);
 
   if (!date) {
     throw new TypeError('parseStrictUtc(value) requires an ISO 8601 date-time string that ends with "Z" or "+00:00"');

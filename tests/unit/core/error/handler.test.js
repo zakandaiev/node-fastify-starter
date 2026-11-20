@@ -67,8 +67,8 @@ const OPERATOR_CASES = [
   ['maxItems', { type: 'array', maxItems: 0 }, [1], null, 0],
   ['minProperties', { type: 'object', minProperties: 1 }, {}, null, 1],
   ['maxProperties', { type: 'object', maxProperties: 0 }, { a: 1 }, null, 0],
-  ['format', { type: 'string', format: 'email' }, 'abc', 'abc', 'email'],
-  ['pattern', { type: 'string', pattern: '^[a-z]+$' }, 'A1', 'A1', '^[a-z]+$'],
+  ['format', { type: 'string', format: 'email', maxLength: 254 }, 'abc', 'abc', 'email'],
+  ['pattern', { type: 'string', pattern: '^[a-z]+$', maxLength: 10 }, 'A1', 'A1', '^[a-z]+$'],
   ['enum', { type: 'string', enum: ['admin', 'user'] }, 'root', 'root', ['admin', 'user']],
   ['const', { type: 'string', const: 'user' }, 'bot', 'bot', 'user'],
   ['type', { type: 'boolean' }, 'maybe', 'maybe', 'boolean'],
@@ -240,7 +240,7 @@ describe('handleError: schema errors', () => {
       schema: {
         body: createObjectSchema({
           name: { type: 'string', minLength: 3 },
-          email: { type: 'string', format: 'email' },
+          email: { type: 'string', format: 'email', maxLength: 254 },
           age: { type: 'integer', minimum: 18 },
           role: { type: 'string', enum: ['admin', 'user'] },
         }),
@@ -280,7 +280,7 @@ describe('handleError: schema errors', () => {
     assert.deepEqual(Object.keys(response.json()), ['status', 'code', 'message', 'validation', 'meta']);
   });
 
-  test('reflects the value after coercion: a number for a numeric query parameter or body field', async (t) => {
+  test('reflects a query parameter after coercion and a field of a JSON body as it was sent: the body is not coerced', async (t) => {
     const fastify = await startApp(t);
 
     fastify.get('/items', {
@@ -293,9 +293,10 @@ describe('handleError: schema errors', () => {
     }, async () => ({ isFound: true }));
     declareBodyRoute(fastify, createObjectSchema({ age: { type: 'integer', minimum: 18 } }));
 
-    const [byQuery, byBody] = await Promise.all([
+    const [byQuery, byText, byNumber] = await Promise.all([
       fastify.inject('/items?limit=0&status=deleted'),
       postItem(fastify, { age: '5' }),
+      postItem(fastify, { age: 5 }),
     ]);
 
     assertErrorResponse(byQuery, 422, 'VALIDATION_ERROR', {
@@ -304,7 +305,10 @@ describe('handleError: schema errors', () => {
         createEntry('status', 'deleted', 'enum', ['active', 'blocked']),
       ],
     });
-    assertErrorResponse(byBody, 422, 'VALIDATION_ERROR', {
+    assertErrorResponse(byText, 422, 'VALIDATION_ERROR', {
+      validation: [createEntry('age', '5', 'type', 'integer')],
+    });
+    assertErrorResponse(byNumber, 422, 'VALIDATION_ERROR', {
       validation: [createEntry('age', 5, 'minimum', 18)],
     });
   });
@@ -491,6 +495,50 @@ describe('handleError: schema errors', () => {
     assert.deepEqual(seen, [[3, 'body', 'Request body is not valid: 5 schema errors']]);
   });
 
+  test('never answers or logs the "if" entry of a gated keyword: the ceiling and the total count the errors it reports', async (t) => {
+    const { fastify, lines } = await startLoggedApp(t);
+    const { maxErrors } = fastify.config.app.validation;
+    const email = { type: 'string', format: 'email', maxLength: 254 };
+    const seen = [];
+
+    fastify.addHook('onError', async (request, reply, error) => {
+      seen.push(error.validation.map((item) => item.keyword));
+    });
+    fastify.post('/profiles', {
+      schema: {
+        body: createObjectSchema({
+          email,
+          code: { type: 'string', pattern: '^[0-9]+$', maxLength: 6 },
+          tags: { type: 'array', uniqueItems: true, maxItems: 5 },
+        }),
+      },
+    }, async () => ({ isSaved: true }));
+    fastify.post('/invites', {
+      schema: { body: createObjectSchema({ emails: { type: 'array', maxItems: 100, items: email } }) },
+    }, async () => ({ isSaved: true }));
+
+    const profile = await fastify.inject({ method: 'POST', url: '/profiles', payload: { email: 'abc', code: 'x1', tags: ['a', 'a'] } });
+    const invites = await fastify.inject({ method: 'POST', url: '/invites', payload: { emails: Array.from({ length: 30 }, () => 'abc') } });
+    const profileLine = assertFailureLogged(lines, profile, LOG_LEVEL_WARN);
+    const invitesLine = assertFailureLogged(lines, invites, LOG_LEVEL_WARN);
+
+    assertErrorResponse(profile, 422, 'VALIDATION_ERROR', {
+      validation: [
+        createEntry('email', 'abc', 'format', 'email'),
+        createEntry('code', 'x1', 'pattern', '^[0-9]+$'),
+        createEntry('tags', null, 'uniqueItems', null),
+      ],
+    });
+    assertErrorResponse(invites, 422, 'VALIDATION_ERROR', {
+      validation: Array.from({ length: maxErrors }, (item, index) => createEntry(`emails.${index}`, 'abc', 'format', 'email')),
+    });
+    assert.deepEqual(seen, [['format', 'pattern', 'uniqueItems'], Array.from({ length: maxErrors }, () => 'format')]);
+    assert.deepEqual(profileLine.validation.map(({ operator }) => operator), ['format', 'pattern', 'uniqueItems']);
+    assert.equal(profileLine.err.message, 'Request body is not valid: 3 schema errors');
+    assert.equal(invitesLine.validation.length, maxErrors);
+    assert.equal(invitesLine.err.message, 'Request body is not valid: 30 schema errors');
+  });
+
   test('keeps the value of a sensitive field out of the response and the log, whatever segment of the path names it', async (t) => {
     const apps = await Promise.all([MODE.PROD, MODE.DEV].map((mode) => startLoggedApp(t, { mode })));
     // Nothing a clock, a pid or a request id can spell by chance: those are digits and hex.
@@ -538,7 +586,7 @@ describe('handleError: schema errors', () => {
       schema: { querystring: createObjectSchema({ token: { type: 'string', maxLength: 3 } }) },
     }, async () => ({ isFound: true }));
     fastify.get('/by-header', {
-      schema: { headers: createObjectSchema({ authorization: { type: 'string', pattern: '^Bearer ' } }) },
+      schema: { headers: createObjectSchema({ authorization: { type: 'string', pattern: '^Bearer ', maxLength: 512 } }) },
     }, async () => ({ isFound: true }));
 
     const [byQuery, byHeader] = await Promise.all([
@@ -554,10 +602,11 @@ describe('handleError: schema errors', () => {
     });
   });
 
+  // The gate of the route moves a format under allOf/if/then: the raw error names the path in the schema AJV compiled.
   test('adds the raw AJV error to an entry as "schema" in dev only', async (t) => {
     const apps = await startAppInEveryMode(t);
 
-    apps.forEach((fastify) => declareBodyRoute(fastify, createObjectSchema({ email: { type: 'string', format: 'email' } })));
+    apps.forEach((fastify) => declareBodyRoute(fastify, createObjectSchema({ email: { type: 'string', format: 'email', maxLength: 254 } })));
 
     const [prodResponse, devResponse] = await Promise.all(apps.map((fastify) => postItem(fastify, { email: 'abc' })));
     const [{ schema, ...devEntry }, ...devRest] = devResponse.json().validation;
@@ -568,7 +617,7 @@ describe('handleError: schema errors', () => {
     assert.deepEqual(devRest, []);
     assert.deepEqual(rawError, {
       instancePath: '/email',
-      schemaPath: '#/properties/email/format',
+      schemaPath: '#/properties/email/allOf/0/then/format',
       keyword: 'format',
       params: { format: 'email' },
     });
@@ -644,7 +693,7 @@ describe('handleError: schema errors', () => {
     const fastify = await startApp(t);
 
     fastify.post('/by-name', {
-      schema: { body: { type: 'object', propertyNames: { pattern: '^[a-z]+$' } } },
+      schema: { body: { type: 'object', propertyNames: { pattern: '^[a-z]+$', maxLength: 32 } } },
     }, async () => ({ isSaved: true }));
     fastify.post('/by-dependency', {
       schema: {
@@ -781,7 +830,7 @@ describe('handleError: schema errors', () => {
     const fastify = await startApp(t);
 
     declareBodyRoute(fastify, createObjectSchema({
-      tags: { type: 'array', uniqueItems: true },
+      tags: { type: 'array', uniqueItems: true, maxItems: 10 },
       owner: { anyOf: [{ type: 'integer' }, { type: 'boolean' }] },
     }));
 
@@ -1653,7 +1702,7 @@ describe('handleError: the log of a schema error', () => {
   test('names the column and the rule of each error, without the value and without the raw error of AJV', async (t) => {
     const { fastify, lines } = await startLoggedApp(t, { mode: MODE.DEV });
 
-    declareBodyRoute(fastify, createObjectSchema({ email: { type: 'string', format: 'email' }, age: { type: 'integer', minimum: 18 } }));
+    declareBodyRoute(fastify, createObjectSchema({ email: { type: 'string', format: 'email', maxLength: 254 }, age: { type: 'integer', minimum: 18 } }));
 
     const response = await postItem(fastify, { email: 'person-at-example', age: 7 });
     const line = assertFailureLogged(lines, response, LOG_LEVEL_WARN);

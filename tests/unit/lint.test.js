@@ -31,6 +31,7 @@ const BLOCK_FILES = [
   'src/config/sample.js',
   'src/enums/sample.js',
   'src/core/sample.js',
+  'src/schemas/common/sample.js',
   'src/modules/users/users.service.js',
   'scripts/sample.js',
   'tests/unit/sample.test.js',
@@ -133,6 +134,22 @@ describe('eslint: layers', () => {
 
     assert.deepEqual(results, sources.map(() => files.map(() => ['no-restricted-imports'])));
     assert.deepEqual(await lintAll(files, importFrom('#utils/type.js')), files.map(() => []));
+  });
+
+  test('schemas do not import core or modules, and import config, enums, utils and other schemas', async () => {
+    const file = 'src/schemas/entity/sample.js';
+    const forbidden = ['#core/schema/create-schema.js', '#modules/users/users.service.js'];
+    const allowed = ['#config/schema.js', '#enums/user-status.js', '#utils/type.js', '#schemas/common/field.js'];
+
+    assert.deepEqual(
+      await Promise.all(forbidden.map((source) => lint(file, importFrom(source)))),
+      forbidden.map(() => ['no-restricted-imports']),
+    );
+    assert.deepEqual(
+      await Promise.all(forbidden.map((source) => lint(file, importLazily(source)))),
+      forbidden.map(() => ['no-restricted-syntax']),
+    );
+    assert.deepEqual(await Promise.all(allowed.map((source) => lint(file, importFrom(source)))), allowed.map(() => []));
   });
 
   test('modules import core, and nothing in src reaches routes through #root', async () => {

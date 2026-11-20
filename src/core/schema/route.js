@@ -1,11 +1,25 @@
-import { guardRouteSchema, readSchemaTypes, REQUEST_PARTS } from '#core/schema/finite.js';
+import { AppError } from '#core/error/index.js';
+import { isJsonField, rememberSourceSchema } from '#core/schema/docs.js';
+import { guardRouteSchema } from '#core/schema/finite.js';
+import { gateRouteSchema } from '#core/schema/gate.js';
+import { REQUEST_PARTS } from '#core/schema/walk.js';
+import { ERROR_CODE } from '#enums/error-code.js';
 import { HTTP_STATUS } from '#enums/http-status.js';
 import { MEDIA_TYPE } from '#enums/media-type.js';
+import { toMimeEssence } from '#utils/mime.js';
 import {
+  formatSchemaPointer,
+  mapSchema,
+  readSchemaTypes,
+  SUBSCHEMA_MAP_KEYWORDS,
+} from '#utils/schema.js';
+import {
+  isArray,
   isBoolean,
   isNonEmptyArray,
   isNonEmptyObject,
   isObject,
+  isString,
 } from '#utils/type.js';
 
 const SUCCESS_CODE_REGEXP = /^2(?:\d\d|xx)$/i;
@@ -25,12 +39,20 @@ const MERGE_KEYWORDS = Object.freeze([...BRANCH_LIST_KEYWORDS, ...BRANCH_KEYWORD
 
 const PREFIX_REGEXP = /^\/[^/]+(?:\/[^/]+)*$/;
 
+const PROPERTY_NAMES_KEYWORD = 'propertyNames';
+
 function isUnderPrefix(url, prefix) {
   return url === prefix || url.startsWith(`${prefix}/`);
 }
 
 function isTypedMap(map) {
   return isObject(map) && Object.values(map).every((schema) => isTypedSchema(schema));
+}
+
+// The marker json() is the one open form the contract takes, and only for a field that has a name: as "data"
+// itself, as the items of a list or as a map of any keys it would let every column of a row through.
+function isTypedProperties(properties) {
+  return isObject(properties) && Object.values(properties).every((schema) => isJsonField(schema) || isTypedSchema(schema));
 }
 
 function opensNothing({
@@ -41,7 +63,7 @@ function opensNothing({
 }) {
   return additionalProperties !== true
     && (!isObject(additionalProperties) || isTypedSchema(additionalProperties))
-    && (properties === undefined || isTypedMap(properties))
+    && (properties === undefined || isTypedProperties(properties))
     && (patternProperties === undefined || isTypedMap(patternProperties))
     && (items === undefined || isTypedSchema(items));
 }
@@ -190,7 +212,7 @@ function assertResponse(routeOptions) {
     .find((code) => !hasTypedData(response[code]));
 
   if (untypedCode !== undefined) {
-    throw new Error(`${formatRoute(routeOptions)} has no typed "data" in the response schema of ${untypedCode}: every schema needs a "type", an object also "properties", an array "items"; $ref, {} and additionalProperties: true are not accepted, nor additionalProperties: false on or under anyOf, oneOf, allOf, then and else`);
+    throw new Error(`${formatRoute(routeOptions)} has no typed "data" in the response schema of ${untypedCode}: every schema needs a "type", an object also "properties", an array "items"; $ref, {} and additionalProperties: true are not accepted, nor additionalProperties: false on or under anyOf, oneOf, allOf, then and else; a field of free JSON is declared with json()`);
   }
 }
 
@@ -220,9 +242,99 @@ function assertSynchronous(routeOptions) {
   }
 }
 
+// A segment of the path is the keyword propertyNames, not a field of that name, when no map keyword precedes it.
+function isUnderPropertyNames(path) {
+  return path.some((segment, index) => segment === PROPERTY_NAMES_KEYWORD && !SUBSCHEMA_MAP_KEYWORDS.includes(path[index - 1]));
+}
+
+function readHeaderNames(schema, path) {
+  const dependencies = isObject(schema.dependencies)
+    ? schema.dependencies
+    : {};
+  const values = isUnderPropertyNames(path)
+    ? [schema.const, ...(isArray(schema.enum) ? schema.enum : [])]
+    : [];
+
+  return [
+    ...Object.keys(isObject(schema.properties) ? schema.properties : {}),
+    ...(isArray(schema.required) ? schema.required : []),
+    ...Object.keys(dependencies),
+    ...Object.values(dependencies).filter((names) => isArray(names)).flat(),
+    ...values,
+  ];
+}
+
+// Node gives every header name in lower case. Fastify lowers the names of a headers schema only for its own
+// compiler: with the compiler of the app "X-Page" would never match, and a required one would refuse every request.
+function assertHeaderNames(headers) {
+  mapSchema(headers, (schema, path) => {
+    const name = readHeaderNames(schema, path).find((value) => isString(value) && value !== value.toLowerCase());
+
+    if (name !== undefined) {
+      throw new TypeError(`"headers" ${formatSchemaPointer(path)} names the header "${name}": write it in lower case, "${name.toLowerCase()}", as Node gives it`);
+    }
+
+    return schema;
+  });
+
+  return true;
+}
+
+function readBodyMediaTypes(routeSchema) {
+  const content = routeSchema.body?.content;
+
+  return isObject(content)
+    ? Object.keys(content)
+    : [];
+}
+
+// Fastify looks a validator of a body in the content form up by the media type of the request, lower case and
+// without parameters: under any other key it never runs.
+function assertBodyMediaTypes(routeSchema) {
+  const mediaType = readBodyMediaTypes(routeSchema).find((key) => toMimeEssence(key) !== key);
+
+  if (mediaType !== undefined) {
+    throw new TypeError(`"body" names the media type "${mediaType}": write it as Fastify matches it, in lower case and without parameters`);
+  }
+
+  return true;
+}
+
+function prepareRouteSchema(routeOptions) {
+  try {
+    assertHeaderNames(routeOptions.schema.headers);
+    assertBodyMediaTypes(routeOptions.schema);
+
+    return guardRouteSchema(gateRouteSchema(routeOptions.schema));
+  } catch (error) {
+    throw new Error(`${formatRoute(routeOptions)}: ${error.message}`, { cause: error });
+  }
+}
+
+// A body in the content form is validated only under a media type it names: another one Fastify parses
+// (application/json, text/plain) and a request without a body would reach the handler unchecked.
+function guardBodyMediaTypes(routeOptions) {
+  const mediaTypes = readBodyMediaTypes(routeOptions.schema);
+
+  if (!mediaTypes.length) {
+    return false;
+  }
+
+  async function refuseUndeclaredMediaType(request) {
+    if (!mediaTypes.includes(request.mediaType)) {
+      throw new AppError(ERROR_CODE.UNSUPPORTED_MEDIA_TYPE_ERROR);
+    }
+
+    return true;
+  }
+
+  routeOptions.preValidation = [refuseUndeclaredMediaType, ...[routeOptions.preValidation ?? []].flat()];
+
+  return true;
+}
+
 // Synchronous: Fastify ignores the promise of an async onRoute hook, and the route would go live unchecked.
 // The schema is replaced, never changed in place: the HEAD twin of a GET route gets the original options again.
-// A route that brings a validator compiler of its own has to give it the keyword: useFiniteKeyword(ajv).
 export function createRouteHook({ apiPrefix, healthPrefix } = {}) {
   const prefixes = [apiPrefix, healthPrefix];
 
@@ -232,8 +344,11 @@ export function createRouteHook({ apiPrefix, healthPrefix } = {}) {
 
   function checkRoute(routeOptions) {
     if (isObject(routeOptions.schema)) {
+      const source = routeOptions.schema;
+
       assertSynchronous(routeOptions);
-      routeOptions.schema = guardRouteSchema(routeOptions.schema);
+      routeOptions.schema = rememberSourceSchema(prepareRouteSchema(routeOptions), source);
+      guardBodyMediaTypes(routeOptions);
     }
 
     if (prefixes.some((prefix) => isUnderPrefix(routeOptions.url, prefix))) {
