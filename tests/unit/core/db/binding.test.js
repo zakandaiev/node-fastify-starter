@@ -1,4 +1,5 @@
-import { bindSql } from '#core/db/binding.js';
+import { bindSql, DATETIME_MAX_MS, DATETIME_MIN_MS } from '#core/db/binding.js';
+import { toDate, toUtcIso } from '#utils/date.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
@@ -210,6 +211,17 @@ describe('bindSql: values', () => {
     accepted.forEach((value) => assert.deepEqual(bindSql('SELECT :value', { value }).values, [value]));
   });
 
+  test('exports the first and the last moment a DATETIME holds: the edges of what it binds', () => {
+    assert.equal(toUtcIso(DATETIME_MIN_MS), '1000-01-01T00:00:00.000Z');
+    assert.equal(toUtcIso(DATETIME_MAX_MS), '9999-12-31T23:59:59.999Z');
+    [DATETIME_MIN_MS, DATETIME_MAX_MS].forEach((timestamp) => {
+      assert.equal(bindSql('SELECT :value', { value: toDate(timestamp) }).values[0].getTime(), timestamp);
+    });
+    [DATETIME_MIN_MS - 1, DATETIME_MAX_MS + 1].forEach((timestamp) => {
+      assert.throws(() => bindSql('SELECT :value', { value: toDate(timestamp) }), /cannot be bound to a Date outside the years 1000-9999/, String(timestamp));
+    });
+  });
+
   test('names the allowed values and never repeats the refused one', () => {
     const refused = [{ email: SECRET }, [[SECRET]], new Date(`${SECRET}`)];
 
@@ -234,12 +246,13 @@ describe('bindSql: lists', () => {
     });
   });
 
-  test('accepts the list in any spelling of IN: lower case, without a space, negated, around a comment', () => {
+  test('accepts the list in any spelling of IN: lower case, without a space, negated, across tabs and line breaks, around a comment', () => {
     const binding = { ids: ['a', 'b'] };
 
     assert.equal(bindSql('WHERE id in (:ids)', binding).sql, 'WHERE id in (?, ?)');
     assert.equal(bindSql('WHERE id IN(:ids)', binding).sql, 'WHERE id IN(?, ?)');
     assert.equal(bindSql('WHERE id NOT IN ( :ids )', binding).sql, 'WHERE id NOT IN ( ?, ? )');
+    assert.equal(bindSql('WHERE id IN\t(\r\n:ids\n\t)', binding).sql, 'WHERE id IN\t(\r\n?, ?\n\t)');
     assert.equal(bindSql('WHERE id IN (/* list */ :ids -- tail\n)', binding).sql, 'WHERE id IN (/* list */ ?, ? -- tail\n)');
   });
 

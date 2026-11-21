@@ -1,4 +1,10 @@
-import { isArray, isFunction, isObject } from '#utils/type.js';
+import {
+  isArray,
+  isFunction,
+  isNonEmptyArray,
+  isObject,
+  isString,
+} from '#utils/type.js';
 
 const SUBSCHEMA_KEYWORDS = Object.freeze([
   'additionalItems',
@@ -31,8 +37,25 @@ export function readSchemaTypes(schema) {
   return [schema.type ?? []].flat();
 }
 
-export function isNumericSchema(schema) {
-  return readSchemaTypes(schema).some((type) => NUMERIC_TYPES.includes(type));
+// A schema that names no type takes any value: it is not limited to the list.
+export function hasOnlyTypes(schema, types) {
+  if (!isNonEmptyArray(types) || !types.every((type) => isString(type))) {
+    throw new TypeError('hasOnlyTypes(schema, types) requires a list of type names');
+  }
+
+  const schemaTypes = readSchemaTypes(schema);
+
+  return schemaTypes.length > 0 && schemaTypes.every((type) => types.includes(type));
+}
+
+function isNumericType(type) {
+  return NUMERIC_TYPES.includes(type);
+}
+
+export function isNumericSchema(schema, { isOnly = false } = {}) {
+  return isOnly
+    ? hasOnlyTypes(schema, NUMERIC_TYPES)
+    : readSchemaTypes(schema).some(isNumericType);
 }
 
 function walkSchema(schema, visit, path) {

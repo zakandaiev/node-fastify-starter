@@ -10,6 +10,7 @@ import {
   getStartOfDay,
   isExpired,
   isFuture,
+  isIsoDate,
   isPast,
   isUtcDateTime,
   nowUtc,
@@ -663,6 +664,34 @@ describe('isUtcDateTime', () => {
         `${'1'.repeat(LONG)}Z`,
         `${'2026-01-31T10:20:30'.repeat(LONG)}+00:00`,
       ], false);
+    });
+  });
+});
+
+describe('isIsoDate', () => {
+  test('accepts a calendar date written as YYYY-MM-DD, a leap day of a leap year among them', () => {
+    assertAnswers(isIsoDate, ['2026-01-31', '2026-12-31', '2024-02-29', '2000-02-29', '1970-01-01', '0000-01-01', '9999-12-31'], true);
+  });
+
+  test('refuses a day the calendar does not have instead of rolling it over', () => {
+    assertAnswers(isIsoDate, ['2026-02-30', '2026-02-29', '1900-02-29', '2026-04-31', '2026-13-01', '2026-00-10', '2026-01-00', '2026-01-32', '0000-00-00'], false);
+  });
+
+  test('refuses a date-time, with a zone or without one, and a date with a zone', () => {
+    assertAnswers(isIsoDate, [MOMENT, '2026-01-31T00:00:00Z', '2026-01-31T00:00:00.000+00:00', '2026-01-31T10:20:30', '2026-01-31Z', '2026-01-31+00:00'], false);
+  });
+
+  test('refuses another way to write a day and whitespace around it', () => {
+    assertAnswers(isIsoDate, ['2026-1-31', '20260131', '31.01.2026', '02026-01-31', ' 2026-01-31', '2026-01-31 ', '2026-01-31\n', `${FULLWIDTH_2026}-01-31`, ''], false);
+  });
+
+  test('refuses what is not a string, a Date and a timestamp included, and never throws', () => {
+    assertAnswers(isIsoDate, [...NOT_STRING_MOMENTS, ...NOT_MOMENTS], false);
+  });
+
+  test('answers a long hostile string in linear time', () => {
+    assertInstant(() => {
+      assertAnswers(isIsoDate, ['2026-01-31'.repeat(LONG), '1'.repeat(LONG), `2026-01-31${' '.repeat(LONG)}`], false);
     });
   });
 });

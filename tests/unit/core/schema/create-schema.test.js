@@ -12,6 +12,7 @@ import {
   email,
   enumOf,
   isoDate,
+  json,
   nullable,
   text,
   uuid,
@@ -274,6 +275,40 @@ describe('createSchema: query', () => {
     });
   });
 
+  test('refuses an exact text filter on a field that is not text: the query would give it a number, a boolean or an object', () => {
+    const fields = {
+      rating: FIELDS.rating,
+      isPublic: FIELDS.isPublic,
+      code: { type: ['string', 'integer'], maxLength: 8 },
+      meta: json('Meta'),
+    };
+
+    Object.keys(fields).forEach((key) => {
+      assertRefused(
+        () => expandFilter(key, { type: FILTER_TYPE.TEXT, isExact: true }, fields),
+        new RegExp(`the exact text filter "${key}" is on a field that is not text: its type, null aside, must be string$`),
+        key,
+      );
+    });
+    assert.deepEqual(expandFilter('rating', { type: FILTER_TYPE.TEXT }, fields), { rating: { type: 'string', maxLength: SCHEMA_LIMITS.textMaxLength, description: 'Rating' } });
+  });
+
+  test('refuses an exact text filter on a field that names no type but null: the query would take any value for it', () => {
+    const fields = {
+      code: {},
+      kind: { enum: ['a', 'b'] },
+      gone: { type: 'null' },
+    };
+
+    Object.keys(fields).forEach((key) => {
+      assertRefused(
+        () => expandFilter(key, { type: FILTER_TYPE.TEXT, isExact: true }, fields),
+        new RegExp(`the exact text filter "${key}" is on a field that is not text: its type, null aside, must be string$`),
+        key,
+      );
+    });
+  });
+
   test('gives a boolean filter a boolean', () => {
     assert.deepEqual(expandFilter('isPublic', { type: FILTER_TYPE.BOOLEAN }), { isPublic: { type: 'boolean', description: 'Shown to everyone' } });
     assert.deepEqual(expandFilter('isArchived', { type: FILTER_TYPE.BOOLEAN }), { isArchived: { type: 'boolean' } });
@@ -302,7 +337,27 @@ describe('createSchema: query', () => {
 
   test('refuses a number filter on a field that is not a number', () => {
     assertRefused(() => expandFilter('title', { type: FILTER_TYPE.NUMBER }), /the number filter "title" is on a field that is not a number/);
-    assertRefused(() => expandFilter('level', { type: FILTER_TYPE.NUMBER }, { level: { enum: [1, 2, 3] } }), /the number filter "level" is on a field that is not a number/);
+    [{ enum: [1, 2, 3] }, {}, { type: 'null' }].forEach((level, index) => {
+      assertRefused(() => expandFilter('level', { type: FILTER_TYPE.NUMBER }, { level }), /the number filter "level" is on a field that is not a number/, String(index));
+    });
+  });
+
+  test('refuses a number filter on a field that takes another type next to a number: the query would leave a value text', () => {
+    const fields = {
+      code: { type: ['integer', 'string'] },
+      score: { type: ['number', 'boolean', 'null'] },
+    };
+
+    Object.keys(fields).forEach((key) => {
+      [{ type: FILTER_TYPE.NUMBER }, { type: FILTER_TYPE.NUMBER, operator: FILTER_OPERATOR.RANGE }].forEach((filter) => {
+        assertRefused(
+          () => expandFilter(key, filter, fields),
+          new RegExp(`the number filter "${key}" is on a field that is not a number: its types, null aside, must be number or integer$`),
+          `${key} ${filter.operator}`,
+        );
+      });
+    });
+    assert.deepEqual(expandFilter('amount', { type: FILTER_TYPE.NUMBER }, { amount: { type: ['integer', 'number', 'null'] } }), { amount: { type: ['integer', 'number'] } });
   });
 
   test('gives a date filter an ISO date and a datetime filter a UTC date-time, whatever its field is', () => {
@@ -356,6 +411,48 @@ describe('createSchema: query', () => {
 
   test('gives an options filter of one value without options or an enum its field without null: its options come from the database', () => {
     assert.deepEqual(expandFilter('ownerId', { type: FILTER_TYPE.OPTIONS, label: 'Owner' }), { ownerId: uuid('Owner') });
+    assert.deepEqual(expandFilter('rating', { type: FILTER_TYPE.OPTIONS }), {
+      rating: {
+        type: 'integer',
+        minimum: 0,
+        maximum: 10,
+        default: 5,
+        description: 'Rating',
+      },
+    });
+    assert.deepEqual(expandFilter('isPublic', { type: FILTER_TYPE.OPTIONS }), { isPublic: FIELDS.isPublic });
+  });
+
+  test('refuses an options filter of one value that reads it from a field of another type than a string, a number or a boolean', () => {
+    const fields = {
+      ownerIds: { type: 'array', items: uuid('Owner id'), maxItems: 5 },
+      meta: json('Meta'),
+      code: { type: ['string', 'object'] },
+    };
+
+    Object.keys(fields).forEach((key) => {
+      assertRefused(
+        () => expandFilter(key, { type: FILTER_TYPE.OPTIONS }, fields),
+        new RegExp(`the options filter "${key}" reads its value from a field that is not a string, a number or a boolean$`),
+        key,
+      );
+    });
+  });
+
+  test('refuses an options filter of one value that reads it from a field that names no type but null', () => {
+    const fields = {
+      code: {},
+      level: { const: 5 },
+      gone: { type: 'null' },
+    };
+
+    Object.keys(fields).forEach((key) => {
+      assertRefused(
+        () => expandFilter(key, { type: FILTER_TYPE.OPTIONS }, fields),
+        new RegExp(`the options filter "${key}" reads its value from a field that is not a string, a number or a boolean$`),
+        key,
+      );
+    });
   });
 
   test('gives an options filter of several values a comma list of its options, as long as each option once', () => {
@@ -430,7 +527,8 @@ describe('createSchema: query', () => {
     const twice = [{ value: 'book', label: 'Book' }, { value: 'book', label: 'Novel' }];
     const twiceAsText = [{ value: 1, label: 'One' }, { value: '1', label: 'Uno' }];
 
-    assertRefused(() => expandFilter('kind', { type: FILTER_TYPE.OPTIONS, options: outside }), /the options of the filter "kind" must be distinct values of the enum of its field/);
+    assertRefused(() => expandFilter('kind', { type: FILTER_TYPE.OPTIONS, options: outside }), /the options of the filter "kind" must be values of the enum of its field: "music" is not one$/);
+    assertRefused(() => expandFilter('level', { type: FILTER_TYPE.OPTIONS, options: [{ value: 1 }, { value: 4 }] }), /the options of the filter "level" must be values of the enum of its field: "4" is not one$/);
     assertRefused(() => expandFilter('kind', { type: FILTER_TYPE.OPTIONS, options: twice }), /the options of the filter "kind" must be distinct values/);
     assertRefused(() => expandFilter('code', { type: FILTER_TYPE.OPTIONS, options: twiceAsText }), /the options of the filter "code" must be distinct values/);
   });

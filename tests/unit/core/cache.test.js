@@ -1,4 +1,6 @@
 import {
+  assertCacheTables,
+  assertCacheTtl,
   deleteCache,
   invalidateCacheTables,
   readCache,
@@ -39,6 +41,7 @@ const TIMER_SLACK_MS = 5;
 const SHORT_DEADLINES = Object.freeze({ ...FAST_RECONNECT, commandTimeout: '0.2s', socketTimeout: '0.2s' });
 
 const UNSTARTED_MESSAGE = 'Cache Redis was never told to connect: nothing reaches it, call connect() in the entrypoint';
+const SIGNATURE = 'test(cache)';
 const RUN_A = 'a'.repeat(40);
 const RUN_B = 'b'.repeat(40);
 const QUEUED = `+QUEUED${String.fromCharCode(13, 10)}`;
@@ -181,6 +184,19 @@ describe('cache: arguments', () => {
     await assert.rejects(run(() => invalidateCacheTables()), /non-empty array of table names/);
   });
 
+  test('a function refuses what the checkers of the cache refuse, by their message under its own name', async (t) => {
+    const { run } = openCache(t, { isRedis: false });
+
+    await assert.rejects(run(() => wrapCache('key', () => 1, { tables: ['users', 1] })), {
+      name: 'TypeError',
+      message: 'wrapCache(key, fn, { tables }) requires tables to be a non-empty array of table names',
+    });
+    await assert.rejects(run(() => writeCache('key', 'value', { ttl: '-1m' })), {
+      name: 'TypeError',
+      message: 'writeCache(key, value, { ttl }) requires a ttl above zero, such as "5m": a cache key is never written without one',
+    });
+  });
+
   test('refuses a value it cannot give back the same, whether there is a Redis or not', async (t) => {
     const withoutRedis = openCache(t, { isRedis: false });
     const withDownRedis = openCache(t);
@@ -191,6 +207,33 @@ describe('cache: arguments', () => {
       await assert.rejects(run(() => wrapCache('key', () => ({ list: [new Set()] }))), /cannot keep/);
       await assert.rejects(run(() => wrapCache('key', () => Object.assign([1], { total: 1 }))), /holes or with keys of its own/);
     }));
+  });
+});
+
+describe('assertCacheTables and assertCacheTtl', () => {
+  test('assertCacheTables takes a non-empty array of non-empty names, repeats among them, and names the caller in its refusal', () => {
+    [['users'], ['users', 'groups', 'users']].forEach((tables) => {
+      assert.doesNotThrow(() => assertCacheTables(tables, SIGNATURE), tables.join());
+    });
+    [undefined, null, 'users', {}, [], [''], ['users', 1], ['users', null]].forEach((tables, index) => {
+      assert.throws(() => assertCacheTables(tables, SIGNATURE), {
+        name: 'TypeError',
+        message: `${SIGNATURE} requires tables to be a non-empty array of table names`,
+      }, String(index));
+    });
+  });
+
+  test('assertCacheTtl takes a duration above zero, refuses one that rounds to zero, and names the caller in its refusal', () => {
+    ['0.001s', '5m', '1d'].forEach((ttl) => assert.doesNotThrow(() => assertCacheTtl(ttl, SIGNATURE), ttl));
+    ['0s', '0.0001s', '-1m'].forEach((ttl) => {
+      assert.throws(() => assertCacheTtl(ttl, SIGNATURE), {
+        name: 'TypeError',
+        message: `${SIGNATURE} requires a ttl above zero, such as "5m": a cache key is never written without one`,
+      }, ttl);
+    });
+    [undefined, '5 min', 5].forEach((ttl) => {
+      assert.throws(() => assertCacheTtl(ttl, SIGNATURE), /convertStringToMs\(value\) requires a number with a unit/, String(ttl));
+    });
   });
 });
 

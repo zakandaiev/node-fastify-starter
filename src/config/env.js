@@ -1,4 +1,5 @@
 import { resolvePath } from '#config/path.js';
+import { isBlankString } from '#utils/type.js';
 import Ajv from 'ajv';
 import { readFileSync } from 'node:fs';
 import nodePath from 'node:path';
@@ -201,7 +202,7 @@ function filterEntries(source, isMatch) {
 }
 
 function isSet([, value]) {
-  return value !== undefined && String(value).trim() !== '';
+  return value !== undefined && !isBlankString(String(value));
 }
 
 function loadEnvFile() {

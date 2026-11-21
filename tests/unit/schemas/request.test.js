@@ -248,15 +248,17 @@ describe('queryParams', () => {
     });
   });
 
-  test('keeps an empty value of a nullable number an error instead of null, in a route of the app', async (t) => {
+  test('never turns a value of a nullable number into null, in a route of the app: an empty one is dropped, text is refused', async (t) => {
     const fastify = await createApp(t);
 
     fastify.get('/items', { schema: { querystring: queryParams({ age: nullable({ type: 'integer' }) }) } }, (request) => request.query);
 
-    const response = await fastify.inject('/items?age=');
+    const [empty, word] = await Promise.all([fastify.inject('/items?age='), fastify.inject('/items?age=null')]);
 
-    assert.equal(response.statusCode, 422);
-    assert.deepEqual(response.json().validation.map(({ column, operator }) => [column, operator]), [['age', 'type']]);
+    assert.equal(empty.statusCode, 200);
+    assert.deepEqual(empty.json(), {});
+    assert.equal(word.statusCode, 422);
+    assert.deepEqual(word.json().validation.map(({ column, operator }) => [column, operator]), [['age', 'type']]);
   });
 
   test('refuses what is not a map of fields', () => {

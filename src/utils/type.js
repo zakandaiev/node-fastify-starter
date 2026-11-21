@@ -25,6 +25,10 @@ export function isNonEmptyString(value) {
   return typeof value === 'string' && value !== '';
 }
 
+export function isBlankString(value) {
+  return isString(value) && value.trim() === '';
+}
+
 export function isNonEmptyArray(value) {
   return Array.isArray(value) && value.length > 0;
 }

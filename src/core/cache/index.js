@@ -90,21 +90,29 @@ function assertKey(key, signature) {
   }
 }
 
-function readTtlMs(ttl, config, signature) {
-  const ttlMs = convertStringToMs(ttl ?? config.defaultTtl);
-
-  if (ttlMs <= 0) {
-    throw new TypeError(`${signature} requires a ttl above zero: a cache key is never written without one`);
+export function assertCacheTtl(ttl, signature) {
+  if (convertStringToMs(ttl) <= 0) {
+    throw new TypeError(`${signature} requires a ttl above zero, such as "5m": a cache key is never written without one`);
   }
+}
 
-  return ttlMs;
+function readTtlMs(ttl, config, signature) {
+  const value = ttl ?? config.defaultTtl;
+
+  assertCacheTtl(value, signature);
+
+  return convertStringToMs(value);
+}
+
+export function assertCacheTables(tables, signature) {
+  if (!isNonEmptyArray(tables) || !tables.every((table) => isNonEmptyString(table))) {
+    throw new TypeError(`${signature} requires tables to be a non-empty array of table names`);
+  }
 }
 
 // Sorted and without repeats: ['users', 'groups'] and ['groups', 'users', 'users'] name one set of versions.
 function readTables(tables, signature) {
-  if (!isNonEmptyArray(tables) || !tables.every((table) => isNonEmptyString(table))) {
-    throw new TypeError(`${signature} requires tables to be a non-empty array of table names`);
-  }
+  assertCacheTables(tables, signature);
 
   return unique(tables).sort();
 }

@@ -1062,6 +1062,20 @@ describe('listEnvelope', () => {
     assert.deepEqual(serialize(listEnvelope(ITEM_SCHEMA), envelope), envelope);
   });
 
+  test('keeps the operator of a range filter', () => {
+    const filter = {
+      type: 'datetime',
+      name: 'createdAt',
+      label: 'Created',
+      operator: 'range',
+      isDisabled: false,
+      value: ['2026-11-01T00:00:00.000Z', null],
+    };
+    const envelope = createEnvelope({ data: [], filters: [filter] });
+
+    assert.deepEqual(serialize(listEnvelope(ITEM_SCHEMA), envelope), envelope);
+  });
+
   test('writes the sections in the order of the response format', () => {
     const envelope = createEnvelope({
       data: [ITEM],

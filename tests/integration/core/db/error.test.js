@@ -319,7 +319,7 @@ describe('db errors: over HTTP', { skip: testDb.skip }, () => {
     assert.equal(fastify.db.getStats().rejectedCount, 1);
   });
 
-  test('a duplicate that nobody handles answers 500 and shows the value neither to the client nor to the log', async (t) => {
+  test('a duplicate that nobody handles answers 422 and shows the value neither to the client nor to the log', async (t) => {
     const sink = createLogSink();
     const fastify = await testDb.buildApp({ env: { APP_MODE: 'dev' }, logger: { level: 'info', stream: sink.stream } });
     t.after(() => fastify.close());
@@ -327,9 +327,17 @@ describe('db errors: over HTTP', { skip: testDb.skip }, () => {
     fastify.post('/people', async (request) => insertPerson({ id: 1, email: request.body.email }, request.server.db));
 
     const response = await fastify.inject({ method: 'POST', url: '/people', payload: { email: EMAIL } });
+    const body = response.json();
 
-    assert.equal(response.statusCode, 500);
-    assert.equal(response.json().message, "Duplicate entry '***' for key 'PRIMARY'");
+    assert.equal(response.statusCode, 422);
+    assert.equal(body.code, ERROR_CODE.VALIDATION_ERROR);
+    assert.equal(body.message, "Duplicate entry '***' for key 'PRIMARY'");
+    assert.deepEqual(body.validation, [{
+      column: null,
+      columnValue: null,
+      operator: 'unique',
+      operatorValue: null,
+    }]);
     assert.equal(response.payload.includes(EMAIL), false);
     assert.equal(JSON.stringify(sink.lines).includes(EMAIL), false);
   });

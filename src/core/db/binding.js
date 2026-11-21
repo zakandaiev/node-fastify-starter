@@ -5,9 +5,11 @@ import {
   TOKEN_TYPE,
   tokenizeSql,
 } from '#core/db/lexer.js';
+import { toDate, toTimestamp } from '#utils/date.js';
 import { getPath } from '#utils/object.js';
 import {
   isArray,
+  isBlankString,
   isBoolean,
   isFunction,
   isNumber,
@@ -20,7 +22,6 @@ import { isDate } from 'node:util/types';
 const PLACEHOLDER_MARK = '?';
 const LIST_KEYWORD = 'IN';
 const LIST_SEPARATOR = ', ';
-const BLANK_REGEXP = /^\s*$/;
 const GLUED_BEFORE_REGEXP = /[A-Za-z0-9_$.'"`\P{ASCII}]/u;
 const GLUED_AFTER_REGEXP = /[.'"]/;
 
@@ -29,10 +30,12 @@ const GLUED_AFTER_REGEXP = /[.'"]/;
 // nothing can match: without one it reads, and in UPDATE or DELETE locks, every row of the outer table.
 const EMPTY_LIST = 'SELECT NULL FROM (SELECT NULL) empty_list WHERE FALSE';
 
-// The years a DATETIME holds. A Date outside them becomes text the server cannot read as a date: a comparison
+// The moments a DATETIME holds. A Date outside them becomes text the server cannot read as a date: a comparison
 // with it then matches every row or none without an error, also in DELETE.
-const DATETIME_YEAR_MIN = 1000;
-const DATETIME_YEAR_MAX = 9999;
+export const DATETIME_MIN_MS = toTimestamp('1000-01-01T00:00:00.000Z');
+export const DATETIME_MAX_MS = toTimestamp('9999-12-31T23:59:59.999Z');
+
+const DATETIME_YEARS = `${toDate(DATETIME_MIN_MS).getUTCFullYear()}-${toDate(DATETIME_MAX_MS).getUTCFullYear()}`;
 
 const ALLOWED_VALUES = 'a string, a finite number, a bigint, a boolean, a Date, a Buffer or null';
 
@@ -47,13 +50,13 @@ function isBindable(value) {
     || isBoolean(value)
     || typeof value === 'bigint'
     || Buffer.isBuffer(value)
-    || (isDate(value) && isNumberInRange(value.getUTCFullYear(), DATETIME_YEAR_MIN, DATETIME_YEAR_MAX));
+    || (isDate(value) && isNumberInRange(value.getTime(), DATETIME_MIN_MS, DATETIME_MAX_MS));
 }
 
 function describeDate(value) {
   return Number.isNaN(value.getTime())
     ? 'an invalid Date'
-    : `a Date outside the years ${DATETIME_YEAR_MIN}-${DATETIME_YEAR_MAX}`;
+    : `a Date outside the years ${DATETIME_YEARS}`;
 }
 
 // The type only: the value itself may be personal data, and the message goes to the log.
@@ -85,7 +88,7 @@ function readTokens(sql) {
   let isAfterBlank = true;
 
   tokenizeSql(sql).forEach((token) => {
-    isAfterBlank = isAfterBlank && BLANK_REGEXP.test(sql.slice(position, token.start));
+    isAfterBlank = isAfterBlank && isBlankString(sql.slice(position, token.start));
     position = token.end;
 
     if (token.type !== TOKEN_TYPE.COMMENT) {

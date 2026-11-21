@@ -6,6 +6,8 @@
 
 ## #core/cache/index.js
 
+- `assertCacheTables(tables, signature)`
+- `assertCacheTtl(ttl, signature)`
 - `async deleteCache(keys)`
 - `async invalidateCacheTables(tables)`
 - `async readCache(key)`
@@ -23,6 +25,8 @@
 
 ## #core/db/binding.js
 
+- `DATETIME_MAX_MS`
+- `DATETIME_MIN_MS`
 - `bindSql(sql, binding = {}, { render = renderMark } = {})`
 
 ## #core/db/driver/mariadb.js
@@ -36,19 +40,32 @@
 
 - `class DbError`
 - `createOverloadError()`
+- `describeColumn(name)`
 - `findDbError(error)`
 - `isDatabaseAccessDenied(error)`
+- `isIdentifier(name)`
 - `isLockConflict(error)`
 - `isLockWaitTimeout(error)`
 - `isMissingTable(error)`
 - `maskDbErrorValues(text)`
 - `toDbError(error, { isScript = false } = {})`
 
+## #core/db/filter.js
+
+- `FILTER_LIST_SEPARATOR`
+- `assertFilterDefinition(key, filter, signature)`
+- `buildFilter(schema, payload = {}, { options = {}, disabled = [] } = {})`
+- `readFilterColumns(schema)`
+- `readFilterOptions(key, filter, property)`
+- `readFilterParameters(key, filter)`
+- `readFilterPlaceholders(schema)`
+
 ## #core/db/index.js
 
 - `createDb(config)`
 - `getDb()`
 - `async insertReturning(table, row, { returning } = {})`
+- `async invalidateAfterWrite(tables, write)`
 - `async now()`
 - `async updateReturning(table, patch, { where, returning } = {})`
 - `async upsert(table, row, { update } = {})`
@@ -90,6 +107,42 @@
 - `async migrateUp({ type, names, namesExclude, isDryRun, directory, onLockWait, onFileStart, onFileFinish } = {})`
 - `async verifyMigrations({ directory, onLockWait, onFileStart, onFileFinish } = {})`
 
+## #core/db/pagination.js
+
+- `buildPagination({ limit, offset, total } = {})`
+- `readPage(payload = {})`
+
+## #core/db/patch.js
+
+- `buildPatch(body, { allowed } = {})`
+
+## #core/db/query.js
+
+- `createQuery(sql, binding = {}, { isTimeLimited = false } = {})`
+
+## #core/db/sort.js
+
+- `SORT_PARAMETER`
+- `assertSortEntries(sort, signature)`
+- `buildSort(schema, payload = {})`
+- `readSortEntries(schema)`
+
+## #core/db/sql.js
+
+- `appendToWhere(sql, condition)`
+- `assertCountableSelect(sql, signature)`
+- `assertEditableSelect(sql, signature)`
+- `assertOneStatement(sql, signature)`
+- `assertWrappableSelect(sql, signature)`
+- `buildCountSql(sql)`
+- `isLockingRead(sql)`
+- `isSelect(sql)`
+- `namesResultColumns(text)`
+- `replaceOrderBy(sql, orderBy)`
+- `replacePagination(sql, limit)`
+- `requiresDerivedTable(sql)`
+- `wrapSelect(sql)`
+
 ## #core/db/structure.js
 
 - `compareStructures(live, reference)`
@@ -109,6 +162,7 @@
 ## #core/error/classify.js
 
 - `classifyError(error)`
+- `findUniqueViolation(error)`
 - `getErrorStatus(error)`
 - `isSchemaError(error)`
 
@@ -172,6 +226,10 @@
 - `assertRouteContract(routeOptions)`
 - `createRouteHook({ apiPrefix, healthPrefix } = {})`
 
+## #core/schema/unique.js
+
+- `async loadUniqueFields(directory = ENTITY_DIRECTORY)`
+
 ## #core/schema/validator.js
 
 - `buildValidator(externalSchemas = {})`
@@ -219,6 +277,7 @@
 - `getStartOfDay(value)`
 - `isExpired(value, ttl, now = nowUtc())`
 - `isFuture(value, now = nowUtc())`
+- `isIsoDate(value)`
 - `isPast(value, now = nowUtc())`
 - `isUtcDateTime(value)`
 - `nowUtc()`
@@ -290,7 +349,8 @@
 
 - `SUBSCHEMA_MAP_KEYWORDS`
 - `formatSchemaPointer(path)`
-- `isNumericSchema(schema)`
+- `hasOnlyTypes(schema, types)`
+- `isNumericSchema(schema, { isOnly = false } = {})`
 - `mapSchema(schema, visit)`
 - `readSchemaTypes(schema)`
 
@@ -311,6 +371,7 @@
 ## #utils/string.js
 
 - `escapeHtml(value)`
+- `escapeLikePattern(value)`
 - `escapeRegExp(value)`
 - `formatBytes(bytes, decimals = BYTES_DECIMALS)`
 - `mask(value, options = {})`
@@ -322,6 +383,7 @@
 ## #utils/type.js
 
 - `isArray(value)`
+- `isBlankString(value)`
 - `isBoolean(value)`
 - `isFunction(value)`
 - `isNonEmptyArray(value)`

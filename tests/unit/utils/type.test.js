@@ -1,5 +1,6 @@
 import {
   isArray,
+  isBlankString,
   isBoolean,
   isFunction,
   isNonEmptyArray,
@@ -108,6 +109,27 @@ describe('isNonEmptyString', () => {
     // eslint-disable-next-line no-new-wrappers -- the wrapper object is the case under test
     ['', null, undefined, 0, 1, true, ['a'], { length: 1 }, new String('text')].forEach((value) => {
       assert.equal(isNonEmptyString(value), false);
+    });
+  });
+});
+
+describe('isBlankString', () => {
+  const NO_BREAK_SPACE = String.fromCharCode(0xA0);
+  const BYTE_ORDER_MARK = String.fromCharCode(0xFEFF);
+  const EM_SPACE = String.fromCharCode(0x2003);
+  const LINE_SEPARATOR = String.fromCharCode(0x2028);
+  const ZERO_WIDTH_SPACE = String.fromCharCode(0x200B);
+
+  test('accepts an empty string and one of white space alone, a no-break space, a byte order mark and a line break included', () => {
+    ['', ' ', '\t\n', '\r\n \v\f', NO_BREAK_SPACE, BYTE_ORDER_MARK, EM_SPACE, LINE_SEPARATOR].forEach((value) => {
+      assert.equal(isBlankString(value), true, JSON.stringify(value));
+    });
+  });
+
+  test('rejects a string with anything else in it, a zero-width space included, and everything that is not a string', () => {
+    // eslint-disable-next-line no-new-wrappers -- the wrapper object is the case under test
+    ['a', ' a ', ZERO_WIDTH_SPACE, '0', null, undefined, 0, false, [], [' '], { length: 0 }, new String(' ')].forEach((value) => {
+      assert.equal(isBlankString(value), false, String(value));
     });
   });
 });

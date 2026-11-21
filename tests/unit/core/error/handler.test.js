@@ -1,13 +1,18 @@
 import { MODE } from '#config/env.js';
+import { DbError } from '#core/db/error.js';
 import { handleError, handleNotFound } from '#core/error/handler.js';
 import { AppError } from '#core/error/index.js';
+import { DB_ERROR_KIND } from '#enums/db-error-kind.js';
 import { ERROR_CATALOG, ERROR_CODE } from '#enums/error-code.js';
 import { buildTestApp } from '#root/tests/helper/app.js';
+import { createTestConfig } from '#root/tests/helper/config.js';
 import { createLogSink } from '#root/tests/helper/log.js';
 import { sendRawRequest } from '#root/tests/helper/socket.js';
 import { errorEnvelope, successEnvelope } from '#schemas/common/envelope.js';
 import { uuidVersion } from '#utils/id.js';
+import { pick } from '#utils/object.js';
 import { truncate } from '#utils/string.js';
+import Fastify from 'fastify';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
@@ -29,6 +34,8 @@ const HEAD_SEPARATOR = '\r\n\r\n';
 const LINE_SEPARATOR = '\r\n';
 
 const MALFORMED_JSON = '{"name":';
+
+const DUPLICATE_EMAIL = 'anna@example.com';
 
 const FASTIFY_MESSAGE = Object.freeze({
   MALFORMED_JSON: "Body is not valid JSON but content-type is set to 'application/json'",
@@ -160,6 +167,28 @@ function postText(fastify, url, payload, headers = JSON_HEADERS) {
 
 function createForeignError(statusCode, properties = {}) {
   return Object.assign(new Error(`Foreign failure ${statusCode}`), { statusCode, ...properties });
+}
+
+// What the driver throws for a row that breaks a unique index: the value in its text is masked already.
+function createDuplicate(constraint) {
+  return new DbError(`Duplicate entry '***' for key '${constraint}'`, {
+    kind: DB_ERROR_KIND.UNIQUE,
+    constraint,
+    code: 'ER_DUP_ENTRY',
+    errno: 1062,
+    sqlState: '23000',
+  });
+}
+
+// Routes that take the body and meet a row that holds one of its values already.
+function injectDuplicates(fastify, errors, payload) {
+  errors.forEach((error, index) => {
+    fastify.post(`/duplicates/${index}`, async () => {
+      throw error;
+    });
+  });
+
+  return Promise.all(errors.map((error, index) => fastify.inject({ method: 'POST', url: `/duplicates/${index}`, payload })));
 }
 
 function injectFailures(fastify, errors) {
@@ -1695,6 +1724,130 @@ describe('handleError: the validation of an AppError', () => {
     assert.deepEqual(line.validation, [{ column: 'email', operator: 'unique', operatorValue: null }]);
     assert.equal(Object.hasOwn(line.err, 'validation'), false);
     assert.equal(JSON.stringify(line).includes('john@example.com'), false);
+  });
+});
+
+describe('handleError: a duplicate in the database', () => {
+  test('answers 422 VALIDATION_ERROR on the field the entity schema maps the index to, with the value the client sent', async (t) => {
+    const fastify = await startApp(t);
+
+    fastify.post('/groups', async () => {
+      throw createDuplicate('uq_groups_slug');
+    });
+
+    const [[user], group] = await Promise.all([
+      injectDuplicates(fastify, [createDuplicate('uq_users_email')], { email: DUPLICATE_EMAIL, firstName: 'Anna' }),
+      fastify.inject({ method: 'POST', url: '/groups', payload: { slug: 'admin', name: 'Admins' } }),
+    ]);
+
+    assertErrorResponse(user, 422, 'VALIDATION_ERROR', { validation: [createEntry('email', DUPLICATE_EMAIL, 'unique', null)] });
+    assertErrorResponse(group, 422, 'VALIDATION_ERROR', { validation: [createEntry('slug', 'admin', 'unique', null)] });
+    [user, group].forEach((response) => assert.doesNotMatch(response.body, /uq_|Duplicate entry/));
+  });
+
+  test('gives a developer the text of the database, which names the index and masks the value, and no stack', async (t) => {
+    const fastify = await startApp(t, { mode: MODE.DEV });
+    const [named, silent] = await injectDuplicates(fastify, [
+      createDuplicate('uq_users_email'),
+      new DbError('', { kind: DB_ERROR_KIND.UNIQUE, constraint: 'uq_users_email' }),
+    ], { email: DUPLICATE_EMAIL });
+    const validation = [createEntry('email', DUPLICATE_EMAIL, 'unique', null)];
+
+    assertErrorResponse(named, 422, 'VALIDATION_ERROR', { message: "Duplicate entry '***' for key 'uq_users_email'", validation });
+    assertErrorResponse(silent, 422, 'VALIDATION_ERROR', { validation });
+  });
+
+  test('gives a null column to an index no schema names, a missing one and one named like a property of every object', async (t) => {
+    const fastify = await startApp(t);
+    const constraints = ['PRIMARY', 'uq_people_email', 'constructor', 'toString', 'hasOwnProperty', '__proto__'];
+    const errors = [...constraints.map((constraint) => createDuplicate(constraint)), new DbError('Database error', { kind: DB_ERROR_KIND.UNIQUE })];
+    const payload = Object.fromEntries([...constraints.filter((key) => key !== '__proto__'), 'email'].map((key) => [key, DUPLICATE_EMAIL]));
+    const responses = await injectDuplicates(fastify, errors, payload);
+
+    responses.forEach((response) => {
+      assertErrorResponse(response, 422, 'VALIDATION_ERROR', { validation: [createEntry(null, null, 'unique', null)] });
+    });
+  });
+
+  test('reflects the value by the rules of every entry: a primitive of the body, cut to length, null when there is none', async (t) => {
+    const fastify = await startApp(t);
+    const { maxValueLength } = fastify.config.app.validation;
+    const long = `${'a'.repeat(maxValueLength)}@example.com`;
+    const payloads = [{}, { email: null }, { email: { address: DUPLICATE_EMAIL } }, { email: [DUPLICATE_EMAIL] }, { email: long }, { email: 7 }];
+    const requests = [
+      ...payloads.map((payload) => ({ method: 'POST', url: '/users', payload })),
+      {
+        method: 'POST',
+        url: '/users',
+        payload: DUPLICATE_EMAIL,
+        headers: { 'content-type': 'text/plain' },
+      },
+      { method: 'GET', url: '/users' },
+    ];
+    const columnValues = [null, null, null, null, truncate(long, maxValueLength), 7, null, null];
+    const error = createDuplicate('uq_users_email');
+
+    fastify.post('/users', async () => {
+      throw error;
+    });
+    fastify.get('/users', async () => {
+      throw error;
+    });
+
+    const responses = await Promise.all(requests.map((request) => fastify.inject(request)));
+
+    responses.forEach((response, index) => {
+      assertErrorResponse(response, 422, 'VALIDATION_ERROR', { validation: [createEntry('email', columnValues[index], 'unique', null)] });
+    });
+  });
+
+  test('logs a duplicate once, as a warning that names the index and not the value', async (t) => {
+    const { fastify, lines } = await startLoggedApp(t);
+    const [response] = await injectDuplicates(fastify, [createDuplicate('uq_users_email')], { email: DUPLICATE_EMAIL });
+    const line = assertFailureLogged(lines, response, LOG_LEVEL_WARN);
+
+    assert.deepEqual(pick(line.err, ['type', 'kind', 'constraint']), { type: 'DbError', kind: 'unique', constraint: 'uq_users_email' });
+    assert.deepEqual(line.validation, [{ column: 'email', operator: 'unique', operatorValue: null }]);
+    assert.equal(JSON.stringify(lines).includes(DUPLICATE_EMAIL), false);
+  });
+
+  test('answers under a null column on an instance without the map of unique fields', async (t) => {
+    const fastify = Fastify();
+    t.after(() => fastify.close());
+
+    fastify.decorate('config', createTestConfig());
+    fastify.setErrorHandler(handleError);
+
+    const [response] = await injectDuplicates(fastify, [createDuplicate('uq_users_email')], { email: DUPLICATE_EMAIL });
+
+    assert.equal(fastify.hasDecorator('uniqueFields'), false);
+    assert.equal(response.statusCode, 422);
+    assert.deepEqual(pick(response.json(), ['code', 'validation']), {
+      code: 'VALIDATION_ERROR',
+      validation: [createEntry(null, null, 'unique', null)],
+    });
+  });
+
+  test('keeps the answer of an AppError whose cause is a duplicate, and of an error of the database of another kind', async (t) => {
+    const fastify = await startApp(t);
+    const [refused, deadlock] = await injectDuplicates(fastify, [
+      new AppError(ERROR_CODE.NO_CHANGES, { cause: createDuplicate('uq_users_email') }),
+      new DbError('Deadlock found when trying to get lock', { kind: DB_ERROR_KIND.DEADLOCK }),
+    ], { email: DUPLICATE_EMAIL });
+
+    assertErrorResponse(refused, 409, 'NO_CHANGES');
+    assertErrorResponse(deadlock, 500, 'SERVER_ERROR');
+  });
+
+  test('answers an AppError whose code was changed after it was built by its status and its own message, a duplicate for its cause too', async (t) => {
+    const fastify = await startApp(t);
+    const renamed = Object.assign(new AppError(ERROR_CODE.NOT_FOUND_ERROR, {
+      message: 'No such group',
+      cause: createDuplicate('uq_groups_slug'),
+    }), { code: 'NOPE' });
+    const [response] = await injectDuplicates(fastify, [renamed], { slug: 'admin' });
+
+    assertErrorResponse(response, 404, 'NOT_FOUND_ERROR', { message: 'No such group' });
   });
 });
 

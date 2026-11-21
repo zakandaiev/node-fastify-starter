@@ -127,6 +127,10 @@ export function isUtcDateTime(value) {
   return readStrictUtc(value) !== null;
 }
 
+export function isIsoDate(value) {
+  return isString(value) && DATE_ONLY_REGEXP.test(value) && toDate(value) !== null;
+}
+
 export function parseStrictUtc(value) {
   const date = readStrictUtc(value);
 

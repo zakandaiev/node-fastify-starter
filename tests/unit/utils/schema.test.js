@@ -1,6 +1,7 @@
 import { freezeDeep } from '#utils/object.js';
 import {
   formatSchemaPointer,
+  hasOnlyTypes,
   isNumericSchema,
   mapSchema,
   readSchemaTypes,
@@ -332,6 +333,36 @@ describe('readSchemaTypes', () => {
   });
 });
 
+describe('hasOnlyTypes', () => {
+  const TYPES = Object.freeze(['string', 'number', 'integer', 'boolean']);
+
+  test('says whether every type a schema names is in the list', () => {
+    [{ type: 'string' }, { type: ['integer', 'number'] }, { type: ['boolean', 'string'], enum: ['a', true] }].forEach((schema) => {
+      assert.equal(hasOnlyTypes(schema, TYPES), true, JSON.stringify(schema));
+    });
+    [{ type: ['string', 'null'] }, { type: 'object' }, { type: ['string', 'array'] }].forEach((schema) => {
+      assert.equal(hasOnlyTypes(schema, TYPES), false, JSON.stringify(schema));
+    });
+  });
+
+  test('says no for a schema that names no type: it takes any value', () => {
+    [{}, { type: [] }, { type: null }, { enum: ['a', 'b'] }, { const: 5 }, { minimum: 0 }].forEach((schema) => {
+      assert.equal(hasOnlyTypes(schema, TYPES), false, JSON.stringify(schema));
+    });
+  });
+
+  test('requires a schema object and a list of type names', () => {
+    assert.throws(() => hasOnlyTypes(null, TYPES), { name: 'TypeError', message: /requires a schema object/ });
+    [undefined, 'string', [], [1], ['string', null]].forEach((types) => {
+      assert.throws(
+        () => hasOnlyTypes({ type: 'string' }, types),
+        { name: 'TypeError', message: /^hasOnlyTypes\(schema, types\) requires a list of type names$/ },
+        JSON.stringify(types),
+      );
+    });
+  });
+});
+
 describe('isNumericSchema', () => {
   test('says whether a schema takes a number or an integer, among other types too', () => {
     [{ type: 'number' }, { type: 'integer' }, { type: ['integer', 'null'] }, { type: ['string', 'number'] }].forEach((schema) => {
@@ -339,6 +370,16 @@ describe('isNumericSchema', () => {
     });
     [{ type: 'string' }, { type: ['string', 'null'] }, { minimum: 0 }, {}].forEach((schema) => {
       assert.equal(isNumericSchema(schema), false, JSON.stringify(schema));
+    });
+  });
+
+  test('with isOnly, says whether every type of a schema is a number or an integer', () => {
+    [{ type: 'number' }, { type: 'integer' }, { type: ['integer', 'number'] }].forEach((schema) => {
+      assert.equal(isNumericSchema(schema, { isOnly: true }), true, JSON.stringify(schema));
+      assert.equal(isNumericSchema(schema, { isOnly: false }), true, JSON.stringify(schema));
+    });
+    [{ type: ['integer', 'null'] }, { type: ['string', 'number'] }, { type: 'string' }, { minimum: 0 }, {}].forEach((schema) => {
+      assert.equal(isNumericSchema(schema, { isOnly: true }), false, JSON.stringify(schema));
     });
   });
 

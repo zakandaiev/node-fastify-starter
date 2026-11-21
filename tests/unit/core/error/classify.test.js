@@ -1,5 +1,12 @@
-import { classifyError, getErrorStatus, isSchemaError } from '#core/error/classify.js';
+import { createOverloadError, DbError } from '#core/db/error.js';
+import {
+  classifyError,
+  findUniqueViolation,
+  getErrorStatus,
+  isSchemaError,
+} from '#core/error/classify.js';
 import { AppError } from '#core/error/index.js';
+import { DB_ERROR_KIND } from '#enums/db-error-kind.js';
 import { ERROR_CODE } from '#enums/error-code.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
@@ -34,6 +41,7 @@ const UNAVAILABLE_STATUS = 503;
 const BAD_REQUEST = Object.freeze({ code: 'BAD_REQUEST_ERROR', statusCode: 400 });
 const SERVER_FAULT = Object.freeze({ code: 'SERVER_ERROR', statusCode: 500 });
 const UNAVAILABLE = Object.freeze({ code: 'SERVICE_UNAVAILABLE_ERROR', statusCode: 503 });
+const INVALID = Object.freeze({ code: 'VALIDATION_ERROR', statusCode: 422 });
 
 const INVALID_STATUSES = Object.freeze([99, 200, 302, 399, 600, 700, '404', 404.5, NaN, Infinity, -404, null, undefined, true, [404], {}]);
 
@@ -49,6 +57,17 @@ function createForeignError(fields) {
 
 function classifyStatus(statusCode) {
   return classifyError(createForeignError({ statusCode }));
+}
+
+// What the driver throws for a row that breaks a unique index: the value in its text is masked already.
+function createDuplicate(constraint = 'uq_users_email', fields = {}) {
+  return Object.assign(new DbError(`Duplicate entry '***' for key '${constraint}'`, {
+    kind: DB_ERROR_KIND.UNIQUE,
+    constraint,
+    code: 'ER_DUP_ENTRY',
+    errno: 1062,
+    sqlState: '23000',
+  }), fields);
 }
 
 // What Fastify hands over for a part that failed its schema: the errors of AJV and the name of the part.
@@ -123,6 +142,14 @@ describe('classifyError: an AppError whose code was changed after it was built',
   test('is classified by its status, like an error of a plugin', () => {
     const renamed = Object.assign(new AppError(ERROR_CODE.NOT_FOUND_ERROR), { code: 'NOPE' });
     const inherited = Object.assign(new AppError(ERROR_CODE.NO_CHANGES), { code: 'toString' });
+
+    assert.deepEqual(classifyError(renamed), { code: 'NOT_FOUND_ERROR', statusCode: 404 });
+    assert.deepEqual(classifyError(inherited), { code: 'BAD_REQUEST_ERROR', statusCode: 409 });
+  });
+
+  test('is classified by its status when its cause is a duplicate too: the handler answers it as an AppError', () => {
+    const renamed = Object.assign(new AppError(ERROR_CODE.NOT_FOUND_ERROR, { cause: createDuplicate() }), { code: 'NOPE' });
+    const inherited = Object.assign(new AppError(ERROR_CODE.NO_CHANGES, { cause: createDuplicate('PRIMARY') }), { code: 'toString' });
 
     assert.deepEqual(classifyError(renamed), { code: 'NOT_FOUND_ERROR', statusCode: 404 });
     assert.deepEqual(classifyError(inherited), { code: 'BAD_REQUEST_ERROR', statusCode: 409 });
@@ -234,6 +261,65 @@ describe('classifyError: schema errors', () => {
     assert.deepEqual(classifyError(createForeignError({ statusCode: 409, validation })), { code: 'BAD_REQUEST_ERROR', statusCode: 409 });
     assert.deepEqual(classifyError(createForeignError({ validation })), SERVER_FAULT);
     assert.deepEqual(classifyError(createForeignError({ validation, validationContext: null })), SERVER_FAULT);
+  });
+});
+
+describe('findUniqueViolation', () => {
+  test('finds an error of the database of the kind "unique" that is the error itself', () => {
+    const duplicates = [createDuplicate(), createDuplicate('PRIMARY'), new DbError('Database error', { kind: DB_ERROR_KIND.UNIQUE })];
+
+    duplicates.forEach((duplicate) => assert.equal(findUniqueViolation(duplicate), duplicate, inspect(duplicate)));
+  });
+
+  test('finds nothing in the cause of an AppError, whether its code is in the catalogue or was changed after it was built', () => {
+    const wrappers = [
+      new AppError(ERROR_CODE.NO_CHANGES, { cause: createDuplicate() }),
+      new AppError(ERROR_CODE.SERVICE_UNAVAILABLE_ERROR, { cause: createDuplicate() }),
+      Object.assign(new AppError(ERROR_CODE.NOT_FOUND_ERROR, { cause: createDuplicate() }), { code: 'NOPE' }),
+    ];
+
+    wrappers.forEach((error) => assert.equal(findUniqueViolation(error), null, inspect(error)));
+  });
+
+  test('finds nothing in an error of the database of another kind or none, nor in anything else', () => {
+    const others = [
+      new DbError('Deadlock found', { kind: DB_ERROR_KIND.DEADLOCK }),
+      new DbError('Database error'),
+      createOverloadError(),
+      Object.assign(new Error('Duplicate entry'), { kind: DB_ERROR_KIND.UNIQUE }),
+      { kind: DB_ERROR_KIND.UNIQUE, constraint: 'uq_users_email' },
+      new Error('wrapped', { cause: createDuplicate() }),
+      ...NON_ERRORS,
+    ];
+
+    others.forEach((error) => assert.equal(findUniqueViolation(error), null, inspect(error)));
+  });
+});
+
+describe('classifyError: a duplicate in the database', () => {
+  test('answers 422 VALIDATION_ERROR, whatever index, status or marks of a schema error it carries', () => {
+    const duplicates = [
+      createDuplicate(),
+      createDuplicate('PRIMARY'),
+      new DbError('Database error', { kind: DB_ERROR_KIND.UNIQUE }),
+      createDuplicate('uq_users_email', { statusCode: 500, status: 503 }),
+      createDuplicate('uq_users_email', createSchemaError('params')),
+    ];
+
+    duplicates.forEach((error) => assert.deepEqual(classifyError(error), INVALID, inspect(error)));
+  });
+
+  test('keeps the code of an AppError whose cause is a duplicate', () => {
+    assert.deepEqual(classifyError(new AppError(ERROR_CODE.NO_CHANGES, { cause: createDuplicate() })), { code: 'NO_CHANGES', statusCode: 409 });
+    assert.deepEqual(classifyError(new AppError(ERROR_CODE.SERVER_ERROR, { cause: createDuplicate() })), SERVER_FAULT);
+  });
+
+  test('leaves an error of the database of another kind to its status, and a lookalike too', () => {
+    assert.deepEqual(classifyError(new DbError('Deadlock found', { kind: DB_ERROR_KIND.DEADLOCK })), SERVER_FAULT);
+    assert.deepEqual(classifyError(new DbError('Database error')), SERVER_FAULT);
+    assert.deepEqual(classifyError(createOverloadError()), UNAVAILABLE);
+    assert.deepEqual(classifyError(createForeignError({ kind: DB_ERROR_KIND.UNIQUE, constraint: 'uq_users_email' })), SERVER_FAULT);
+    assert.deepEqual(classifyError({ kind: DB_ERROR_KIND.UNIQUE, statusCode: 409 }), { code: 'BAD_REQUEST_ERROR', statusCode: 409 });
   });
 });
 

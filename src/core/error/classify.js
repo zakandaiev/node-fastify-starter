@@ -1,4 +1,6 @@
+import { DbError } from '#core/db/error.js';
 import { AppError } from '#core/error/index.js';
+import { DB_ERROR_KIND } from '#enums/db-error-kind.js';
 import { ERROR_CATALOG, ERROR_CODE } from '#enums/error-code.js';
 import { HTTP_STATUS } from '#enums/http-status.js';
 import { isArray, isNumberInRange, isString } from '#utils/type.js';
@@ -30,6 +32,13 @@ function describe(code, statusCode = ERROR_CATALOG[code].statusCode) {
 // By the array, not by the code FST_ERR_VALIDATION: a validator that crashed carries the same code and no errors.
 export function isSchemaError(error) {
   return isArray(error?.validation) && isString(error?.validationContext);
+}
+
+// The error itself, not the cause of an AppError: that one answers by its code or its status, whatever it wraps.
+export function findUniqueViolation(error) {
+  return error instanceof DbError && error.kind === DB_ERROR_KIND.UNIQUE
+    ? error
+    : null;
 }
 
 function readStatus(error) {
@@ -75,6 +84,11 @@ function isCatalogError(error) {
 export function classifyError(error) {
   if (isCatalogError(error)) {
     return describe(error.code);
+  }
+
+  // Another row holds the value the client sent: the client's to fix, as a field that breaks a rule.
+  if (findUniqueViolation(error)) {
+    return describe(ERROR_CODE.VALIDATION_ERROR);
   }
 
   if (!isSchemaError(error)) {

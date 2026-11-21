@@ -33,6 +33,7 @@ const filters = freezeDeep({
       type: { type: 'string' },
       name: { type: 'string' },
       label: { type: 'string' },
+      operator: { type: 'string' },
       isMultiple: { type: 'boolean' },
       isDisabled: { type: 'boolean' },
       value: primitiveOrList,

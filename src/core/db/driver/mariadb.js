@@ -2,7 +2,9 @@ import { bindSql } from '#core/db/binding.js';
 import {
   createOverloadError,
   DbError,
+  describeColumn,
   findDbError,
+  isIdentifier,
   toDbError,
 } from '#core/db/error.js';
 import { assertIsolation } from '#core/db/isolation.js';
@@ -18,12 +20,7 @@ import { ISOLATION_LEVEL } from '#enums/isolation-level.js';
 import { pLimit } from '#utils/async.js';
 import { convertStringToMs, convertStringToSeconds } from '#utils/date.js';
 import { compact } from '#utils/object.js';
-import {
-  isArray,
-  isFunction,
-  isNonEmptyString,
-  isString,
-} from '#utils/type.js';
+import { isArray, isFunction, isNonEmptyString } from '#utils/type.js';
 import { createConnection, createPool } from 'mysql2/promise';
 
 const CLIENT_TIME_ZONE = 'Z';
@@ -55,11 +52,9 @@ const SCRIPT_LEFT_DATABASE_CODE = 'SCRIPT_LEFT_DATABASE';
 const SEVERAL_STATEMENTS_MESSAGE = 'script.query(sql, binding) takes one statement with no semicolon inside it: a compound statement (BEGIN ... END, IF ... END IF) and a text of several are run with script.run(text)';
 const SEVERAL_STATEMENTS_CODE = 'SEVERAL_STATEMENTS';
 
-const UNREADABLE_JSON_MESSAGE = 'holds a text the server takes for JSON and JSON.parse refuses';
 const UNREADABLE_JSON_CODE = 'UNREADABLE_JSON';
-const EXPRESSION_COLUMN = 'A column named by its expression';
+const DUPLICATE_COLUMN_CODE = 'DUPLICATE_COLUMN';
 
-const NAME_REGEXP = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
 const NAME_QUOTE = '`';
 
 // A comma takes the place of a mode, not an empty string: under EMPTY_STRING_IS_NULL an empty literal is NULL
@@ -220,13 +215,18 @@ export async function initSession(connection) {
   return true;
 }
 
-// An expression with no alias names its column by its own text, and so by the values written into the statement.
 function createUnreadableJsonError(name) {
-  const column = NAME_REGEXP.test(name)
-    ? `The column "${name}"`
-    : EXPRESSION_COLUMN;
+  return new DbError(`A row of the result cannot be read: ${describeColumn(name)} holds a text the server takes for JSON and JSON.parse refuses`, {
+    code: UNREADABLE_JSON_CODE,
+    isExecuted: true,
+  });
+}
 
-  return new DbError(`${column} ${UNREADABLE_JSON_MESSAGE}`, { code: UNREADABLE_JSON_CODE });
+function createDuplicateColumnError(name) {
+  return new DbError(`A row keeps one value for a name, and ${describeColumn(name)} comes twice in the result: give each column a name of its own with an alias`, {
+    code: DUPLICATE_COLUMN_CODE,
+    isExecuted: true,
+  });
 }
 
 // mysql2 drops a connection it has lost, but not one the server closed after an error of the class 08
@@ -303,8 +303,17 @@ function prepare(state, sql, binding) {
 }
 
 // A statement that returns rows affects as many as it returns: that holds for INSERT ... RETURNING too.
+// mysql2 keeps one value for two columns of one name while "fields" lists both. The statement has run by then:
+// a write with RETURNING outside a transaction stays.
 function toRowsResult(rows, fields) {
-  return { rows, affectedRows: rows.length, fields: fields.map((field) => ({ name: field.name })) };
+  const names = fields.map((field) => field.name);
+  const repeated = names.find((name, index) => names.indexOf(name) !== index);
+
+  if (repeated !== undefined) {
+    throw createDuplicateColumnError(repeated);
+  }
+
+  return { rows, affectedRows: rows.length, fields: names.map((name) => ({ name })) };
 }
 
 // CALL of a procedure that selects gives a list of results with a header at its end, and a list of field lists.
@@ -319,7 +328,7 @@ function toResult(result, fields) {
   }
 
   if (isArray(fields[1])) {
-    throw new DbError(MULTIPLE_RESULTS_MESSAGE, { code: MULTIPLE_RESULTS_CODE });
+    throw new DbError(MULTIPLE_RESULTS_MESSAGE, { code: MULTIPLE_RESULTS_CODE, isExecuted: true });
   }
 
   return toRowsResult(result[0], fields[0]);
@@ -577,7 +586,7 @@ function getStats(state) {
 // A name goes into the statement as text, so it is checked letter by letter: it comes from the code,
 // and a key of a request body that got here by mistake must not become SQL.
 function quoteName(name) {
-  if (!isString(name) || !NAME_REGEXP.test(name)) {
+  if (!isIdentifier(name)) {
     throw new TypeError('A name of a table or a column must be 1 to 64 letters, digits and underscores and must not start with a digit');
   }
 

@@ -1,5 +1,6 @@
 import {
   escapeHtml,
+  escapeLikePattern,
   escapeRegExp,
   formatBytes,
   mask,
@@ -84,11 +85,21 @@ const HOSTILE_HTML = [
   ['whitespace only', ' \n'.repeat(HOSTILE_REPEATS), ''],
 ];
 
+const LIKE_TOKEN_REGEXP = /\\(.)|[%_]|[^\\%_]+/gsu;
+const LIKE_WILDCARDS = new Map([['%', '.*'], ['_', '.']]);
+
 function measure(fn) {
   const startedAt = performance.now();
   const result = fn();
 
   return { result, elapsedMs: performance.now() - startedAt };
+}
+
+// As LIKE reads a pattern: "%" is any run of characters, "_" any one, and a backslash makes the next one literal.
+function likeToRegExp(pattern) {
+  const source = pattern.replace(LIKE_TOKEN_REGEXP, (match, escaped) => LIKE_WILDCARDS.get(match) ?? escapeRegExp(escaped ?? match));
+
+  return new RegExp(`^${source}$`, 'su');
 }
 
 describe('escapeHtml', () => {
@@ -179,6 +190,45 @@ describe('escapeRegExp', () => {
     const { result, elapsedMs } = measure(() => escapeRegExp('.*+?'.repeat(HOSTILE_REPEATS)));
 
     assert.equal(result, '\\.\\*\\+\\?'.repeat(HOSTILE_REPEATS));
+    assert.ok(elapsedMs < TIME_LIMIT_MS, `took ${elapsedMs} ms`);
+  });
+});
+
+describe('escapeLikePattern', () => {
+  test('puts a backslash before the backslash, the percent sign and the underscore', () => {
+    assert.equal(escapeLikePattern('\\'), '\\\\');
+    assert.equal(escapeLikePattern('%'), '\\%');
+    assert.equal(escapeLikePattern('_'), '\\_');
+    assert.equal(escapeLikePattern('50%_off\\now'), '50\\%\\_off\\\\now');
+    assert.equal(escapeLikePattern('\\%'), '\\\\\\%');
+  });
+
+  test('gives a pattern that, read as LIKE reads it, matches its input literally and nothing else', () => {
+    [['100%', '1000'], ['a_b', 'axb'], ['C:\\dir', 'C:dir'], ['\\%_', '\\x_'], [`Привіт ${GRIN}`, 'Привіт']].forEach(([input, nearMiss]) => {
+      const pattern = likeToRegExp(escapeLikePattern(input));
+
+      assert.equal(pattern.test(input), true, input);
+      assert.equal(pattern.test(nearMiss), false, nearMiss);
+    });
+  });
+
+  test('leaves every other character as is, quotes and the regexp syntax among them', () => {
+    const text = `Привіт, 世界! ${GRIN} 'quoted' "double" \`tick\` [a-z]* ^$.+?(){}|/ #-:;=@~`;
+
+    assert.equal(escapeLikePattern(text), text);
+    assert.equal(escapeLikePattern(''), '');
+  });
+
+  test('requires a string: a filter value of another type is a bug of the route', () => {
+    [null, undefined, 5, true, ['%'], {}].forEach((value) => {
+      assert.throws(() => escapeLikePattern(value), { name: 'TypeError', message: /^escapeLikePattern\(value\) requires a string/ });
+    });
+  });
+
+  test('escapes a huge hostile string in linear time', () => {
+    const { result, elapsedMs } = measure(() => escapeLikePattern('\\%_'.repeat(HOSTILE_REPEATS)));
+
+    assert.equal(result, '\\\\\\%\\_'.repeat(HOSTILE_REPEATS));
     assert.ok(elapsedMs < TIME_LIMIT_MS, `took ${elapsedMs} ms`);
   });
 });

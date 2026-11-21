@@ -1,3 +1,4 @@
+import { assertCacheTables, invalidateCacheTables } from '#core/cache/index.js';
 import { getContext } from '#core/context/index.js';
 import { createMariadbDriver } from '#core/db/driver/mariadb.js';
 import { findDbError } from '#core/db/error.js';
@@ -12,6 +13,7 @@ import { convertStringToMs } from '#utils/date.js';
 import { UUID_LENGTH } from '#utils/id.js';
 import {
   isArray,
+  isFunction,
   isNonEmptyArray,
   isNonEmptyObject,
   isNonNegativeInteger,
@@ -158,6 +160,48 @@ export function getDb() {
   return db;
 }
 
+// Only a transaction that will not commit refuses the bump: one that has ended, or one a lock conflict or a lost
+// connection has failed. The write goes back with it, and the caller is told what the write itself failed with.
+async function bumpExecuted(tables, error) {
+  if (!findDbError(error)?.isExecuted) {
+    return false;
+  }
+
+  try {
+    await invalidateCacheTables(tables);
+  } catch {
+    return false;
+  }
+
+  return true;
+}
+
+// A write the server has run and the driver then fails, on a result it cannot read, has changed its rows all the
+// same: outside a transaction, or in one that goes on, they stay, so the versions of its tables move too.
+export async function invalidateAfterWrite(tables, write) {
+  const signature = 'invalidateAfterWrite(tables, write)';
+
+  assertCacheTables(tables, signature);
+
+  if (!isFunction(write)) {
+    throw new TypeError(`${signature} requires write to be a function`);
+  }
+
+  let result;
+
+  try {
+    result = await write();
+  } catch (error) {
+    await bumpExecuted(tables, error);
+
+    throw error;
+  }
+
+  await invalidateCacheTables(tables);
+
+  return result;
+}
+
 // Fields are named as the rows of the API name them, in camelCase, and become columns in snake_case.
 // "isAdmin" and "is_admin" are one column: named twice, the value written later would win without a sign.
 function toColumns(driver, fields, caller) {
@@ -224,16 +268,16 @@ export async function upsert(table, row, { update } = {}) {
     throw new TypeError(`${caller} requires every field of "update" to be a field of the row`);
   }
 
-  return run(`${insert} ${driver.buildUpsertClause(updated.map((column) => column.name))}`, row);
+  const sql = `${insert} ${driver.buildUpsertClause(updated.map((column) => column.name))}`;
+
+  return invalidateAfterWrite([table], () => run(sql, row));
 }
 
 export async function insertReturning(table, row, { returning } = {}) {
   const { driver, query: run } = getDb();
   const caller = 'insertReturning(table, row, { returning })';
-  const { rows } = await run(
-    `${buildInsert(driver, table, row, caller)} RETURNING ${toReturning(driver, returning, caller)}`,
-    row,
-  );
+  const sql = `${buildInsert(driver, table, row, caller)} RETURNING ${toReturning(driver, returning, caller)}`;
+  const { rows } = await invalidateAfterWrite([table], () => run(sql, row));
 
   return rowToCamel(rows[0]);
 }
@@ -252,7 +296,8 @@ function assertCondition(changes, conditions, where, caller) {
 }
 
 // UPDATE has no RETURNING here: the rows are read again by the same condition inside the same transaction,
-// under the locks the update has taken.
+// under the locks the update has taken. The bump goes right after the UPDATE: an outer transaction that swallows
+// a failed read commits the update all the same.
 export async function updateReturning(table, patch, { where, returning } = {}) {
   const { driver, query: run } = getDb();
   const caller = 'updateReturning(table, patch, { where, returning })';
@@ -267,10 +312,10 @@ export async function updateReturning(table, patch, { where, returning } = {}) {
   const conditionBinding = prefixKeys(where, WHERE_PREFIX);
 
   async function updateAndRead() {
-    await run(
+    await invalidateAfterWrite([table], () => run(
       `UPDATE ${tableName} SET ${buildAssignments(changes, SET_PREFIX, LIST_SEPARATOR)} WHERE ${condition}`,
       { ...prefixKeys(patch, SET_PREFIX), ...conditionBinding },
-    );
+    ));
 
     const { rows } = await run(`SELECT ${columns} FROM ${tableName} WHERE ${condition}`, conditionBinding);
 

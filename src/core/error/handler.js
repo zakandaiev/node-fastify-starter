@@ -1,4 +1,4 @@
-import { classifyError, isSchemaError } from '#core/error/classify.js';
+import { classifyError, findUniqueViolation, isSchemaError } from '#core/error/classify.js';
 import { AppError } from '#core/error/index.js';
 import { formatValidation, normalizeValidation } from '#core/error/validation.js';
 import { createEnvelope } from '#core/response/index.js';
@@ -8,7 +8,7 @@ import { HTTP_STATUS } from '#enums/http-status.js';
 import { MEDIA_TYPE } from '#enums/media-type.js';
 import { convertStringToSeconds, nowUtc } from '#utils/date.js';
 import { uuidv7 } from '#utils/id.js';
-import { omit } from '#utils/object.js';
+import { getPath, omit } from '#utils/object.js';
 import {
   isArray,
   isNonEmptyArray,
@@ -33,6 +33,8 @@ const HANDLER_FAILED_MESSAGE = 'Error handler failed';
 const CLIENT_ERROR_MESSAGE = 'Connection closed on a client error';
 
 const CONNECTION_RESET_CODE = 'ECONNRESET';
+
+const UNIQUE_OPERATOR = 'unique';
 
 // The codes Node gives up on a connection with: its timeout check and its parser. Any other code is a bad request.
 const CLIENT_ERROR_STATUSES = Object.freeze({
@@ -94,6 +96,37 @@ function describeSchemaError(error, request, { code, appConfig }) {
   };
 }
 
+// Own keys only: an index named "constructor" must not read a method of the map for a field.
+// The map is the decorator of the error-handler plugin: without it a duplicate goes out under a null column.
+function readUniqueField(request, constraint) {
+  const field = isString(constraint)
+    ? getPath(request.server.uniqueFields, [constraint])
+    : undefined;
+
+  return isNonEmptyString(field)
+    ? field
+    : null;
+}
+
+// The text of the database names the index, so only a developer reads it; the driver has masked the value there.
+function describeUniqueViolation(dbError, request, { code, appConfig }) {
+  const column = readUniqueField(request, dbError.constraint);
+
+  return {
+    message: appConfig.isDev && isNonEmptyString(dbError.message)
+      ? dbError.message
+      : ERROR_CATALOG[code].message,
+    validation: normalizeValidation([{
+      column,
+      columnValue: column === null
+        ? null
+        : getPath(request.body, [column]),
+      operator: UNIQUE_OPERATOR,
+      operatorValue: null,
+    }], appConfig.validation),
+  };
+}
+
 // The headers of an unknown fault are details of it: only a refusal carries them to the client.
 function describeForeignError(error, { code, statusCode, appConfig }) {
   return {
@@ -109,6 +142,12 @@ function describeForeignError(error, { code, statusCode, appConfig }) {
 function describeDetails(error, request, classification) {
   if (error instanceof AppError) {
     return describeAppError(error, classification);
+  }
+
+  const violation = findUniqueViolation(error);
+
+  if (violation) {
+    return describeUniqueViolation(violation, request, classification);
   }
 
   return isSchemaError(error)

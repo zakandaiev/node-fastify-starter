@@ -8,8 +8,7 @@ import { before, describe, test } from 'node:test';
 
 const EMAIL = 'john@example.com';
 const UNREADABLE_CODE = 'UNREADABLE_JSON';
-const UNREADABLE_TAIL = 'holds a text the server takes for JSON and JSON.parse refuses';
-const PROFILE_COLUMN = 'The column "profile"';
+const PROFILE_COLUMN = 'the column "profile"';
 const SECRET_TEXT = `{"email": "${EMAIL}", "score": 1.}`;
 
 // What this server keeps in a JSON column and JSON.parse refuses: a number cut after its point or its exponent,
@@ -50,8 +49,8 @@ function query(sql, binding, options) {
 
 function assertUnreadable(error, subject) {
   assert.ok(error instanceof DbError, String(error));
-  assert.equal(error.message, `${subject} ${UNREADABLE_TAIL}`);
-  assert.deepEqual({ ...error }, { code: UNREADABLE_CODE });
+  assert.equal(error.message, `A row of the result cannot be read: ${subject} holds a text the server takes for JSON and JSON.parse refuses`);
+  assert.deepEqual({ ...error }, { code: UNREADABLE_CODE, isExecuted: true });
   assert.equal(error.cause, undefined);
 }
 
@@ -94,7 +93,7 @@ describe('db: JSON the server accepts and JSON.parse refuses', { skip: testDb.sk
     results.forEach((result) => assert.equal(result.reason?.code, 'ER_CONSTRAINT_FAILED'));
   });
 
-  test('fails the statement with a DbError that names the column and carries no value of the row, whichever such text the row holds', async () => {
+  test('fails the statement with a DbError that names the column, tells the statement has run and carries no value of the row, whichever such text the row holds', async () => {
     const errors = await Promise.all(UNREADABLE_TEXTS.map((text, index) => rejectionOf(run(() => selectProfile(FIRST_UNREADABLE_ID + index)))));
 
     errors.forEach((error) => assertUnreadable(error, PROFILE_COLUMN));
@@ -124,7 +123,7 @@ describe('db: JSON the server accepts and JSON.parse refuses', { skip: testDb.sk
       single.readRows('SELECT COUNT(*) AS total, MAX(id) AS last FROM ballast'),
     ]);
 
-    assertUnreadable(failed.reason, 'The column "doc"');
+    assertUnreadable(failed.reason, 'the column "doc"');
     assert.deepEqual([waited.value, counted.value], [first, [{ total: BALLAST_ROWS, last: BALLAST_ROWS }]]);
     assert.equal(await readConnectionId(single), first);
     assert.equal(single.db.getStats().activeCount, 0);
@@ -146,13 +145,13 @@ describe('db: JSON the server accepts and JSON.parse refuses', { skip: testDb.sk
       { path: '$', ids: [VALID_ID, NULL_ID, SECRET_ID] },
     ));
 
-    assertUnreadable(error, 'The column "extracted"');
+    assertUnreadable(error, 'the column "extracted"');
   });
 
   test('does not name a column that an expression without an alias names: its name repeats the values written into the statement', async () => {
     const error = await rejectionOf(query('SELECT JSON_ARRAY(:email, profile) FROM documents WHERE id = :id', { email: EMAIL, id: SECRET_ID }));
 
-    assertUnreadable(error, 'A column named by its expression');
+    assertUnreadable(error, 'a column named by its expression');
   });
 
   test('fails the same way inside a transaction, on the connection of the transaction, and the transaction goes on to its commit', async () => {

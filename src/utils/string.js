@@ -31,6 +31,7 @@ const HTML_ENTITIES = Object.freeze({
 const HTML_ENTITY_REGEXP = /&(?:amp|lt|gt|quot|#39|nbsp);/g;
 
 const REGEXP_SYNTAX_REGEXP = /[\\^$.*+?()[\]{}|/]/g;
+const LIKE_SYNTAX_REGEXP = /[\\%_]/g;
 
 const TAG_OPEN = '<';
 const TAG_CLOSE = '>';
@@ -83,6 +84,16 @@ export function escapeHtml(value) {
 // Every character escaped here is a syntax character, which the "u" flag of AJV accepts escaped.
 export function escapeRegExp(value) {
   return toString(value).replace(REGEXP_SYNTAX_REGEXP, '\\$&');
+}
+
+// The backslash is the escape of LIKE while NO_BACKSLASH_ESCAPES is off, and the MariaDB driver turns that mode
+// off in every session.
+export function escapeLikePattern(value) {
+  if (!isString(value)) {
+    throw new TypeError('escapeLikePattern(value) requires a string');
+  }
+
+  return value.replace(LIKE_SYNTAX_REGEXP, '\\$&');
 }
 
 // What is left unclosed runs to the end of the input, as in a browser: a failed search is never repeated from

@@ -35,6 +35,9 @@ const UNKNOWN_ERROR_MESSAGE = 'Database error';
 const POOL_SATURATED_MESSAGE = 'The queue of the database pool is full';
 const POOL_SATURATED_CODE = 'POOL_QUEUE_FULL';
 
+const IDENTIFIER_REGEXP = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+const EXPRESSION_COLUMN = 'a column named by its expression';
+
 // The numbers of the server, not the names the driver gives them.
 const ERRNO = Object.freeze({
   CHECKREAD: 1020,
@@ -241,6 +244,18 @@ export function maskDbErrorValues(text) {
     (masked, prefix) => (masked.includes(prefix) ? maskValuesAfter(masked, prefix) : masked),
     maskDuplicateEntries(maskUnquotedValues(text)),
   );
+}
+
+export function isIdentifier(name) {
+  return isString(name) && IDENTIFIER_REGEXP.test(name);
+}
+
+// A column without an alias is named by its own text, and so by the values written into the statement:
+// only a name that is an identifier goes into a message.
+export function describeColumn(name) {
+  return isIdentifier(name)
+    ? `the column "${name}"`
+    : EXPRESSION_COLUMN;
 }
 
 // From the first opening quote to the last quote: a value may hold quotes of its own, and the apostrophe

@@ -1,8 +1,10 @@
 import {
   createOverloadError,
   DbError,
+  describeColumn,
   findDbError,
   isDatabaseAccessDenied,
+  isIdentifier,
   isLockConflict,
   isMissingTable,
   maskDbErrorValues,
@@ -280,6 +282,31 @@ describe('maskDbErrorValues: other texts of the server that repeat a value', () 
     ];
 
     texts.forEach((text) => assert.equal(maskDbErrorValues(text), text));
+  });
+});
+
+describe('isIdentifier', () => {
+  test('is true for 1 to 64 letters, digits and underscores that do not start with a digit', () => {
+    ['id', 'first_name', 'firstName', '_x9', 'A', 'a'.repeat(64)].forEach((name) => assert.equal(isIdentifier(name), true, name));
+  });
+
+  test('is false for any other name, and for what is not a string even when its text would be one', () => {
+    ['', 'a'.repeat(65), '9lives', 'u.id', 'first name', 'users`', 'імя', 'LOWER(:email)', null, undefined, 5, ['id']].forEach((name) => {
+      assert.equal(isIdentifier(name), false, String(name));
+    });
+  });
+});
+
+describe('describeColumn', () => {
+  test('names a column whose name is an identifier, in lower case: the words stand inside a sentence', () => {
+    assert.equal(describeColumn('first_name'), 'the column "first_name"');
+    assert.equal(describeColumn('groupCount'), 'the column "groupCount"');
+  });
+
+  test('does not name a column an expression names: that name repeats the values written into the statement', () => {
+    [`LOWER('${EMAIL}')`, `JSON_ARRAY('${EMAIL}', profile)`, '1', 'u.id', '', null].forEach((name) => {
+      assert.equal(describeColumn(name), 'a column named by its expression', String(name));
+    });
   });
 });
 

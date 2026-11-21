@@ -10,7 +10,12 @@ import { MIGRATION_TYPE } from '#enums/migration-type.js';
 import { groupBy, sortBy } from '#utils/array.js';
 import { mapSeries } from '#utils/async.js';
 import { sha256 } from '#utils/hash.js';
-import { isArray, isBoolean, isString } from '#utils/type.js';
+import {
+  isArray,
+  isBlankString,
+  isBoolean,
+  isString,
+} from '#utils/type.js';
 import {
   mkdir,
   readdir,
@@ -337,7 +342,7 @@ function findRefusal(fileName, sql, database) {
 export function assertRunnable({ path, sql, database }) {
   const fileName = nodePath.basename(path);
 
-  if (sql.trim() === '') {
+  if (isBlankString(sql)) {
     throw new Error(`${fileName} is empty: write its statements, or a comment if there is nothing to do`);
   }
 

@@ -1,7 +1,14 @@
 import { SCHEMA_LIMITS } from '#config/schema.js';
+import {
+  assertFilterDefinition,
+  FILTER_LIST_SEPARATOR,
+  readFilterOptions,
+  readFilterParameters,
+} from '#core/db/filter.js';
+import { assertSortEntries, SORT_PARAMETER } from '#core/db/sort.js';
 import { REQUEST_PARTS } from '#core/schema/walk.js';
 import { ERROR_CATALOG } from '#enums/error-code.js';
-import { FILTER_OPERATOR, FILTER_TYPE } from '#enums/filter-type.js';
+import { FILTER_TYPE } from '#enums/filter-type.js';
 import { HTTP_STATUS } from '#enums/http-status.js';
 import { RESPONSE_STATUS } from '#enums/response-status.js';
 import { errorEnvelope, listEnvelope, successEnvelope } from '#schemas/common/envelope.js';
@@ -10,19 +17,17 @@ import {
   isoDate,
   pickFields,
   withDescription,
+  withoutNull,
 } from '#schemas/common/field.js';
 import { patchBody, pathParams, queryParams } from '#schemas/common/request.js';
 import { UUID_LENGTH, UUID_REGEXP } from '#utils/id.js';
 import { freezeDeep, pick } from '#utils/object.js';
-import { isNumericSchema } from '#utils/schema.js';
+import { hasOnlyTypes, isNumericSchema } from '#utils/schema.js';
 import { escapeRegExp } from '#utils/string.js';
 import {
   isArray,
-  isBoolean,
   isNonEmptyArray,
   isNonEmptyObject,
-  isNonEmptyString,
-  isNumber,
   isObject,
   isString,
 } from '#utils/type.js';
@@ -31,14 +36,12 @@ import { STATUS_CODES } from 'node:http';
 const OBJECT_FORMAT = 'object';
 const ARRAY_FORMAT = 'array';
 
-const SORT_KEY = 'sort';
-const RANGE_SUFFIXES = Object.freeze(['From', 'To']);
-const LIST_SEPARATOR = ',';
-
 const NULL_TYPE = 'null';
-const NUMBER_KEYWORDS = Object.freeze(['type', 'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf']);
 
-const RANGE_TYPES = Object.freeze([FILTER_TYPE.NUMBER, FILTER_TYPE.DATE, FILTER_TYPE.DATETIME]);
+// AJV coerces the text of a parameter to a type of its field, and queryParams() drops null from those types.
+const TEXT_TYPES = Object.freeze(['string']);
+const OPTION_FIELD_TYPES = Object.freeze(['string', 'number', 'integer', 'boolean']);
+const NUMBER_KEYWORDS = Object.freeze(['type', 'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf']);
 
 const REDIRECT_STATUS_MIN = 300;
 const STATUS_MAX = 599;
@@ -90,15 +93,8 @@ function mergeMaps(sources, name) {
 
 function mergeSort(sources) {
   const sort = sources.flatMap((source) => source.sort ?? []);
-  const values = sort.map((entry) => entry?.value);
 
-  if (!values.every((value) => isNonEmptyString(value)) || new Set(values).size !== values.length) {
-    throw new TypeError(`${SIGNATURE} requires every entry of "sort" to have a "value" of its own`);
-  }
-
-  if (sort.filter((entry) => entry.isDefault === true).length > 1) {
-    throw new TypeError(`${SIGNATURE}: "sort" has more than one entry with isDefault`);
-  }
+  assertSortEntries(sort, SIGNATURE);
 
   return sort;
 }
@@ -131,28 +127,20 @@ function withExample(schema, example) {
     : { ...schema, examples: [example] };
 }
 
-function isOptionValue(value) {
-  return isString(value) || isNumber(value) || isBoolean(value);
-}
-
 function readOptionValues(key, filter, property) {
-  if (filter.options === undefined) {
-    return isArray(property?.enum)
-      ? property.enum.filter((value) => value !== null).map(String)
-      : null;
+  const options = readFilterOptions(key, filter, property);
+
+  if (options === null) {
+    return null;
   }
 
-  if (!isNonEmptyArray(filter.options) || !filter.options.every((option) => isOptionValue(option?.value))) {
-    throw new TypeError(`${SIGNATURE}: the options of the filter "${key}" must be a list of { value, label } with a string, number or boolean value`);
-  }
-
-  const values = filter.options.map((option) => String(option.value));
+  const values = options.map((option) => String(option.value));
   const outside = isArray(property?.enum)
     ? values.find((value) => !property.enum.map(String).includes(value))
     : undefined;
 
-  if (outside !== undefined || new Set(values).size !== values.length) {
-    throw new TypeError(`${SIGNATURE}: the options of the filter "${key}" must be distinct values of the enum of its field`);
+  if (outside !== undefined) {
+    throw new TypeError(`${SIGNATURE}: the options of the filter "${key}" must be values of the enum of its field: "${outside}" is not one`);
   }
 
   return values;
@@ -163,13 +151,13 @@ function toCommaList(item, maxCount, maxLength) {
   return {
     type: 'string',
     maxLength,
-    pattern: `^${item}(?:${LIST_SEPARATOR}${item}){0,${maxCount - 1}}$`,
+    pattern: `^${item}(?:${FILTER_LIST_SEPARATOR}${item}){0,${maxCount - 1}}$`,
   };
 }
 
 function toEnumList(key, values) {
-  if (values.some((value) => value.includes(LIST_SEPARATOR))) {
-    throw new TypeError(`${SIGNATURE}: an option of the filter "${key}" holds "${LIST_SEPARATOR}", which separates the values of the list`);
+  if (values.some((value) => value.includes(FILTER_LIST_SEPARATOR))) {
+    throw new TypeError(`${SIGNATURE}: an option of the filter "${key}" holds "${FILTER_LIST_SEPARATOR}", which separates the values of the list`);
   }
 
   const item = `(?:${values.map((value) => escapeRegExp(value)).join('|')})`;
@@ -207,6 +195,10 @@ function toOptionsValue(key, filter, property) {
     throw new TypeError(`${SIGNATURE}: the filter "${key}" needs options, an enum or a field to read its value from`);
   }
 
+  if (!hasOnlyTypes(withoutNull(property), OPTION_FIELD_TYPES)) {
+    throw new TypeError(`${SIGNATURE}: the options filter "${key}" reads its value from a field that is not a string, a number or a boolean`);
+  }
+
   return property;
 }
 
@@ -215,8 +207,8 @@ function toNumberValue(key, property) {
     return { type: 'number' };
   }
 
-  if (!isNumericSchema(property)) {
-    throw new TypeError(`${SIGNATURE}: the number filter "${key}" is on a field that is not a number`);
+  if (!isNumericSchema(withoutNull(property), { isOnly: true })) {
+    throw new TypeError(`${SIGNATURE}: the number filter "${key}" is on a field that is not a number: its types, null aside, must be number or integer`);
   }
 
   return pick(property, NUMBER_KEYWORDS);
@@ -224,18 +216,22 @@ function toNumberValue(key, property) {
 
 // A text filter searches by a fragment: the pattern and the format of the field would refuse one, and an empty
 // value is a filter left unused, not an error.
-function toTextValue(filter, property) {
-  if (filter.isExact === true && isObject(property)) {
-    return property;
+function toTextValue(key, filter, property) {
+  if (filter.isExact !== true || !isObject(property)) {
+    return { type: 'string', maxLength: property?.maxLength ?? SCHEMA_LIMITS.textMaxLength };
   }
 
-  return { type: 'string', maxLength: property?.maxLength ?? SCHEMA_LIMITS.textMaxLength };
+  if (!hasOnlyTypes(withoutNull(property), TEXT_TYPES)) {
+    throw new TypeError(`${SIGNATURE}: the exact text filter "${key}" is on a field that is not text: its type, null aside, must be string`);
+  }
+
+  return property;
 }
 
 function toFilterValue(key, filter, property) {
   switch (filter.type) {
     case FILTER_TYPE.TEXT:
-      return toTextValue(filter, property);
+      return toTextValue(key, filter, property);
     case FILTER_TYPE.BOOLEAN:
       return { type: 'boolean' };
     case FILTER_TYPE.NUMBER:
@@ -251,33 +247,17 @@ function toFilterValue(key, filter, property) {
   }
 }
 
-function assertFilter(key, filter) {
-  if (!isObject(filter)) {
-    throw new TypeError(`${SIGNATURE}: the filter "${key}" must be an object`);
-  }
-
-  if (filter.operator !== undefined && (filter.operator !== FILTER_OPERATOR.RANGE || !RANGE_TYPES.includes(filter.type))) {
-    throw new TypeError(`${SIGNATURE}: the filter "${key}" may take the operator "${FILTER_OPERATOR.RANGE}" only as a ${RANGE_TYPES.join(', ')} filter`);
-  }
-
-  if (filter.isMultiple !== undefined && (!isBoolean(filter.isMultiple) || filter.type !== FILTER_TYPE.OPTIONS)) {
-    throw new TypeError(`${SIGNATURE}: the filter "${key}" takes isMultiple only as an options filter, and as a boolean`);
-  }
-}
-
 function expandFilter(key, filter, property) {
-  assertFilter(key, filter);
+  assertFilterDefinition(key, filter, SIGNATURE);
 
   const value = withDescription(toFilterValue(key, filter, property), filter.label ?? property?.description);
 
-  return filter.operator === FILTER_OPERATOR.RANGE
-    ? RANGE_SUFFIXES.map((suffix) => [`${key}${suffix}`, value])
-    : [[key, value]];
+  return readFilterParameters(key, filter).map((name) => [name, value]);
 }
 
 function toSortValue(sort) {
   if (!sort.length) {
-    throw new TypeError(`${SIGNATURE}: the query asks for "${SORT_KEY}", and no source has a "sort"`);
+    throw new TypeError(`${SIGNATURE}: the query asks for "${SORT_PARAMETER}", and no source has a "sort"`);
   }
 
   const defaultEntry = sort.find((entry) => entry.isDefault === true);
@@ -291,7 +271,7 @@ function toSortValue(sort) {
 }
 
 function expandQueryKey(key, { properties, filters, sort }) {
-  if (key === SORT_KEY) {
+  if (key === SORT_PARAMETER) {
     return [[key, toSortValue(sort)]];
   }
 
@@ -303,7 +283,7 @@ function expandQueryKey(key, { properties, filters, sort }) {
     return [[key, properties[key]]];
   }
 
-  throw new TypeError(`${SIGNATURE}: the query names "${key}", which is neither a field, a filter nor "${SORT_KEY}"`);
+  throw new TypeError(`${SIGNATURE}: the query names "${key}", which is neither a field, a filter nor "${SORT_PARAMETER}"`);
 }
 
 function buildQuery(keys, sources) {
