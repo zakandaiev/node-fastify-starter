@@ -17,9 +17,9 @@ function toPort(value) {
   return Number(value);
 }
 
-function toNonEmpty(value, name) {
+function toHost(value) {
   if (value === '') {
-    throw new Error(`--${name} must not be empty`);
+    throw new Error('--host must not be empty');
   }
 
   return value;
@@ -62,8 +62,7 @@ function toNames(values, name) {
 // A flag takes no value: "--dry-run" is true, and parseArgs refuses "--dry-run=true".
 const ARGS = Object.freeze({
   port: { type: STRING, parse: toPort },
-  host: { type: STRING, parse: toNonEmpty },
-  output: { type: STRING, parse: toNonEmpty },
+  host: { type: STRING, parse: toHost },
   direction: { type: STRING, multiple: true, parse: toDirection },
   type: { type: STRING, multiple: true, parse: toMigrationType },
   names: { type: STRING, multiple: true, parse: toNames },

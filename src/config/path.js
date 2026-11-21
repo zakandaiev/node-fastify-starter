@@ -12,7 +12,6 @@ export const absPath = Object.freeze({
   route: nodePath.join(ROOT, 'src/routes'),
   migration: nodePath.join(ROOT, 'migrations'),
   upload: nodePath.join(ROOT, 'upload'),
-  openapi: nodePath.join(ROOT, 'openapi.json'),
 });
 
 export function resolvePath(...segments) {

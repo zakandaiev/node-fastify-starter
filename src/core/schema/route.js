@@ -49,10 +49,19 @@ function isTypedMap(map) {
   return isObject(map) && Object.values(map).every((schema) => isTypedSchema(schema));
 }
 
-// The marker json() is the one open form the contract takes, and only for a field that has a name: as "data"
-// itself, as the items of a list or as a map of any keys it would let every column of a row through.
+// json() and a map of keys are open forms, taken only as the value of a field that has a name: as "data" itself,
+// a row of a list, a branch or a value of another map they would let every column of their type out.
 function isTypedProperties(properties) {
-  return isObject(properties) && Object.values(properties).every((schema) => isJsonField(schema) || isTypedSchema(schema));
+  return isObject(properties) && Object.values(properties).every((schema) => isJsonField(schema) || isTypedSchema(schema, true));
+}
+
+// Anything but undefined and false opens the object: the serializer takes any value there for a schema.
+function isClosedRest(additionalProperties) {
+  return additionalProperties === undefined || additionalProperties === false;
+}
+
+function hasMapKeys({ patternProperties, additionalProperties }) {
+  return patternProperties !== undefined || !isClosedRest(additionalProperties);
 }
 
 function opensNothing({
@@ -61,8 +70,7 @@ function opensNothing({
   additionalProperties,
   items,
 }) {
-  return additionalProperties !== true
-    && (!isObject(additionalProperties) || isTypedSchema(additionalProperties))
+  return (isClosedRest(additionalProperties) || isTypedSchema(additionalProperties))
     && (properties === undefined || isTypedProperties(properties))
     && (patternProperties === undefined || isTypedMap(patternProperties))
     && (items === undefined || isTypedSchema(items));
@@ -70,11 +78,16 @@ function opensNothing({
 
 // An object is a filter only when it lists its properties: fast-json-stringify lets every field through
 // an open one, and writes {} for one that has no description at all.
-function isTypedObject(schema) {
+function isTypedObject(schema, isNamed) {
   const { properties, patternProperties, additionalProperties } = schema;
 
-  return opensNothing(schema)
-    && (isNonEmptyObject(properties) || isNonEmptyObject(patternProperties) || isObject(additionalProperties));
+  if (!opensNothing(schema)) {
+    return false;
+  }
+
+  return hasMapKeys(schema)
+    ? isNamed && (isNonEmptyObject(properties) || isNonEmptyObject(patternProperties) || isObject(additionalProperties))
+    : isNonEmptyObject(properties);
 }
 
 function hasTypedBranches(schema) {
@@ -93,7 +106,7 @@ function hasBranchList(schema) {
   return BRANCH_LIST_KEYWORDS.some((keyword) => schema[keyword] !== undefined);
 }
 
-function isTypedByOwnKeywords(schema) {
+function isTypedByOwnKeywords(schema, isNamed) {
   const types = readSchemaTypes(schema);
 
   if (types.includes(ARRAY_TYPE) && !isTypedSchema(schema.items)) {
@@ -101,7 +114,7 @@ function isTypedByOwnKeywords(schema) {
   }
 
   if (types.includes(OBJECT_TYPE)) {
-    return isTypedObject(schema);
+    return isTypedObject(schema, isNamed);
   }
 
   // No type and a constant is still a filter: the constant is what gets written. An enum is not: a value
@@ -112,14 +125,14 @@ function isTypedByOwnKeywords(schema) {
 // A $ref is never typed here: the hook cannot see what it points to, and what stands next to it is merged in.
 // A list of branches writes the value in place of the schema that holds it, so that schema only must not open
 // anything itself. Under "then" and "else" it still writes the value alone on one of the two roads.
-function isTypedSchema(schema) {
+function isTypedSchema(schema, isNamed = false) {
   if (!isObject(schema) || schema.$ref !== undefined || !hasTypedBranches(schema)) {
     return false;
   }
 
   return hasBranchList(schema)
-    ? opensNothing(schema)
-    : isTypedByOwnKeywords(schema);
+    ? opensNothing(schema) && (isNamed || !hasMapKeys(schema))
+    : isTypedByOwnKeywords(schema, isNamed);
 }
 
 function holdsMerge(schema) {
@@ -212,7 +225,7 @@ function assertResponse(routeOptions) {
     .find((code) => !hasTypedData(response[code]));
 
   if (untypedCode !== undefined) {
-    throw new Error(`${formatRoute(routeOptions)} has no typed "data" in the response schema of ${untypedCode}: every schema needs a "type", an object also "properties", an array "items"; $ref, {} and additionalProperties: true are not accepted, nor additionalProperties: false on or under anyOf, oneOf, allOf, then and else; a field of free JSON is declared with json()`);
+    throw new Error(`${formatRoute(routeOptions)} has no typed "data" in the response schema of ${untypedCode}: every schema needs a "type", an object also "properties", an array "items"; $ref, {} and additionalProperties: true are not accepted, nor additionalProperties: false on or under anyOf, oneOf, allOf, then and else; a field of free JSON is declared with json(), and json() and a map of keys (patternProperties, a typed additionalProperties) are taken only as the value of a named field`);
   }
 }
 

@@ -616,12 +616,52 @@ describe('assertRouteContract: typed data', () => {
     });
   });
 
-  test('accepts a dictionary with typed values and typed patternProperties', () => {
+  test('accepts a dictionary with typed values and typed patternProperties as a named field, at any depth', () => {
+    const labels = { type: 'object', additionalProperties: { type: 'string' } };
+    const prices = { type: 'object', patternProperties: { '^price_': { type: 'number' } } };
+
     assertTyped({
+      'a dictionary of strings': { type: 'object', properties: { labels } },
+      'a dictionary of objects': { type: 'object', properties: { owners: { type: 'object', additionalProperties: createItem() } } },
+      'a pattern': { type: 'object', properties: { prices } },
+      'a dictionary in a row of a list': { type: 'array', items: { type: 'object', properties: { id: { type: 'integer' }, labels } } },
+      'a dictionary in a branch': { anyOf: [{ type: 'object', properties: { labels } }, { type: 'null' }] },
+    });
+  });
+
+  test('refuses a dictionary as data itself, as a row of a list and as a branch of either: it would let every column of its type out', () => {
+    assertUntyped({
       'a dictionary of strings': { type: 'object', additionalProperties: { type: 'string' } },
       'a dictionary of objects': { type: 'object', additionalProperties: createItem() },
       'a pattern': { type: 'object', patternProperties: { '^price_': { type: 'number' } } },
       'properties with a typed rest': { type: 'object', properties: { id: { type: 'integer' } }, additionalProperties: { type: 'string' } },
+      'a list of dictionaries': { type: 'array', items: { type: 'object', additionalProperties: { type: 'string' } } },
+      'a list of lists of patterns': { type: 'array', items: { type: 'array', items: { type: 'object', patternProperties: { '^id$': { type: 'integer' } } } } },
+      'a dictionary in a branch': { anyOf: [{ type: 'object', additionalProperties: { type: 'string' } }, { type: 'null' }] },
+      'a dictionary under then': { ...createItem(), if: { required: ['id'] }, then: { type: 'object', additionalProperties: { type: 'string' } } },
+    });
+  });
+
+  test('refuses a dictionary under a named field everywhere json() is refused: as the rows of its list, its branch or a value of a map', () => {
+    const labels = { type: 'object', additionalProperties: { type: 'string' } };
+
+    assertUntyped({
+      'the rows of a named list': { type: 'object', properties: { rows: { type: 'array', items: labels } } },
+      'the rows of a named list of lists': { type: 'object', properties: { rows: { type: 'array', items: { type: 'array', items: labels } } } },
+      'a branch of a named field': { type: 'object', properties: { labels: { anyOf: [labels, { type: 'null' }] } } },
+      'a value of a map': { type: 'object', properties: { groups: { type: 'object', additionalProperties: labels } } },
+      'a row of a list of the data list': listEnvelope({ type: 'object', properties: { children: { type: 'array', items: labels } } }).properties.data,
+    });
+  });
+
+  test('takes a nullable dictionary as a named field, and refuses a rest that is not a plain object: the serializer reads any value there as a schema', () => {
+    class Rest {}
+    const rest = Object.assign(new Rest(), { type: 'string' });
+
+    assertTyped({ 'a nullable dictionary': { type: 'object', properties: { labels: { type: ['object', 'null'], additionalProperties: { type: 'string' } } } } });
+    assertUntyped({
+      'a rest of a class': { type: 'object', properties: { id: { type: 'integer' } }, additionalProperties: rest },
+      'a rest of a class in a named field': { type: 'object', properties: { labels: { type: 'object', additionalProperties: rest } } },
     });
   });
 
@@ -737,7 +777,8 @@ describe('assertRouteContract: typed data', () => {
       message: 'Route GET /api/v1/items has no typed "data" in the response schema of 200: every schema needs a "type", '
         + 'an object also "properties", an array "items"; $ref, {} and additionalProperties: true are not accepted, '
         + 'nor additionalProperties: false on or under anyOf, oneOf, allOf, then and else; '
-        + 'a field of free JSON is declared with json()',
+        + 'a field of free JSON is declared with json(), and json() and a map of keys (patternProperties, a typed additionalProperties) '
+        + 'are taken only as the value of a named field',
     });
   });
 
@@ -1287,7 +1328,6 @@ describe('route contract in the app', () => {
       createItem(),
       { type: ['object', 'null'], properties: { id: { type: 'integer' } } },
       { anyOf: [createItem(), { type: 'null' }] },
-      { type: 'object', patternProperties: { '^(id|name)$': { type: ['integer', 'string'] } } },
       { type: 'string' },
       { const: 'fixed' },
       { type: 'object', allOf: [createItem(), total] },

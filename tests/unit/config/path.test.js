@@ -21,11 +21,6 @@ describe('absPath', () => {
     assert.equal(absPath.migration, nodePath.join(absPath.root, 'migrations'));
     assert.equal(absPath.upload, nodePath.join(absPath.root, 'upload'));
   });
-
-  test('names the file of the OpenAPI document at the project root', () => {
-    assert.equal(absPath.openapi, nodePath.join(absPath.root, 'openapi.json'));
-    assert.equal(absPath.openapi, resolvePath('openapi.json'));
-  });
 });
 
 describe('resolvePath', () => {

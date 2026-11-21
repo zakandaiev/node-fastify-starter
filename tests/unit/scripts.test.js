@@ -1,14 +1,11 @@
-import { MODE, parseEnv } from '#config/env.js';
-import { absPath, resolvePath } from '#config/path.js';
+import { parseEnv } from '#config/env.js';
+import { resolvePath } from '#config/path.js';
 import { renderApiIndex } from '#root/scripts/api-index.js';
 import { runMigrate } from '#root/scripts/migrate.js';
-import { renderOpenapi, resolveOutputPath } from '#root/scripts/openapi.js';
-import { buildTestApp } from '#root/tests/helper/app.js';
-import { createTestConfig, createTestEnv, TEST_ENV } from '#root/tests/helper/config.js';
+import { createTestConfig, TEST_ENV } from '#root/tests/helper/config.js';
 import { createDownEnv } from '#root/tests/helper/db.js';
 import { createMigrationDir, describeTarget } from '#root/tests/helper/migration.js';
-import { createWorkDir, runNode } from '#root/tests/helper/process.js';
-import { REDIS_DOWN_ENV } from '#root/tests/helper/redis.js';
+import { runNode } from '#root/tests/helper/process.js';
 import assert from 'node:assert/strict';
 import { readdir, readFile } from 'node:fs/promises';
 import nodePath from 'node:path';
@@ -58,46 +55,6 @@ describe('api-index', () => {
 
   test('matches docs/CORE-API.md: run "npm run api:index" after changing an export', async () => {
     assert.equal(await renderApiIndex(), await readFile(resolvePath('docs/CORE-API.md'), 'utf8'));
-  });
-});
-
-describe('openapi', () => {
-  // The database and Redis of this env are out of reach: the spec must be built without a connection.
-  async function createServicesDownEnv() {
-    return { ...(await createDownEnv()), ...REDIS_DOWN_ENV };
-  }
-
-  test('renders the spec the docs serve as JSON text that ends with a newline, also from a prod env, with no service up', async (t) => {
-    const down = await createServicesDownEnv();
-    const [devText, prodText, fastify] = await Promise.all([
-      renderOpenapi(createTestEnv({ ...down, APP_MODE: MODE.DEV })),
-      renderOpenapi(createTestEnv({ ...down, APP_MODE: MODE.PROD })),
-      buildTestApp({ env: { APP_MODE: MODE.DEV } }),
-    ]);
-    t.after(() => fastify.close());
-
-    const served = await fastify.inject(`${fastify.config.app.docsPrefix}/json`);
-
-    assert.equal(prodText, devText);
-    assert.equal(devText.endsWith('}\n'), true);
-    assert.deepEqual(JSON.parse(devText), served.json());
-  });
-
-  test('writes the spec to the file named by --output, with no service up, and says where it is', async (t) => {
-    const down = await createServicesDownEnv();
-    const cwd = await createWorkDir(t, { ...TEST_ENV, ...down });
-    const output = nodePath.join(cwd, 'openapi.json');
-    const { code, stdout, stderr } = await runNode('scripts/openapi.js', { args: [`--output=${output}`], cwd });
-
-    assert.equal(code, 0, stderr);
-    assert.equal(stdout, `✅ ${nodePath.relative(absPath.root, output)} is written\n`);
-    assert.equal(await readFile(output, 'utf8'), await renderOpenapi(createTestEnv(down)));
-  });
-
-  test('writes to openapi.json in the root without --output, and reads a relative --output from the root', () => {
-    assert.equal(resolveOutputPath(), absPath.openapi);
-    assert.equal(absPath.openapi, resolvePath('openapi.json'));
-    assert.equal(resolveOutputPath('build/spec.json'), resolvePath('build/spec.json'));
   });
 });
 
