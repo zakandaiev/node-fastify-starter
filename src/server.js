@@ -3,9 +3,11 @@ import { initEnv } from '#config/env.js';
 import { createConfig } from '#config/index.js';
 import { runInContext } from '#core/context/index.js';
 import { assertMigrated } from '#core/db/migrator.js';
+import { handleFatalErrors } from '#core/process/index.js';
 import { buildApp } from './app.js';
 
 const SHUTDOWN_SIGNALS = ['SIGTERM', 'SIGINT'];
+const FATAL_REASON = 'fatal error';
 
 const config = createConfig(initEnv());
 const args = readArgs(['port', 'host']);
@@ -13,13 +15,13 @@ const fastify = await buildApp({ config });
 
 let isShuttingDown = false;
 
-async function shutdown(signal) {
+async function shutdown(reason) {
   if (isShuttingDown) {
     return false;
   }
 
   isShuttingDown = true;
-  fastify.log.info({ signal }, 'Server is shutting down');
+  fastify.log.info({ reason }, 'Server is shutting down');
 
   try {
     await fastify.close();
@@ -30,6 +32,12 @@ async function shutdown(signal) {
 
   return true;
 }
+
+handleFatalErrors({
+  context: fastify.context,
+  shutdown: () => shutdown(FATAL_REASON),
+  timeout: config.app.fatalShutdownTimeout,
+});
 
 try {
   // Redis only speeds the app up: the server starts without it, and its clients go on connecting by themselves.

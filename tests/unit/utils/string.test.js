@@ -1,4 +1,6 @@
 import {
+  cutAddressTail,
+  cutAddressTails,
   escapeHtml,
   escapeLikePattern,
   escapeRegExp,
@@ -14,6 +16,7 @@ import { describe, test } from 'node:test';
 
 const HOSTILE_REPEATS = 100000;
 const TIME_LIMIT_MS = 1000;
+const MICROSECONDS_IN_MS = 1000;
 
 const GRIN = '\u{1F600}';
 const FAMILY = '\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}';
@@ -385,6 +388,173 @@ describe('stripHtml', () => {
       assert.equal(result, expected);
       assert.ok(elapsedMs < TIME_LIMIT_MS, `took ${elapsedMs} ms`);
     });
+  });
+});
+
+describe('cutAddressTail', () => {
+  test('drops the query and the fragment, which carry OAuth codes, tokens and the initData of a Mini App', () => {
+    assert.equal(cutAddressTail('https://app.test/oauth/callback?code=abc&state=xyz'), 'https://app.test/oauth/callback');
+    assert.equal(cutAddressTail('https://app.test/mini-app#tgWebAppData=user%3D1'), 'https://app.test/mini-app');
+    assert.equal(cutAddressTail('https://app.test/page#section?token=abc'), 'https://app.test/page');
+    assert.equal(cutAddressTail('/orders/7?token=abc'), '/orders/7');
+  });
+
+  test('puts the mark it is given where the tail was', () => {
+    assert.equal(cutAddressTail("'/orders?token=abc' is not a valid url component", '…'), "'/orders…");
+  });
+
+  test('leaves an address without a query or a fragment as it is, and reads nothing as an empty text', () => {
+    assert.equal(cutAddressTail('https://app.test/orders/7'), 'https://app.test/orders/7');
+    assert.equal(cutAddressTail(undefined), '');
+    assert.equal(cutAddressTail(null), '');
+  });
+});
+
+describe('cutAddressTails', () => {
+  test('cuts the query and the fragment of every address in a text and keeps the line and the column of a frame', () => {
+    const stack = [
+      'TypeError: boom at https://app.test/oauth/callback?code=OAUTH-CODE&state=xyz',
+      '    at render (https://app.test/oauth/callback?code=OAUTH-CODE&state=xyz:12:7)',
+      '    at main@https://app.test/assets/app.js?v=TOKEN#FRAGMENT:3:19',
+      '    at https://app.test/mini-app#tgWebAppData=user%3D1:1:5',
+    ].join('\n');
+
+    assert.equal(cutAddressTails(stack), [
+      'TypeError: boom at https://app.test/oauth/callback',
+      '    at render (https://app.test/oauth/callback:12:7)',
+      '    at main@https://app.test/assets/app.js:3:19',
+      '    at https://app.test/mini-app:1:5',
+    ].join('\n'));
+  });
+
+  test('leaves an address without a tail and any other text as they are', () => {
+    const text = 'Failed to fetch https://api.test/orders/7 from (anonymous) at line 3';
+
+    assert.equal(cutAddressTails(text), text);
+    assert.equal(cutAddressTails(''), '');
+  });
+
+  test('keeps the quote or the bracket that closes an address, as a stack or a message writes it', () => {
+    assert.equal(cutAddressTails('"https://app.test/a?token=1" (https://app.test/b?token=2) <https://app.test/c?token=3>'), '"https://app.test/a" (https://app.test/b) <https://app.test/c>');
+  });
+
+  test('cuts up to the next space: a browser leaves ( ) \' and ` raw in an address, and its query goes on past them', () => {
+    assert.equal(
+      cutAddressTails('Failed to load https://app.test/oauth/callback?state=%2Finbox(popup%3Acompose)&code=OAUTH-CODE&scope=email'),
+      'Failed to load https://app.test/oauth/callback',
+    );
+    assert.equal(
+      cutAddressTails('    at render (https://app.test/inbox(popup:compose)?code=OAUTH-CODE:12:7)'),
+      '    at render (https://app.test/inbox(popup:compose):12:7)',
+    );
+    assert.equal(cutAddressTails("Failed at https://app.test/app#a=it's&tgWebAppData=FRAGMENT"), 'Failed at https://app.test/app');
+    assert.equal(cutAddressTails('Failed at `https://app.test/a?q=a`b&code=OAUTH-CODE`'), 'Failed at `https://app.test/a`');
+  });
+
+  test('cuts a ws, a wss and a file address, a scheme in upper case and an address glued to the text before it', () => {
+    assert.equal(cutAddressTails("WebSocket connection to 'wss://app.test/ws?token=TOKEN' failed"), "WebSocket connection to 'wss://app.test/ws' failed");
+    assert.equal(cutAddressTails('ws://app.test/ws#TOKEN'), 'ws://app.test/ws');
+    assert.equal(cutAddressTails('at render (file:///C:/app/index.html?code=OAUTH-CODE:10:5)'), 'at render (file:///C:/app/index.html:10:5)');
+    assert.equal(cutAddressTails('HTTPS://APP.TEST/cb?code=OAUTH-CODE'), 'HTTPS://APP.TEST/cb');
+    assert.equal(cutAddressTails('at position 0https://app.test/a?code=OAUTH-CODE'), 'at position 0https://app.test/a');
+  });
+
+  test('cuts an address after any other "scheme://": an app in a web view and an extension have schemes of their own', () => {
+    assert.equal(cutAddressTails('at render (capacitor://localhost/cb?code=OAUTH-CODE:1:5)'), 'at render (capacitor://localhost/cb:1:5)');
+    assert.equal(cutAddressTails('at chrome-extension://abc/x.js?t=TOKEN:3:9'), 'at chrome-extension://abc/x.js:3:9');
+    assert.equal(cutAddressTails('blob:https://app.test/uuid?t=TOKEN'), 'blob:https://app.test/uuid');
+    assert.equal(cutAddressTails('at s3://bucket/k?X-Amz-Signature=SIGNATURE:1:5'), 'at s3://bucket/k:1:5');
+  });
+
+  test('cuts a path in quotes up to the next space, as a router and ofetch write one, and leaves one without quotes', () => {
+    assert.equal(cutAddressTails('[GET] "/api/v1/auth/google/callback?code=OAUTH-CODE": 400 Bad Request'), '[GET] "/api/v1/auth/google/callback": 400 Bad Request');
+    assert.equal(cutAddressTails('[GET] "/api/v1/callback?code=OAUTH-CODE&scope=email openid": 400'), '[GET] "/api/v1/callback openid": 400');
+    assert.equal(cutAddressTails("No match for path '/cb?code=it's-OAUTH-CODE#frag'"), "No match for path '/cb'");
+    assert.equal(cutAddressTails('at `/cb#FRAGMENT`, next'), 'at `/cb`, next');
+    assert.equal(cutAddressTails('Cannot GET "/cb?code=OAUTH-CODE'), 'Cannot GET "/cb');
+    assert.equal(cutAddressTails('No match for "/o\'brien?code=OAUTH-CODE"'), 'No match for "/o\'brien"');
+    assert.equal(cutAddressTails('Cannot GET /cb?code=OAUTH-CODE'), 'Cannot GET /cb?code=OAUTH-CODE');
+  });
+
+  test('cuts an address that stands right after a path in quotes, its own raw quotes included', () => {
+    assert.equal(cutAddressTails("'/inbox'->https://app.test/o'brien?code=OAUTH-CODE"), "'/inbox'->https://app.test/o'brien");
+    assert.equal(
+      cutAddressTails("path='/inbox',page='https://app.test/app#tgWebAppData=first_name=O'Brien&hash=HASH'"),
+      "path='/inbox',page='https://app.test/app'",
+    );
+  });
+
+  test('leaves what only looks like a path in quotes: a pattern, a lone slash, code and JSON with a "?" outside of it', () => {
+    [
+      'why and/or? yes',
+      'Invalid regular expression: /a?b/: nothing',
+      '"/" and "/a" end?',
+      "Unexpected token '?'",
+      "undefined is not an object (evaluating 'location.pathname.split('/')[2]?.id.name')",
+      'phone must match the following: "/^\\+?[1-9]\\d{1,14}$/"',
+      'e.split("/").pop().split("?")[0].id',
+      'e.routes["/orders"]?.handler.name',
+      '{"path":"/orders","error":"what?","code":5}',
+    ].forEach((text) => assert.equal(cutAddressTails(text), text));
+  });
+
+  test('keeps the marks that close an address with the punctuation after them, as an eval frame of a browser needs', () => {
+    assert.equal(
+      cutAddressTails('at evaluated (eval at call (https://app.test/cb?code=OAUTH-CODE:1:19), <anonymous>:1:31)'),
+      'at evaluated (eval at call (https://app.test/cb:1:19), <anonymous>:1:31)',
+    );
+    assert.equal(cutAddressTails("Failed ('https://app.test/cb?code=OAUTH-CODE')."), "Failed ('https://app.test/cb').");
+    assert.equal(cutAddressTails('[GET] "https://app.test/cb?code=OAUTH-CODE": 400'), '[GET] "https://app.test/cb": 400');
+    assert.equal(cutAddressTails('at f (https://app.test/cb?code=OAUTH-CODE:1:5); next'), 'at f (https://app.test/cb:1:5); next');
+    assert.equal(cutAddressTails('{"at":"https://app.test/cb?code=OAUTH-CODE:1:5"}'), '{"at":"https://app.test/cb:1:5"}');
+  });
+
+  test('reads a hostile text in linear time: letters that begin no address, quotes that close none', () => {
+    const letters = 'a'.repeat(HOSTILE_REPEATS);
+    const texts = [
+      letters,
+      'a.'.repeat(HOSTILE_REPEATS),
+      '"/'.repeat(HOSTILE_REPEATS),
+      `"/${letters}`,
+      '"/x '.repeat(HOSTILE_REPEATS),
+      `"/'/\`/${letters}${String.fromCharCode(0x4E2D)}`,
+    ];
+    const startedAt = performance.now();
+
+    texts.forEach((text) => assert.equal(cutAddressTails(text), text));
+    assert.ok(performance.now() - startedAt < TIME_LIMIT_MS);
+  });
+
+  // A public route runs it on the body of an anonymous client: a few milliseconds each would let one client hold a process.
+  test('costs a hostile text of 64 KiB no more than two milliseconds of the processor', () => {
+    const letters = 'a'.repeat(64 * 1024);
+    const texts = [letters, `"/'/\`/${letters}${String.fromCharCode(0x4E2D)}`, '"/x '.repeat(16 * 1024)];
+    const rounds = 50;
+    const startedAt = process.threadCpuUsage();
+
+    texts.forEach((text) => Array.from({ length: rounds }).forEach(() => cutAddressTails(text)));
+
+    const { user, system } = process.threadCpuUsage(startedAt);
+    const averageMs = (user + system) / MICROSECONDS_IN_MS / (rounds * texts.length);
+
+    assert.ok(averageMs < 2, `${averageMs} ms`);
+  });
+
+  test('keeps a long run of closing marks in linear time', () => {
+    const marks = ')'.repeat(HOSTILE_REPEATS);
+    const startedAt = performance.now();
+
+    assert.equal(cutAddressTails(`https://app.test/a?${marks}x`), 'https://app.test/a');
+    assert.equal(cutAddressTails(`https://app.test/a?x${marks}`), `https://app.test/a${marks}`);
+    assert.ok(performance.now() - startedAt < TIME_LIMIT_MS);
+  });
+
+  test('cuts a long text of many addresses in linear time', () => {
+    const text = 'https://app.test/a?x=1:2:3 '.repeat(HOSTILE_REPEATS);
+    const startedAt = performance.now();
+
+    assert.equal(cutAddressTails(text), 'https://app.test/a:2:3 '.repeat(HOSTILE_REPEATS));
+    assert.ok(performance.now() - startedAt < TIME_LIMIT_MS);
   });
 });
 

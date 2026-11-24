@@ -1,11 +1,13 @@
 import { parseEnv } from '#config/env.js';
 import { resolvePath } from '#config/path.js';
+import { runAlertTest } from '#root/scripts/alert-test.js';
 import { renderApiIndex } from '#root/scripts/api-index.js';
 import { runMigrate } from '#root/scripts/migrate.js';
+import { accept, createAlertReceiver, readBlock } from '#root/tests/helper/alert.js';
 import { createTestConfig, TEST_ENV } from '#root/tests/helper/config.js';
 import { createDownEnv } from '#root/tests/helper/db.js';
 import { createMigrationDir, describeTarget } from '#root/tests/helper/migration.js';
-import { runNode } from '#root/tests/helper/process.js';
+import { createWorkDir, runNode } from '#root/tests/helper/process.js';
 import assert from 'node:assert/strict';
 import { readdir, readFile } from 'node:fs/promises';
 import nodePath from 'node:path';
@@ -24,6 +26,10 @@ const FIXTURE_SECTION = [
   '- `*walk(items)`',
   '',
 ].join('\n');
+
+const ALERT_TEST = 'scripts/alert-test.js';
+const ALERT_TEST_MESSAGE = 'A manual test (npm run alert:test): this process reaches the channels of alerts';
+const ALERT_TEST_START_LINE = '⏳ Alert test sends to: webhook (APP_MODE=prod)';
 
 describe('keygen', () => {
   test('prints a new secret that env accepts', async () => {
@@ -212,5 +218,106 @@ describe('migrate: what needs no database', () => {
     });
 
     assert.deepEqual([code, lines], [1, ['❌ Migration failed: Invalid environment variables']]);
+  });
+});
+
+// The context of the script has no Redis: its throttle lives in the memory of the process, and a second message
+// of this process within the silent window is held back. A test that sends again starts a process of its own.
+describe('alert-test', () => {
+  async function alertTest(readConfig) {
+    const lines = [];
+    const code = await runAlertTest({ readConfig, print: (line) => lines.push(line) });
+
+    return { code, lines };
+  }
+
+  async function runAlertTestProcess(t, receiver, env = receiver.env.webhook) {
+    const cwd = await createWorkDir(t, { ...TEST_ENV, ...env });
+    const { code, stdout, stderr } = await runNode(ALERT_TEST, { cwd });
+    const lines = stdout.split('\n').filter(Boolean);
+
+    return {
+      code,
+      stderr,
+      stdout,
+      printed: lines.filter((line) => !line.startsWith('{')),
+      logged: lines.filter((line) => line.startsWith('{')).map((line) => JSON.parse(line)),
+    };
+  }
+
+  test('fails with one line and the code 1 when no channel has its settings', async () => {
+    assert.deepEqual(await alertTest(() => createTestConfig()), {
+      code: 1,
+      lines: ['❌ Alert test failed: no channel has its settings, set one of the APP_ALERT_* variables'],
+    });
+  });
+
+  test('sends one silent message titled "Alert test" to the webhook and resolves 0 once it is delivered', async (t) => {
+    const receiver = await createAlertReceiver(t, accept);
+    const result = await alertTest(() => createTestConfig({ env: receiver.env.webhook }));
+
+    assert.deepEqual(result, { code: 0, lines: [ALERT_TEST_START_LINE, '✅ Alert test: webhook delivered'] });
+    assert.equal(receiver.requests.length, 1);
+
+    const [{ method, path, body }] = receiver.requests;
+
+    assert.equal(method, 'POST');
+    assert.equal(path, receiver.paths.webhook);
+    assert.equal(body.title, 'Alert test');
+    assert.equal(body.isSilent, true);
+    assert.equal(body.throttleClass, 'silent');
+    assert.equal(body.space, 'internal');
+    assert.deepEqual(readBlock(body, 'Error'), { message: ALERT_TEST_MESSAGE });
+  });
+
+  test('fails with one line and the code 1 when the config cannot be read', async () => {
+    const result = await alertTest(() => {
+      throw new Error('Invalid environment variables');
+    });
+
+    assert.deepEqual(result, { code: 1, lines: ['❌ Alert test failed: Invalid environment variables'] });
+  });
+
+  test('as a process: reads the .env of its directory, sends, and exits with 0 once the webhook has the message', async (t) => {
+    const receiver = await createAlertReceiver(t, accept);
+    const result = await runAlertTestProcess(t, receiver);
+
+    assert.deepEqual([result.code, result.printed, result.logged, result.stderr], [
+      0,
+      [ALERT_TEST_START_LINE, '✅ Alert test: webhook delivered'],
+      [],
+      '',
+    ]);
+    assert.deepEqual(receiver.requests.map((request) => [request.body.title, request.body.isSilent]), [['Alert test', true]]);
+  });
+
+  test('as a process: exits with 1 and a "not delivered (failed)" line when the receiver answers 500, and logs why without the secret path', async (t) => {
+    const receiver = await createAlertReceiver(t, () => ({ status: 500 }));
+    const result = await runAlertTestProcess(t, receiver);
+    const [notDelivered] = result.logged.filter((line) => line.msg === 'Alert not delivered');
+
+    assert.equal(result.code, 1);
+    assert.deepEqual(result.printed, [ALERT_TEST_START_LINE, '❌ Alert test: webhook not delivered (failed)']);
+    assert.equal(receiver.requests.length, 1);
+    assert.equal(notDelivered.alert.channel, 'webhook');
+    assert.equal(notDelivered.alert.reason, 'failed');
+    assert.equal(notDelivered.alert.status, 500);
+    assert.equal(result.stdout.includes(receiver.paths.webhook), false);
+    assert.equal(result.stderr, '');
+  });
+
+  test('as a process: prints a verdict for every channel, and exits with 1 when one of them was not delivered', async (t) => {
+    const receiver = await createAlertReceiver(t, (request) => (request.path === receiver.paths.slack
+      ? { status: 500 }
+      : { status: 204 }));
+    const result = await runAlertTestProcess(t, receiver, { ...receiver.env.webhook, ...receiver.env.slack });
+
+    assert.equal(result.code, 1);
+    assert.deepEqual(result.printed, [
+      '⏳ Alert test sends to: webhook, slack (APP_MODE=prod)',
+      '✅ Alert test: webhook delivered',
+      '❌ Alert test: slack not delivered (failed)',
+    ]);
+    assert.deepEqual(receiver.requests.map((request) => request.path).toSorted(), [receiver.paths.slack, receiver.paths.webhook].toSorted());
   });
 });

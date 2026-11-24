@@ -176,6 +176,16 @@ export function convertStringToSeconds(value) {
   return toDurationMs(value, SECONDS_SIGNATURE) / MS_IN_SECOND;
 }
 
+// For a section of the config, when its owner is made: a duration nobody can read would otherwise fail on the day it
+// is read.
+export function assertDurations(section, keys, name) {
+  if (!keys.every((key) => convertStringToMs(section[key]) > 0)) {
+    throw new TypeError(`${name} requires ${keys.join(', ')} to be above zero`);
+  }
+
+  return true;
+}
+
 function moveDate(value, move) {
   const timestamp = toTimestamp(value);
 

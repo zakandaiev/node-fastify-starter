@@ -1,6 +1,9 @@
+import { resolvePath } from '#config/path.js';
 import { migrateUp } from '#core/db/migrator.js';
 import packageData from '#root/package.json' with { type: 'json' };
-import { TEST_ENV } from '#root/tests/helper/config.js';
+import { createAlertReceiver } from '#root/tests/helper/alert.js';
+import { timeIt } from '#root/tests/helper/async.js';
+import { createTestConfig, TEST_ENV } from '#root/tests/helper/config.js';
 import { createTestDb } from '#root/tests/helper/db.js';
 import { parseLogLines } from '#root/tests/helper/log.js';
 import { describePendingRefusal, REPOSITORY_MIGRATIONS } from '#root/tests/helper/migration.js';
@@ -13,10 +16,12 @@ import {
 } from '#root/tests/helper/process.js';
 import { readRedisEnv, REDIS_DOWN_ENV } from '#root/tests/helper/redis.js';
 import { getServiceAddress, getServiceSkip } from '#root/tests/helper/service.js';
+import { convertStringToMs } from '#utils/date.js';
 import { compact } from '#utils/object.js';
 import assert from 'node:assert/strict';
 import { platform } from 'node:process';
 import { before, describe, test } from 'node:test';
+import { pathToFileURL } from 'node:url';
 
 const SERVER = 'src/server.js';
 const STARTED = /Server started/;
@@ -25,11 +30,23 @@ const STARTED = /Server started/;
 const MAIN_READY = /"msg":"Redis is ready"/;
 const CACHE_READY = /"msg":"Cache Redis is ready"/;
 
+const STARTED_MESSAGE = 'Server started';
+const FATAL_MESSAGE = 'Process failed: it shuts down';
+const SHUTTING_DOWN_MESSAGE = 'Server is shutting down';
+const SHUTTING_DOWN = new RegExp(`"msg":"${SHUTTING_DOWN_MESSAGE}"`);
+const SHUTDOWN_FAILED_MESSAGE = 'Server failed to shut down cleanly';
+const FATAL_KEY_MESSAGES = Object.freeze([STARTED_MESSAGE, FATAL_MESSAGE, SHUTTING_DOWN_MESSAGE, SHUTDOWN_FAILED_MESSAGE]);
+const FAIL_AFTER_LISTEN = `--import=${pathToFileURL(resolvePath('tests/fixture/fatal-after-listen.js')).href}`;
+
+// The hard exit comes this long after the failure; a graceful close is over long before half of it.
+const HARD_EXIT_MS = convertStringToMs(createTestConfig().app.fatalShutdownTimeout);
+
 const testDb = await createTestDb();
 const redisSkip = await getServiceSkip(['redis']);
 const redisEnv = readRedisEnv();
 
-async function startServer(t, env = {}) {
+// "env" goes to the .env of the server, "processEnv" to its process: NODE_OPTIONS is read before any .env.
+async function startServer(t, env = {}, processEnv = {}) {
   const cwd = await createWorkDir(t, {
     ...TEST_ENV,
     ...redisEnv,
@@ -37,7 +54,7 @@ async function startServer(t, env = {}) {
     ...env,
   });
   const port = await getFreePort();
-  const server = startNode(SERVER, { args: [`--port=${port}`], cwd });
+  const server = startNode(SERVER, { args: [`--port=${port}`], cwd, env: processEnv });
 
   return { server, port, cwd };
 }
@@ -117,6 +134,34 @@ describe('server', { skip: testDb.skip }, () => {
 
     assert.equal(code, 0);
     assert.ok(messages.includes('Server is shutting down'));
+    await assert.rejects(fetch(`http://127.0.0.1:${port}/`));
+  });
+
+  test('shuts down gracefully on a rejection nothing awaited: logs it, alerts, closes the port and exits with 1', async (t) => {
+    const receiver = await createAlertReceiver(t);
+
+    // Redis down: the alert keeps its marks in memory, and the test leaves no keys behind.
+    const { server, port } = await startServer(t, { ...REDIS_DOWN_ENV, ...receiver.env.webhook }, { NODE_OPTIONS: FAIL_AFTER_LISTEN });
+
+    await waitForOutput(server, SHUTTING_DOWN);
+
+    const { result: { code, stdout }, durationMs } = await timeIt(() => server.exit);
+    const lines = parseLogLines(stdout);
+    const fatal = lines.find((line) => line.msg === FATAL_MESSAGE);
+    const shuttingDown = lines.find((line) => line.msg === SHUTTING_DOWN_MESSAGE);
+    const alerts = receiver.findRequests(receiver.paths.webhook);
+    const errorBlock = alerts[0]?.body.blocks.find((block) => block.name === 'Error');
+
+    assert.equal(code, 1);
+    assert.deepEqual(
+      lines.map((line) => line.msg).filter((message) => FATAL_KEY_MESSAGES.includes(message)),
+      [STARTED_MESSAGE, FATAL_MESSAGE, SHUTTING_DOWN_MESSAGE],
+    );
+    assert.equal(fatal.event, 'unhandledRejection');
+    assert.equal(shuttingDown.reason, 'fatal error');
+    assert.deepEqual(alerts.map((request) => request.body.title), ['Process failed']);
+    assert.equal(errorBlock.value.message, fatal.err.message);
+    assert.ok(durationMs < HARD_EXIT_MS / 2, `The server exited ${Math.round(durationMs)} ms after it began to shut down`);
     await assert.rejects(fetch(`http://127.0.0.1:${port}/`));
   });
 

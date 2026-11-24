@@ -1,3 +1,4 @@
+import { settleAlerts } from '#core/alert/index.js';
 import { createContext } from '#core/context/index.js';
 import { createRedis } from '#core/redis/index.js';
 import fp from 'fastify-plugin';
@@ -17,7 +18,11 @@ async function useRedis(fastify) {
   fastify.decorate('redis', redis);
   fastify.decorate('cacheRedis', cacheRedis);
   fastify.context = createContext({ ...fastify.context, redis, cacheRedis });
-  fastify.addHook('onClose', () => Promise.all([redis.close(), cacheRedis.close()]));
+  // An alert still on its way keeps its state in the main Redis: the clients close once it has settled.
+  fastify.addHook('onClose', async () => {
+    await settleAlerts(redis);
+    await Promise.all([redis.close(), cacheRedis.close()]);
+  });
 }
 
 export default fp(useRedis, { name: 'redis' });

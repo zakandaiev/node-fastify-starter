@@ -1,6 +1,7 @@
 import { ENV_SCHEMA, isCi, parseEnv } from '#config/env.js';
 import { resolvePath } from '#config/path.js';
 import packageData from '#root/package.json' with { type: 'json' };
+import { TELEGRAM_TEST_ENV } from '#root/tests/helper/alert.js';
 import { TEST_ENV, createTestEnv } from '#root/tests/helper/config.js';
 import { createWorkDir, runNode } from '#root/tests/helper/process.js';
 import assert from 'node:assert/strict';
@@ -11,6 +12,10 @@ import { describe, test } from 'node:test';
 const PRINT_ENV = 'tests/fixture/print-env.js';
 const SECRET = 'a'.repeat(32);
 const TOO_SHORT = 'must be at least 32 characters long: generate it with "npm run keygen"';
+
+const BOT_TOKEN_KEY = 'APP_ALERT_TELEGRAM_BOT_TOKEN';
+const CHAT_ID_KEY = 'APP_ALERT_TELEGRAM_CHAT_ID';
+const ALERT_URL_KEYS = ['APP_ALERT_WEBHOOK_URL', 'APP_ALERT_SLACK_URL', 'APP_ALERT_DISCORD_URL'];
 
 function getErrorLines(values) {
   try {
@@ -175,6 +180,70 @@ describe('parseEnv', () => {
     ]);
     assert.deepEqual(getErrorLines({ ...TEST_ENV, APP_CACHE_REDIS_HOST: ' ', APP_CACHE_REDIS_PORT: '' }), []);
   });
+
+  test('takes the token of a Telegram bot only as digits, a colon and letters', () => {
+    ['123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11', TELEGRAM_TEST_ENV[BOT_TOKEN_KEY]].forEach((value) => {
+      assert.equal(parseEnv({ ...TEST_ENV, ...TELEGRAM_TEST_ENV, [BOT_TOKEN_KEY]: value })[BOT_TOKEN_KEY], value);
+    });
+
+    ['ABC-DEF1234ghIkl', '123456', '123456:', ':ABC-DEF', 'bot123456:ABC', '12a456:ABC', '123456:ABC DEF', '123456:ABC/DEF'].forEach((value) => {
+      const lines = getErrorLines({ ...TEST_ENV, ...TELEGRAM_TEST_ENV, [BOT_TOKEN_KEY]: value });
+
+      assert.ok(lines.includes(`  - ${BOT_TOKEN_KEY} must match format "telegram-bot-token"`), value);
+    });
+  });
+
+  test('takes the id of a Telegram chat as digits, negative for a group, or as the @name of a public channel', () => {
+    ['-1001234567890', '123456789', '@public_channel', '@abcde', `@a${'b'.repeat(31)}`].forEach((value) => {
+      assert.equal(parseEnv({ ...TEST_ENV, ...TELEGRAM_TEST_ENV, [CHAT_ID_KEY]: value })[CHAT_ID_KEY], value);
+    });
+
+    ['channel', '@abcd', `@a${'b'.repeat(32)}`, '@1channel', '@public-channel', '--100', '-', '+100', '100.5', '@'].forEach((value) => {
+      const lines = getErrorLines({ ...TEST_ENV, ...TELEGRAM_TEST_ENV, [CHAT_ID_KEY]: value });
+
+      assert.ok(lines.includes(`  - ${CHAT_ID_KEY} must match format "telegram-chat-id"`), value);
+    });
+  });
+
+  test('takes the token and the chat id of Telegram only together: one without the other would leave the channel off', () => {
+    assert.deepEqual(getErrorLines({ ...TEST_ENV, [BOT_TOKEN_KEY]: TELEGRAM_TEST_ENV[BOT_TOKEN_KEY] }).slice(1, -1), [
+      `  - ${CHAT_ID_KEY} is required when ${BOT_TOKEN_KEY} is set`,
+    ]);
+    assert.deepEqual(getErrorLines({ ...TEST_ENV, [CHAT_ID_KEY]: TELEGRAM_TEST_ENV[CHAT_ID_KEY] }).slice(1, -1), [
+      `  - ${BOT_TOKEN_KEY} is required when ${CHAT_ID_KEY} is set`,
+    ]);
+    assert.deepEqual(getErrorLines({ ...TEST_ENV, ...TELEGRAM_TEST_ENV }), []);
+    assert.deepEqual(getErrorLines({ ...TEST_ENV, [BOT_TOKEN_KEY]: ' ', [CHAT_ID_KEY]: '' }), []);
+  });
+
+  test('takes the address of a webhook, of Slack and of Discord only as an http or https URL without credentials, which fetch() refuses', () => {
+    ALERT_URL_KEYS.forEach((key) => {
+      ['http://127.0.0.1:9000/hook', 'https://alerts.example.com/hook?channel=ops'].forEach((value) => {
+        assert.equal(parseEnv({ ...TEST_ENV, [key]: value })[key], value, `${key}=${value}`);
+      });
+
+      ['ftp://alerts.example.com/hook', 'not a url', 'mailto:ops@example.com', 'file:///etc/hook', '//alerts.example.com/hook', 'https://user:pass@alerts.example.com/hook', 'https://user@alerts.example.com/hook'].forEach((value) => {
+        assert.ok(getErrorLines({ ...TEST_ENV, [key]: value }).includes(`  - ${key} must match format "url"`), `${key}=${value}`);
+      });
+    });
+  });
+
+  test('never prints the value of an alert setting in the error', () => {
+    const values = {
+      [BOT_TOKEN_KEY]: 'secret-bot-token',
+      [CHAT_ID_KEY]: '@x-secret-chat',
+      APP_ALERT_WEBHOOK_URL: 'ftp://secret-host.example.com/secret-path',
+      APP_ALERT_SLACK_URL: 'not a secret url',
+      APP_ALERT_DISCORD_URL: 'mailto:secret@example.com',
+    };
+    const text = getErrorLines({ ...TEST_ENV, ...values }).join('\n');
+    const tokenAlone = getErrorLines({ ...TEST_ENV, [BOT_TOKEN_KEY]: '987654:secret-token_value' }).join('\n');
+
+    [BOT_TOKEN_KEY, CHAT_ID_KEY, ...ALERT_URL_KEYS].forEach((key) => assert.match(text, new RegExp(`${key} must match format`)));
+    Object.values(values).forEach((value) => assert.equal(text.includes(value), false, value));
+    assert.match(tokenAlone, new RegExp(`${CHAT_ID_KEY} is required`));
+    assert.equal(tokenAlone.includes('987654:secret-token_value'), false);
+  });
 });
 
 describe('initEnv in a process of its own', () => {
@@ -242,6 +311,17 @@ describe('initEnv in a process of its own', () => {
 
     assert.equal(code, 1);
     assert.match(stderr, /APP_REDIS_USER swallowed the next line of \.env/);
+  });
+
+  test('fails on an alert address that is not an http or https URL, and does not print it', async (t) => {
+    const cwd = await createWorkDir(t, { ...TEST_ENV, APP_ALERT_SLACK_URL: 'ftp://secret-host.example.com/hook', APP_ALERT_DISCORD_URL: 'not a url' });
+    const { code, stdout, stderr } = await runNode(PRINT_ENV, { cwd });
+
+    assert.equal(code, 1);
+    assert.equal(stdout, '');
+    assert.match(stderr, /APP_ALERT_SLACK_URL must match format "url"/);
+    assert.match(stderr, /APP_ALERT_DISCORD_URL must match format "url"/);
+    assert.equal(stderr.includes('secret-host'), false);
   });
 
   test('fails on a .env saved with a byte order mark', async (t) => {

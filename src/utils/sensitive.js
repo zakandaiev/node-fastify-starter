@@ -1,7 +1,7 @@
 import { isArray, isObject } from '#utils/type.js';
 
 const HIDDEN_PLACEHOLDER = '[hidden]';
-const DEPTH_PLACEHOLDER = '[depth limit]';
+export const DEPTH_PLACEHOLDER = '[depth limit]';
 const REPEAT_PLACEHOLDER = '[repeated]';
 export const UNREADABLE_PLACEHOLDER = '[unreadable]';
 

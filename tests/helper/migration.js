@@ -27,6 +27,7 @@ export const REPOSITORY_MIGRATIONS = Object.freeze([
   '0003_groups',
   '0004_group_scopes',
   '0005_user_groups',
+  '0006_audit_logs',
 ]);
 export const REPOSITORY_SEEDS = Object.freeze(['0001_groups']);
 

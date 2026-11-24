@@ -207,7 +207,7 @@ export async function initSession(connection) {
   } catch (error) {
     connection.destroy();
 
-    throw toDbError(error);
+    throw toDbError(error, { isConnectFailure: true });
   }
 
   sessions.add(connection.connection);
@@ -258,16 +258,17 @@ async function run(connection, text) {
   return result;
 }
 
-async function connect(pool) {
+// A pool this app has closed itself gives no connection either, and that is no failure of the database.
+async function connect(state) {
   try {
-    return await pool.getConnection();
+    return await state.pool.getConnection();
   } catch (error) {
-    throw toDbError(error);
+    throw toDbError(error, { isConnectFailure: !state.isClosed });
   }
 }
 
-async function acquire(pool) {
-  const connection = await connect(pool);
+async function acquire(state) {
+  const connection = await connect(state);
 
   await initSession(connection);
 
@@ -286,7 +287,7 @@ async function withConnection(state, fn) {
   }
 
   return state.gate(async () => {
-    const connection = await acquire(state.pool);
+    const connection = await acquire(state);
 
     try {
       return await fn(connection);

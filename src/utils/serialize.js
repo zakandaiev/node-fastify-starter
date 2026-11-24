@@ -1,3 +1,5 @@
+import { mapKeys } from '#utils/object.js';
+import { DEPTH_PLACEHOLDER } from '#utils/sensitive.js';
 import { isArray, isBoolean, isString } from '#utils/type.js';
 import { isDate } from 'node:util/types';
 
@@ -38,6 +40,11 @@ const NEGATIVE_ZERO = '-0';
 const BIGINT_REGEXP = /^-?(?:0|[1-9][0-9]*)$/;
 
 const SIGNATURE = 'serializeValue(value)';
+const NO_JSON = 'null';
+
+// JSON.stringify() with a replacer recurses: a tree of a client may be nested deeper than the call stack goes.
+const TREE_MAX_DEPTH = 64;
+
 const UNSUPPORTED_MESSAGE = 'only plain objects, arrays without holes or keys of their own, dates, buffers and primitives except symbols';
 const MALFORMED_MESSAGE = 'deserializeValue(text) received a text that serializeValue() does not write';
 
@@ -224,6 +231,55 @@ const JSON_FORMAT = Object.freeze({
 // not flattened into a plain object.
 export function serializeValue(value) {
   return writeValueText(value, JSON_FORMAT);
+}
+
+function withWellFormedKeys(container) {
+  return isArray(container) || Object.keys(container).every((key) => key.isWellFormed())
+    ? container
+    : mapKeys({ ...container }, (key) => key.toWellFormed());
+}
+
+// The depth of a container is kept for the calls about what is in it: "this" of a replacer is the holder of the value.
+// JSON.stringify() tells a cycle by meeting the same object again: a rebuilt one is the same at every visit.
+function createTreeReplacer() {
+  const depths = new WeakMap();
+  const rebuilt = new WeakMap();
+
+  function toTreeValue(key, value) {
+    if (typeof value === 'bigint') {
+      return String(value);
+    }
+
+    if (isString(value)) {
+      return value.toWellFormed();
+    }
+
+    if (value === null || typeof value !== 'object') {
+      return value;
+    }
+
+    const depth = (depths.get(this) ?? 0) + 1;
+
+    if (depth > TREE_MAX_DEPTH) {
+      return DEPTH_PLACEHOLDER;
+    }
+
+    const container = rebuilt.get(value) ?? withWellFormedKeys(value);
+
+    rebuilt.set(value, container);
+    depths.set(container, depth);
+
+    return container;
+  }
+
+  return toTreeValue;
+}
+
+// What JSON keeps of a value, as a tree of its own: no class instance, no reference met twice, a bigint as its text
+// and a lone surrogate, which a JSON column of the database refuses, as U+FFFD. A cycle throws, unless the ceiling of
+// the depth cuts it first.
+export function toJsonTree(value) {
+  return JSON.parse(JSON.stringify(value, createTreeReplacer()) ?? NO_JSON);
 }
 
 function fail() {

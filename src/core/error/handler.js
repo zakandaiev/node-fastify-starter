@@ -1,9 +1,11 @@
 import { classifyError, findUniqueViolation, isSchemaError } from '#core/error/classify.js';
 import { AppError } from '#core/error/index.js';
+import { maskErrorValues } from '#core/error/mask.js';
 import { formatValidation, normalizeValidation } from '#core/error/validation.js';
 import { createEnvelope } from '#core/response/index.js';
 import { ERROR_CATALOG, ERROR_CODE } from '#enums/error-code.js';
 import { HEADER } from '#enums/header.js';
+import { HTTP_METHOD } from '#enums/http-method.js';
 import { HTTP_STATUS } from '#enums/http-status.js';
 import { MEDIA_TYPE } from '#enums/media-type.js';
 import { convertStringToSeconds, nowUtc } from '#utils/date.js';
@@ -20,10 +22,9 @@ import {
 } from '#utils/type.js';
 import { STATUS_CODES, validateHeaderName, validateHeaderValue } from 'node:http';
 
-const JSON_CONTENT_TYPE = `${MEDIA_TYPE.JSON}; charset=utf-8`;
+const JSON_CONTENT_TYPE = MEDIA_TYPE.JSON_UTF8;
 const NO_STORE = 'no-store';
 const CONNECTION_CLOSE = 'close';
-const HEAD_METHOD = 'HEAD';
 const HTTP_VERSION = 'HTTP/1.1';
 const HTTP_LINE_BREAK = '\r\n';
 
@@ -131,7 +132,7 @@ function describeUniqueViolation(dbError, request, { code, appConfig }) {
 function describeForeignError(error, { code, statusCode, appConfig }) {
   return {
     message: appConfig.isDev && isNonEmptyString(error?.message)
-      ? error.message
+      ? maskErrorValues(error.message)
       : ERROR_CATALOG[code].message,
     headers: isServerFault(statusCode)
       ? undefined
@@ -163,7 +164,7 @@ function describeFailure(error, request, appConfig) {
     statusCode,
     logLevel: ERROR_CATALOG[code].logLevel,
     stack: appConfig.isDev && isServerFault(statusCode) && isString(error?.stack)
-      ? error.stack
+      ? maskErrorValues(error.stack)
       : undefined,
     ...describeDetails(error, request, { code, statusCode, appConfig }),
   };
@@ -219,7 +220,7 @@ function reviveResponse(request, reply) {
   raw.statusMessage = undefined;
   raw.chunkedEncoding = false;
   // eslint-disable-next-line no-underscore-dangle -- Node has no public way to take back "this response has no body"
-  raw._hasBody = request.raw.method !== HEAD_METHOD;
+  raw._hasBody = request.raw.method !== HTTP_METHOD.HEAD;
 
   return true;
 }

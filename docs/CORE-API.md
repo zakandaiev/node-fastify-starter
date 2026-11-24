@@ -4,6 +4,75 @@
 >
 > Look here before writing a new function: extend what exists instead of duplicating it.
 
+## #core/alert/channels/delivery.js
+
+- `DELIVERY_FAILURE`
+- `delivered()`
+- `describeUnreachable(error, hint)`
+- `notDelivered(reason, { status, description, retryAfter, hint } = {})`
+- `readRetryAfter(headers)`
+
+## #core/alert/channels/discord.js
+
+- `discordChannel`
+
+## #core/alert/channels/index.js
+
+- `ALERT_CHANNELS`
+- `findEnabledChannels(alertConfig)`
+
+## #core/alert/channels/markup.js
+
+- `SUPPRESSED_ICON`
+- `SUPPRESSED_LABEL`
+- `breakBacktickRuns(text)`
+- `readFooter(message, format)`
+- `renderBlocks(message, { maxLength, header, footer, frame, escape, measure })`
+- `toBlockText(value)`
+
+## #core/alert/channels/slack.js
+
+- `slackChannel`
+
+## #core/alert/channels/telegram.js
+
+- `telegramChannel`
+
+## #core/alert/channels/webhook.js
+
+- `async sendWebhook(body, { channel, settings, config })`
+- `webhookChannel`
+
+## #core/alert/index.js
+
+- `async alert(options)`
+- `assertAlertConfig(alertConfig)`
+- `isAlertReported(result)`
+- `async settleAlerts(redis)`
+
+## #core/alert/message.js
+
+- `ALERT_BLOCK`
+- `buildAlertMessage({ title, error, request, client, url, space, throttleClass, isSilent }, appConfig)`
+- `describeRequest(request)`
+- `readErrorCause(error)`
+
+## #core/alert/state.js
+
+- `async addSuppressed({ redis, space, window, count, suppressedTtlMs })`
+- `async claimDedupe({ redis, space, dedupeKey, ttlMs, maxEntries })`
+- `async isDeduped({ redis, space, dedupeKey })`
+- `async releaseDedupe({ redis, space, dedupeKey })`
+- `async takeThrottleSlot(state)`
+
+## #core/alert/text.js
+
+- `fitTexts(texts, budget, measure)`
+
+## #core/audit/index.js
+
+- `async writeAudit(entry = {})`
+
 ## #core/cache/index.js
 
 - `assertCacheTables(tables, signature)`
@@ -39,6 +108,7 @@
 ## #core/db/error.js
 
 - `class DbError`
+- `POOL_SATURATED_CODE`
 - `createOverloadError()`
 - `describeColumn(name)`
 - `findDbError(error)`
@@ -48,7 +118,7 @@
 - `isLockWaitTimeout(error)`
 - `isMissingTable(error)`
 - `maskDbErrorValues(text)`
-- `toDbError(error, { isScript = false } = {})`
+- `toDbError(error, { isScript = false, isConnectFailure = false } = {})`
 
 ## #core/db/filter.js
 
@@ -177,16 +247,46 @@
 
 - `class AppError`
 
+## #core/error/mask.js
+
+- `maskErrorValues(text)`
+
 ## #core/error/validation.js
 
 - `createSchemaErrorFormatter(maxErrors)`
 - `formatValidation(error, request, { maxErrors, maxValueLength, maxListLength, isDev = false })`
 - `normalizeValidation(validation, { maxErrors, maxValueLength, maxListLength })`
 
+## #core/http/external.js
+
+- `async fetchExternal(url, options = {})`
+
+## #core/http/index.js
+
+- `class UpstreamError`
+- `assertServiceOptions(options, signature)`
+- `createUpstreamFailure(call, reason, extra = {})`
+- `createWayFailure(call, error, signal, durationMs)`
+- `async fetchJson(url, options = {})`
+- `async fetchUpstream(url, options = {})`
+- `findUpstreamError(error)`
+- `isRedirectStatus(status)`
+- `isSuccessStatus(status)`
+- `logUpstreamCall(call, extra)`
+- `logUpstreamFailure(call, failure)`
+- `maskUrl(url, { secrets = [], isAddressSecret = false } = {})`
+- `parseUpstreamUrl(url)`
+- `readTimeout(value, fallback, signature)`
+- `toUpstreamAppError(upstreamError)`
+
 ## #core/logger/index.js
 
 - `createLogger({ level, isPretty = false, stream } = {})`
 - `serializeError(error)`
+
+## #core/process/index.js
+
+- `handleFatalErrors({ context, shutdown, timeout } = {})`
 
 ## #core/redis/index.js
 
@@ -258,6 +358,10 @@
 - `async sleep(ms, { signal } = {})`
 - `async withTimeout(fn, ms, { signal } = {})`
 
+## #utils/bytes.js
+
+- `createByteCollector(maxBytes)`
+
 ## #utils/case.js
 
 - `camelToSnakeKey(key)`
@@ -270,6 +374,7 @@
 - `ISO_DATE_LENGTH`
 - `ISO_DATE_TIME_MAX_LENGTH`
 - `addToDate(value, duration)`
+- `assertDurations(section, keys, name)`
 - `convertStringToMs(value)`
 - `convertStringToSeconds(value)`
 - `differenceInDays(left, right)`
@@ -289,9 +394,14 @@
 ## #utils/encoding.js
 
 - `decodeBase64Url(text)`
+- `decodeFormValue(text)`
 - `decodeHex(text)`
+- `decodeUrlComponent(text)`
 - `encodeBase64Url(value)`
+- `encodeFormValue(text)`
 - `encodeHex(value)`
+- `encodeUrlComponent(text)`
+- `encodeUrlPath(text)`
 - `isBase64Url(value)`
 - `isHex(value)`
 
@@ -301,6 +411,11 @@
 - `objectHash(value)`
 - `sha256(value, encoding = HEX)`
 - `timingSafeEqual(left, right)`
+
+## #utils/header.js
+
+- `readBearerToken(authorization)`
+- `readOriginHost(headers)`
 
 ## #utils/id.js
 
@@ -326,6 +441,7 @@
 - `diff(before, after)`
 - `freezeDeep(value)`
 - `getPath(object, path, defaultValue)`
+- `mapKeys(object, toKey)`
 - `mapValues(object, toValue)`
 - `omit(object, keys)`
 - `pick(object, keys)`
@@ -356,6 +472,7 @@
 
 ## #utils/sensitive.js
 
+- `DEPTH_PLACEHOLDER`
 - `OMIT_VALUE`
 - `UNREADABLE_PLACEHOLDER`
 - `isSensitiveKey(key)`
@@ -366,10 +483,13 @@
 - `SERIALIZED_FORMAT`
 - `deserializeValue(text)`
 - `serializeValue(value)`
+- `toJsonTree(value)`
 - `writeValueText(value, format)`
 
 ## #utils/string.js
 
+- `cutAddressTail(value, mark = '')`
+- `cutAddressTails(value)`
 - `escapeHtml(value)`
 - `escapeLikePattern(value)`
 - `escapeRegExp(value)`
@@ -411,3 +531,9 @@
 - `isPhone(value)`
 - `isPrivateAddress(address)`
 - `isSafeRedirectPath(value)`
+- `isWebUrl(value)`
+
+## #utils/window.js
+
+- `addWindowCount(windows, key, count)`
+- `takeWindowSlot(windows, key, { windowMs, now } = {})`

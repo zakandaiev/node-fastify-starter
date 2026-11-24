@@ -6,6 +6,8 @@ export const EMAIL_MAX_LENGTH = 254;
 // Minimal on purpose: the real filter is the delivery of a message. A label cannot hold a dot, so the match is linear.
 const EMAIL_REGEXP = /^[^\s@\p{Cc}]+@[^\s@.\p{Cc}]+(?:\.[^\s@.\p{Cc}]+)+$/v;
 
+const WEB_PROTOCOLS = Object.freeze(['http:', 'https:']);
+
 const REDIRECT_PATH_MAX_LENGTH = 512;
 // Browsers read "/\evil.com" as "//evil.com" and drop tabs and line breaks before that,
 // and a Location header takes printable ASCII only: Node throws ERR_INVALID_CHAR on the rest.
@@ -176,6 +178,17 @@ export function isLoopbackAddress(address) {
 
 export function isPrivateAddress(address) {
   return isListed(privateAddresses, address);
+}
+
+// http or https without credentials, which fetch() refuses to send. The ports fetch() blocks are not checked.
+export function isWebUrl(value) {
+  if (!isString(value) || !URL.canParse(value)) {
+    return false;
+  }
+
+  const url = new URL(value);
+
+  return WEB_PROTOCOLS.includes(url.protocol) && !url.username && !url.password;
 }
 
 export function isSafeRedirectPath(value) {

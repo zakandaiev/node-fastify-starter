@@ -3,6 +3,7 @@ import {
   ISO_DATE_LENGTH,
   ISO_DATE_TIME_MAX_LENGTH,
   addToDate,
+  assertDurations,
   convertStringToMs,
   convertStringToSeconds,
   differenceInDays,
@@ -828,6 +829,27 @@ describe('convertStringToSeconds', () => {
         `${'-'.repeat(LONG)}1s`,
         `${' '.repeat(LONG)}1s`,
       ]);
+    });
+  });
+});
+
+describe('assertDurations', () => {
+  const SECTION = Object.freeze({ timeout: '5s', ttl: '0.001s', other: 'anything' });
+
+  test('takes a section whose named durations are above zero, whatever else it holds', () => {
+    assert.equal(assertDurations(SECTION, ['timeout', 'ttl'], 'config.sample'), true);
+    assert.equal(assertDurations(SECTION, [], 'config.sample'), true);
+  });
+
+  test('refuses a duration of zero, one that rounds to it and one nobody can read', () => {
+    ['0s', '0.0001s'].forEach((ttl) => {
+      assert.throws(() => assertDurations({ ...SECTION, ttl }, ['timeout', 'ttl'], 'config.sample'), {
+        name: 'TypeError',
+        message: 'config.sample requires timeout, ttl to be above zero',
+      }, ttl);
+    });
+    [undefined, null, '1 minute', 60].forEach((ttl) => {
+      assert.throws(() => assertDurations({ ...SECTION, ttl }, ['timeout', 'ttl'], 'config.sample'), TypeError, String(ttl));
     });
   });
 });

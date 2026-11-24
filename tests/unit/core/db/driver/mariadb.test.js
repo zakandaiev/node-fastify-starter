@@ -148,7 +148,7 @@ describe('initSession', () => {
 
     await assert.rejects(
       initSession(connection),
-      (error) => error instanceof DbError && error.errno === 1193 && error.code === 'ER_UNKNOWN_SYSTEM_VARIABLE',
+      (error) => error instanceof DbError && error.errno === 1193 && error.code === 'ER_UNKNOWN_SYSTEM_VARIABLE' && error.isConnectFailure === true,
     );
     await assert.rejects(initSession(connection), DbError);
 
@@ -261,7 +261,10 @@ describe('createMariadbDriver', () => {
 
     assert.equal(await driver.close(), true);
     assert.equal(await driver.close(), false);
-    await assert.rejects(driver.ping(), (error) => error instanceof DbError && error.message === 'Pool is closed.');
+    await assert.rejects(
+      driver.ping(),
+      (error) => error instanceof DbError && error.message === 'Pool is closed.' && !Object.hasOwn(error, 'isConnectFailure'),
+    );
   });
 
   test('fails with the error of the connection when the database is down, and takes no slot of the pool for it', async (t) => {
@@ -273,6 +276,7 @@ describe('createMariadbDriver', () => {
       assert.ok(result.reason instanceof DbError);
       assert.equal(result.reason.code, 'ECONNREFUSED');
       assert.equal(result.reason.isFatal, true);
+      assert.equal(result.reason.isConnectFailure, true);
       assert.equal(result.reason.kind, undefined);
     });
     assert.equal(driver.getStats().activeCount, 0);

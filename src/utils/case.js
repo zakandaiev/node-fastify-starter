@@ -1,3 +1,4 @@
+import { mapKeys } from '#utils/object.js';
 import { isArray, isObject, isString } from '#utils/type.js';
 
 // Keys reach here from request bodies too: without a ceiling the caches would grow with every new key.
@@ -48,7 +49,8 @@ function convertKeys(value, toKey) {
     return value;
   }
 
-  return Object.fromEntries(Object.entries(value).map(([key, item]) => [toKey(key), item]));
+  // A record again, as the row it came from: mapKeys() gives a map without a prototype.
+  return { ...mapKeys(value, (key) => toKey(key)) };
 }
 
 export function snakeToCamelKey(key) {

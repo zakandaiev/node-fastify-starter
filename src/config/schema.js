@@ -5,4 +5,7 @@ export const SCHEMA_LIMITS = Object.freeze({
 
   // A filter of several values that comes as a list separated by commas, such as ?groupId=<id>,<id>.
   listMaxValues: 20,
+
+  // POST /log/error: the body of a report, and the raw length of each text of it that is cut afterwards.
+  reportMaxLength: 64 * 1024,
 });

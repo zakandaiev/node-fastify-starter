@@ -18,7 +18,7 @@ import { beforeEach, describe, test } from 'node:test';
 const { MACHINE, HUMAN } = COLLATION;
 const { SEED } = MIGRATION_TYPE;
 
-const TABLES = Object.freeze(['users', 'user_identities', 'groups', 'group_scopes', 'user_groups']);
+const TABLES = Object.freeze(['users', 'user_identities', 'groups', 'group_scopes', 'user_groups', 'audit_logs']);
 
 // Every text column of these tables: a name and a description are a text for a person, everything else
 // a machine string or a contact.
@@ -37,6 +37,10 @@ const TEXT_COLLATIONS = Object.freeze({
   'groups.name': HUMAN,
   'groups.description': HUMAN,
   'group_scopes.scope': MACHINE,
+  'audit_logs.action': MACHINE,
+  'audit_logs.entity_type': MACHINE,
+  'audit_logs.meta': MACHINE,
+  'audit_logs.ip': MACHINE,
 });
 
 const ADMIN_GROUP = Object.freeze({
@@ -213,6 +217,18 @@ describe('the migrations of the repository', { skip: testDb.skip }, () => {
     assert.deepEqual(await testDb.readRows('SELECT COUNT(*) AS total FROM user_identities'), [{ total: 0 }]);
     assert.deepEqual(await testDb.readRows('SELECT user_id, group_id, granted_by, updated_at FROM user_groups'), [{
       user_id: member, group_id: group, granted_by: null, updated_at: parseStrictUtc(LONG_AGO_UTC),
+    }]);
+  });
+
+  test('keep the audit of a deleted user, with no one as its actor: the cascade does not move its updated_at', async () => {
+    const actor = await createUser();
+
+    await testDb.readRows("INSERT INTO audit_logs (actor_id, action, entity_type, entity_id) VALUES (:actor, 'user.block', 'users', :actor)", { actor });
+    await testDb.readRows('UPDATE audit_logs SET updated_at = :moment', { moment: LONG_AGO });
+    await testDb.readRows('DELETE FROM users WHERE id = :actor', { actor });
+
+    assert.deepEqual(await testDb.readRows('SELECT actor_id, action, entity_id, updated_at FROM audit_logs'), [{
+      actor_id: null, action: 'user.block', entity_id: actor, updated_at: parseStrictUtc(LONG_AGO_UTC),
     }]);
   });
 

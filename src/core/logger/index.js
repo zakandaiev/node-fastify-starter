@@ -1,5 +1,7 @@
-import { maskDbErrorValues } from '#core/db/error.js';
+import { maskErrorValues } from '#core/error/mask.js';
+import { mapKeys } from '#utils/object.js';
 import { maskSensitiveDeep, OMIT_VALUE, UNREADABLE_PLACEHOLDER } from '#utils/sensitive.js';
+import { cutAddressTail } from '#utils/string.js';
 import {
   isArray,
   isFunction,
@@ -10,7 +12,6 @@ import {
 import pino from 'pino';
 
 const LINE_BREAK = '\n';
-const QUERY_SEPARATOR = '?';
 const CUT_MARK = '…';
 
 const DEFAULT_ERROR_TYPE = 'Error';
@@ -33,19 +34,11 @@ function readProperty(source, key) {
   }
 }
 
-function cutQuery(text, mark = '') {
-  const queryStart = text.indexOf(QUERY_SEPARATOR);
-
-  return queryStart === -1
-    ? text
-    : `${text.slice(0, queryStart)}${mark}`;
-}
-
 // Only the first line of a stack repeats the message.
-function cutStackQuery(stack) {
+function cutStackAddressTail(stack) {
   const [head, ...frames] = stack.split(LINE_BREAK);
 
-  return [cutQuery(head, CUT_MARK), ...frames].join(LINE_BREAK);
+  return [cutAddressTail(head, CUT_MARK), ...frames].join(LINE_BREAK);
 }
 
 function readErrorTexts(error) {
@@ -58,10 +51,10 @@ function readErrorTexts(error) {
 
   return {
     message: isString(message)
-      ? cutQuery(message, CUT_MARK)
+      ? cutAddressTail(message, CUT_MARK)
       : message,
     stack: isString(stack)
-      ? cutStackQuery(stack)
+      ? cutStackAddressTail(stack)
       : stack,
   };
 }
@@ -117,7 +110,7 @@ function toPlainObject(value) {
   }
 
   return value instanceof String
-    ? maskDbErrorValues(String(value))
+    ? maskErrorValues(String(value))
     : { ...value };
 }
 
@@ -131,7 +124,7 @@ function readJsonForm(value, key) {
   }
 
   if (isString(written)) {
-    return maskDbErrorValues(written);
+    return maskErrorValues(written);
   }
 
   return written === null || typeof written !== 'object' || isArray(written)
@@ -157,10 +150,8 @@ function readObjectForm(value, key) {
 
 // The text of the driver may be the key of an entry as well: a tally of failures by their message.
 function maskKeys(container) {
-  const names = Object.keys(container);
-
-  return names.some((name) => maskDbErrorValues(name) !== name)
-    ? Object.fromEntries(names.map((name) => [maskDbErrorValues(name), container[name]]))
+  return Object.keys(container).some((name) => maskErrorValues(name) !== name)
+    ? mapKeys(container, (name) => maskErrorValues(name))
     : container;
 }
 
@@ -172,7 +163,7 @@ function cleanLogValue(value, key) {
   }
 
   if (isString(value)) {
-    return maskDbErrorValues(value);
+    return maskErrorValues(value);
   }
 
   if (value === null || typeof value !== 'object' || isArray(value)) {
@@ -197,7 +188,7 @@ export function serializeError(error) {
 function serializeRequest(request) {
   return {
     method: request?.method,
-    url: cutQuery(String(request?.url ?? '')),
+    url: cutAddressTail(String(request?.url ?? '')),
     host: request?.host,
     remoteAddress: request?.ip,
   };
@@ -210,7 +201,7 @@ function serializeReply(reply) {
 }
 
 // pino copies err.message into msg when a call gives no message of its own, and that copy passes by
-// serializers.err: it is cleaned the same way, a message that is not a text included.
+// serializers.err: it is masked the same way, a message that is not a text included.
 const SERIALIZERS = Object.freeze({
   err: serializeError,
   msg: serializeError,
@@ -245,6 +236,27 @@ function maskMergeObject(merge) {
     : { [MERGE_FALLBACK_KEY]: masked };
 }
 
+function readLoggedError(first) {
+  if (first instanceof Error) {
+    return first;
+  }
+
+  return isObject(first)
+    ? readProperty(first, 'err')
+    : undefined;
+}
+
+// Fastify warns of a reply sent twice with { err } alone, and the message pino would copy from it holds the raw URL:
+// such a call gets the message cut the way serializers.err cuts it.
+function logWithCutMessage(args, method) {
+  const error = readLoggedError(args[0]);
+  const isCopied = args.length === 1 && URL_ERROR_CODES.includes(readProperty(Object(error), 'code'));
+
+  return isCopied
+    ? method.apply(this, [args[0], readErrorTexts(error).message])
+    : method.apply(this, args);
+}
+
 export function createLogger({ level, isPretty = false, stream } = {}) {
   if (!level) {
     throw new TypeError('createLogger({ level }) requires a log level');
@@ -259,6 +271,9 @@ export function createLogger({ level, isPretty = false, stream } = {}) {
     serializers: SERIALIZERS,
     formatters: {
       log: maskMergeObject,
+    },
+    hooks: {
+      logMethod: logWithCutMessage,
     },
     ...(isPretty && {
       transport: {

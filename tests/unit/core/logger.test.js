@@ -603,6 +603,37 @@ describe('createLogger: err serializer', () => {
     assert.equal(hasText(texts, 'query-secret'), false);
   });
 
+  test('cuts the address out of the message pino copies from such an error when the call gives none of its own', () => {
+    const { log, lines, texts } = createTestLogger();
+
+    log.warn({ err: new errorCodes.FST_ERR_REP_ALREADY_SENT('/twice?token=query-secret', 'GET') });
+    log.warn(new errorCodes.FST_ERR_BAD_URL('/files/%FF?token=query-secret'));
+
+    assert.equal(lines[0].msg, 'Reply was already sent, did you forget to "return reply" in "/twice…');
+    assert.equal(lines[1].msg, "'/files/%FF…");
+    assert.equal(hasText(texts, QUERY_SECRET), false);
+  });
+
+  test('writes no query of the warning Fastify gives for a reply sent twice: it logs { err } with no message', async (t) => {
+    const sink = createTextSink();
+    const fastify = await buildLoggedApp(sink);
+
+    t.after(() => fastify.close());
+    fastify.get('/twice', async (request, reply) => {
+      reply.ok({ isSent: true });
+      reply.ok({ isSent: true });
+
+      return reply;
+    });
+
+    const response = await fastify.inject(`/twice?token=${QUERY_SECRET}`);
+    const warning = sink.lines.find((line) => line.err?.code === 'FST_ERR_REP_ALREADY_SENT');
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(warning.msg, 'Reply was already sent, did you forget to "return reply" in "/twice…');
+    assert.equal(hasText(sink.texts, QUERY_SECRET), false);
+  });
+
   test('keeps the type, the message and the stack it built when the error has properties of the same names', () => {
     const { log, lines } = createTestLogger();
     const error = Object.assign(new TypeError('Real message'), { type: 'fake', stack: 'fake stack', message: 'Own message' });

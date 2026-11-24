@@ -33,7 +33,7 @@ const MESSAGE_SEPARATOR = '; ';
 
 const UNKNOWN_ERROR_MESSAGE = 'Database error';
 const POOL_SATURATED_MESSAGE = 'The queue of the database pool is full';
-const POOL_SATURATED_CODE = 'POOL_QUEUE_FULL';
+export const POOL_SATURATED_CODE = 'POOL_QUEUE_FULL';
 
 const IDENTIFIER_REGEXP = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
 const EXPRESSION_COLUMN = 'a column named by its expression';
@@ -376,8 +376,9 @@ function refuseWhenUnavailable(dbError) {
     : dbError;
 }
 
-// "isScript" is for a statement whose text is a file of the repository and carries no value of a request.
-export function toDbError(error, { isScript = false } = {}) {
+// "isScript" is for a statement whose text is a file of the repository and carries no value of a request,
+// "isConnectFailure" for an error of opening a connection: it is about the database, whatever statement waits for it.
+export function toDbError(error, { isScript = false, isConnectFailure = false } = {}) {
   if (error instanceof DbError || error instanceof AppError) {
     return error;
   }
@@ -394,6 +395,7 @@ export function toDbError(error, { isScript = false } = {}) {
     errno: error?.errno,
     sqlState: error?.sqlState,
     isFatal: isConnectionLost(error) || null,
+    isConnectFailure: isConnectFailure || null,
   }));
 }
 

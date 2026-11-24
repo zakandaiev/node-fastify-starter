@@ -69,6 +69,19 @@ export function mapValues(object, toValue) {
   }, Object.create(null));
 }
 
+// Without a prototype, as mapValues() gives it. Two keys that map to one take the value of the later.
+export function mapKeys(object, toKey) {
+  if (!isObject(object) || !isFunction(toKey)) {
+    throw new TypeError('mapKeys(object, toKey) requires a plain object and a function');
+  }
+
+  return Object.entries(object).reduce((result, [key, value]) => {
+    result[toKey(key, value)] = value;
+
+    return result;
+  }, Object.create(null));
+}
+
 // The set holds the branch being walked, not everything visited: a value shared by two keys is not a cycle.
 function enterBranch(ancestors, container) {
   if (ancestors.has(container)) {

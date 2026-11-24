@@ -6,6 +6,7 @@ import {
   readFilterParameters,
 } from '#core/db/filter.js';
 import { assertSortEntries, SORT_PARAMETER } from '#core/db/sort.js';
+import { isRedirectStatus } from '#core/http/index.js';
 import { REQUEST_PARTS } from '#core/schema/walk.js';
 import { ERROR_CATALOG } from '#enums/error-code.js';
 import { FILTER_TYPE } from '#enums/filter-type.js';
@@ -43,7 +44,6 @@ const TEXT_TYPES = Object.freeze(['string']);
 const OPTION_FIELD_TYPES = Object.freeze(['string', 'number', 'integer', 'boolean']);
 const NUMBER_KEYWORDS = Object.freeze(['type', 'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf']);
 
-const REDIRECT_STATUS_MIN = 300;
 const STATUS_MAX = 599;
 
 // The statuses any route can answer with; a route that calls out adds 502 itself.
@@ -407,8 +407,7 @@ function buildEmptyResponse(statusCode, options = {}) {
 }
 
 function isEmptyStatus(statusCode) {
-  return statusCode === HTTP_STATUS.NO_CONTENT
-    || (statusCode >= REDIRECT_STATUS_MIN && statusCode < HTTP_STATUS.BAD_REQUEST);
+  return statusCode === HTTP_STATUS.NO_CONTENT || isRedirectStatus(statusCode);
 }
 
 function buildResponse(statusCode, options, sources) {

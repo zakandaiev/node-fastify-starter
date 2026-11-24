@@ -614,7 +614,10 @@ describe('db: service', { skip: testDb.skip }, () => {
 
     const kept = await readConnectionId();
 
-    await assert.rejects(signal('08S01', 1153), (error) => error instanceof DbError && error.errno === 1153 && error.isFatal === true);
+    await assert.rejects(
+      signal('08S01', 1153),
+      (error) => error instanceof DbError && error.errno === 1153 && error.isFatal === true && !Object.hasOwn(error, 'isConnectFailure'),
+    );
 
     assert.equal(kept, first);
     assert.equal(single.db.getStats().activeCount, 0);

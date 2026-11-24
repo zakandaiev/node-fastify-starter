@@ -54,6 +54,13 @@ const INLINE_TAGS = new Set([
   'small', 'span', 'strike', 'strong', 'sub', 'sup', 'time', 'tt', 'u', 'var', 'wbr',
 ]);
 
+const ADDRESS_TAIL_REGEXP = /[?#]/;
+// What follows a scheme, or a path in quotes whose tail begins before the quote that closes it, up to the next space.
+// "/^" begins a pattern, not a path.
+const ADDRESS_IN_TEXT_REGEXP = /(?<=[A-Za-z][A-Za-z\d+.-]{0,31}):\/\/\S+|(?<=(["'`]))\/(?!\^)(?:(?!\1)[^\s?#])*[?#]\S*/g;
+const FRAME_POSITION_REGEXP = /:\d+:\d+$/;
+const CLOSING_MARKS = Object.freeze([')', ']', '}', "'", '"', '`', '>', ',', '.', ';', ':']);
+
 const TRUNCATE_SUFFIX = '…';
 const GRAPHEME_SEGMENTER = new Intl.Segmenter('en', { granularity: 'grapheme' });
 const CODE_POINT_MAX_LENGTH = 2;
@@ -222,6 +229,43 @@ function cutAtGrapheme(text, length) {
     .containing(length);
 
   return text.slice(0, index);
+}
+
+// The query and the fragment of an address carry OAuth codes, tokens and the initData of a Mini App.
+export function cutAddressTail(value, mark = '') {
+  const text = toString(value);
+  const start = text.search(ADDRESS_TAIL_REGEXP);
+
+  return start === -1
+    ? text
+    : `${text.slice(0, start)}${mark}`;
+}
+
+function cutFoundAddress(address) {
+  const start = address.search(ADDRESS_TAIL_REGEXP);
+
+  if (start === -1) {
+    return address;
+  }
+
+  const tail = address.slice(start);
+  let closingAt = tail.length;
+
+  // Walked back by hand: a pattern for the closing marks at the end tries every place in a long run of them.
+  while (closingAt > 0 && CLOSING_MARKS.includes(tail[closingAt - 1])) {
+    closingAt -= 1;
+  }
+
+  const [position = ''] = FRAME_POSITION_REGEXP.exec(tail.slice(0, closingAt)) ?? [];
+
+  return `${address.slice(0, start)}${position}${tail.slice(closingAt)}`;
+}
+
+// Every address with "://" inside a text, and every path in quotes that starts with "/" and whose tail begins before the
+// same quote comes again, loses its query and fragment up to the next space: a browser leaves ( ) ' and ` raw there. The
+// line and the column of a frame stay, with the marks that close the address. A path without quotes is any text.
+export function cutAddressTails(value) {
+  return toString(value).replace(ADDRESS_IN_TEXT_REGEXP, cutFoundAddress);
 }
 
 export function truncate(value, maxLength, suffix = TRUNCATE_SUFFIX) {

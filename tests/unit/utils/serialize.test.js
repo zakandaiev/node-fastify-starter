@@ -1,5 +1,5 @@
 import { keyBy } from '#utils/array.js';
-import { deserializeValue, serializeValue } from '#utils/serialize.js';
+import { deserializeValue, serializeValue, toJsonTree } from '#utils/serialize.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
@@ -214,5 +214,99 @@ describe('serializeValue and deserializeValue', () => {
     malformed.forEach((text) => assert.throws(() => deserializeValue(text), /does not write/, text));
     assert.throws(() => deserializeValue('{"a":'), SyntaxError);
     assert.throws(() => deserializeValue(Buffer.from('1')), /requires a string/);
+  });
+});
+
+describe('toJsonTree', () => {
+  test('gives what JSON keeps of a value: an instance, a date and a toJSON() in their plain form, no undefined, no function', () => {
+    const tree = toJsonTree({
+      account: Object.assign(Object.create({ greet() {} }), { name: 'Anna', apiToken: 'token-value' }),
+      at: new Date(0),
+      own: { toJSON: () => ({ id: 1 }) },
+      missing: undefined,
+      run() {},
+      list: [1, undefined, null],
+    });
+
+    assert.deepEqual(tree, {
+      account: { name: 'Anna', apiToken: 'token-value' },
+      at: '1970-01-01T00:00:00.000Z',
+      own: { id: 1 },
+      list: [1, null, null],
+    });
+    assert.equal(Object.getPrototypeOf(tree.account), Object.prototype);
+    assert.equal(toJsonTree(undefined), null);
+  });
+
+  test('writes a bigint as its text and a lone surrogate as U+FFFD, inside a string of any depth', () => {
+    const half = String.fromCharCode(0xD83D);
+    const replacement = String.fromCharCode(0xFFFD);
+
+    assert.deepEqual(toJsonTree({ count: 10n, texts: [`Anna ${half}`], nested: { text: half } }), {
+      count: '10',
+      texts: [`Anna ${replacement}`],
+      nested: { text: replacement },
+    });
+  });
+
+  test('shares nothing: what was met twice comes back as two values', () => {
+    const scopes = ['users:read'];
+    const tree = toJsonTree({ requested: scopes, granted: scopes });
+
+    assert.deepEqual(tree, { requested: ['users:read'], granted: ['users:read'] });
+    assert.notEqual(tree.requested, tree.granted);
+    assert.notEqual(tree.requested, scopes);
+  });
+
+  test('writes a lone surrogate of a key as U+FFFD too, in an object of any depth', () => {
+    const half = String.fromCharCode(0xD83D);
+    const replacement = String.fromCharCode(0xFFFD);
+
+    assert.deepEqual(toJsonTree({ [`a${half}`]: 1, list: [{ [half]: { [half]: 2 } }] }), {
+      [`a${replacement}`]: 1,
+      list: [{ [replacement]: { [replacement]: 2 } }],
+    });
+  });
+
+  test('cuts a tree that is nested deeper than it walks, where JSON.stringify() with a replacer runs out of the call stack', () => {
+    const half = String.fromCharCode(0xD83D);
+    const replacement = String.fromCharCode(0xFFFD);
+    const list = Array.from({ length: 5000 }).reduce((inner) => [inner], 'bottom');
+    const object = Array.from({ length: 5000 }).reduce((inner) => ({ inner }), 'bottom');
+    const halfKeys = Array.from({ length: 5000 }).reduce((inner) => ({ [half]: inner }), 'bottom');
+    const kept = Array.from({ length: 60 }).reduce((inner) => [inner], 'bottom');
+
+    assert.equal(JSON.stringify(toJsonTree(list)), `${'['.repeat(64)}"[depth limit]"${']'.repeat(64)}`);
+    assert.equal(JSON.stringify(toJsonTree(object)), `${'{"inner":'.repeat(64)}"[depth limit]"${'}'.repeat(64)}`);
+    assert.equal(JSON.stringify(toJsonTree(halfKeys)), `${`{"${replacement}":`.repeat(64)}"[depth limit]"${'}'.repeat(64)}`);
+    assert.deepEqual(toJsonTree(kept), kept);
+  });
+
+  test('counts the depth of a value that is met twice at each place of its own', () => {
+    const shared = Array.from({ length: 40 }).reduce((inner) => [inner], 'bottom');
+    const buried = Array.from({ length: 30 }).reduce((inner) => [inner], shared);
+    const [cut, whole] = toJsonTree([buried, shared]);
+
+    assert.match(JSON.stringify(cut), /"\[depth limit\]"/);
+    assert.deepEqual(whole, shared);
+  });
+
+  test('throws on a cycle, also through an object whose key is not well formed', () => {
+    const half = String.fromCharCode(0xD83D);
+    const cycle = {};
+    const halfCycle = {};
+
+    cycle.self = cycle;
+    halfCycle[half] = halfCycle;
+
+    assert.throws(() => toJsonTree(cycle), TypeError);
+    assert.throws(() => toJsonTree(halfCycle), TypeError);
+  });
+
+  test('takes an instance whose key is not well formed', () => {
+    const half = String.fromCharCode(0xD83D);
+    const instance = Object.assign(Object.create({ greet() {} }), { [half]: 1 });
+
+    assert.deepEqual(toJsonTree(instance), { [String.fromCharCode(0xFFFD)]: 1 });
   });
 });

@@ -4,4 +4,5 @@ export const TABLE = Object.freeze({
   GROUPS: 'groups',
   GROUP_SCOPES: 'group_scopes',
   USER_GROUPS: 'user_groups',
+  AUDIT_LOGS: 'audit_logs',
 });

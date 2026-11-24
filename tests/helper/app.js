@@ -18,3 +18,20 @@ export function readRequestId(response) {
 
   return requestId;
 }
+
+export function successBody(response, data) {
+  return {
+    status: 'success',
+    data,
+    meta: { requestId: readRequestId(response) },
+  };
+}
+
+export function errorBody(response, code, message) {
+  return {
+    status: 'error',
+    code,
+    message,
+    meta: { requestId: readRequestId(response) },
+  };
+}

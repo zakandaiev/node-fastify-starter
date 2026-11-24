@@ -1,5 +1,5 @@
 import { findContext, runInContext, runOutsideContext } from '#core/context/index.js';
-import { convertStringToMs } from '#utils/date.js';
+import { assertDurations, convertStringToMs } from '#utils/date.js';
 import {
   isArray,
   isFunction,
@@ -7,6 +7,7 @@ import {
   isObject,
   isPositiveInteger,
 } from '#utils/type.js';
+import { takeWindowSlot } from '#utils/window.js';
 import { Pipeline, Redis } from 'ioredis';
 
 const READY_STATUS = 'ready';
@@ -57,9 +58,7 @@ function assertConfig(config) {
     throw new TypeError('config.redis requires a keyPrefix: keys without one would mix with those of every other app on the server');
   }
 
-  if (!DURATION_KEYS.every((key) => convertStringToMs(config[key]) > 0)) {
-    throw new TypeError(`config.redis requires ${DURATION_KEYS.join(', ')} to be above zero`);
-  }
+  assertDurations(config, DURATION_KEYS, 'config.redis');
 
   // A command must fail by its own deadline first: the socket torn down earlier would answer it with a reset instead.
   if (convertStringToMs(config.socketTimeout) < convertStringToMs(config.commandTimeout)) {
@@ -533,19 +532,15 @@ function readErrorKind(error) {
 // message and kind of failure in a window, and the count of the rest goes into the next line.
 function reportFailure(state, error, message) {
   const key = `${message}${FAILURE_KEY_SEPARATOR}${readErrorKind(error)}`;
-  const now = performance.now();
-  const previous = state.failures.get(key);
+  const slot = takeWindowSlot(state.failures, key, { windowMs: state.failureLogWindowMs, now: performance.now() });
 
-  if (previous && now < previous.until) {
-    previous.suppressedCount += 1;
-
+  if (!slot.isAllowed) {
     return false;
   }
 
-  state.failures.set(key, { until: now + state.failureLogWindowMs, suppressedCount: 0 });
   findLog(state).error({
     err: toLoggableError(error),
-    redis: { address: state.address, suppressedCount: previous?.suppressedCount ?? 0 },
+    redis: { address: state.address, suppressedCount: slot.suppressedCount },
   }, message);
 
   return true;

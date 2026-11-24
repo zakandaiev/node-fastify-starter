@@ -4,6 +4,7 @@ import {
   diff,
   freezeDeep,
   getPath,
+  mapKeys,
   mapValues,
   omit,
   pick,
@@ -866,6 +867,24 @@ describe('diff', () => {
       assert.throws(() => diff(value, {}), { name: 'TypeError', message: /^diff\(before, after\) requires/ });
       assert.throws(() => diff({}, value), TypeError);
     });
+  });
+});
+
+describe('mapKeys', () => {
+  test('renames every key and keeps the values, in a map without a prototype', () => {
+    const mapped = mapKeys({ 'Content-Type': 'text/plain', Accept: 'application/json' }, (key) => key.toLowerCase());
+
+    assert.deepEqual({ ...mapped }, { 'content-type': 'text/plain', accept: 'application/json' });
+    assert.equal(Object.getPrototypeOf(mapped), null);
+  });
+
+  test('gives two keys that map to one the value of the later', () => {
+    assert.deepEqual({ ...mapKeys({ Accept: 'a', accept: 'b' }, (key) => key.toLowerCase()) }, { accept: 'b' });
+  });
+
+  test('requires a plain object and a function', () => {
+    assert.throws(() => mapKeys([], String), { name: 'TypeError', message: 'mapKeys(object, toKey) requires a plain object and a function' });
+    assert.throws(() => mapKeys({}, 'lower'), { name: 'TypeError' });
   });
 });
 

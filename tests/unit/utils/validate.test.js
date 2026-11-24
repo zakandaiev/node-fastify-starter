@@ -7,6 +7,7 @@ import {
   isPhone,
   isPrivateAddress,
   isSafeRedirectPath,
+  isWebUrl,
 } from '#utils/validate.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
@@ -396,6 +397,20 @@ describe('isPrivateAddress', () => {
 
   test('rejects what is not a string', () => {
     assertAll(isPrivateAddress, NOT_STRINGS, false);
+  });
+});
+
+describe('isWebUrl', () => {
+  test('takes an http or https address without credentials', () => {
+    ['https://hooks.example.com/services/T/B/X', 'http://127.0.0.1:8080/hook?token=abc', 'https://EXAMPLE.com'].forEach((value) => {
+      assert.equal(isWebUrl(value), true, value);
+    });
+  });
+
+  test('refuses credentials, which fetch() refuses to send, another scheme, and what is not an address', () => {
+    ['https://user:pass@hooks.example.com/x', 'https://user@hooks.example.com/x', 'https://:pass@hooks.example.com/x', 'ftp://example.com/x', 'mailto:anna@example.com', 'file:///etc/passwd', '//example.com/x', 'not a url', '', null, 42, new URL('https://example.com')].forEach((value) => {
+      assert.equal(isWebUrl(value), false, String(value));
+    });
   });
 });
 

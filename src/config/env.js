@@ -1,5 +1,6 @@
 import { resolvePath } from '#config/path.js';
 import { isBlankString } from '#utils/type.js';
+import { isWebUrl } from '#utils/validate.js';
 import Ajv from 'ajv';
 import { readFileSync } from 'node:fs';
 import nodePath from 'node:path';
@@ -29,12 +30,18 @@ const FORMATS = Object.freeze({
   // docker compose interpolates $ " \ in env files, base64url has none of them
   base64url: /^[A-Za-z0-9_-]+$/,
   'host[:port]': isPublicHost,
+  // A channel with an address fetch() refuses would only show itself as an alert that never came.
+  url: isWebUrl,
+  'telegram-bot-token': /^[0-9]+:[A-Za-z0-9_-]+$/,
+  // The id of a group, negative, or the @name of a public channel.
+  'telegram-chat-id': /^(?:-?[0-9]+|@[A-Za-z][A-Za-z0-9_]{4,31})$/,
 });
 
 const TEXT = { type: 'string' };
 const PORT = { type: 'integer', minimum: 1, maximum: 65535 };
 const SIGNING_SECRET = { type: 'string', minLength: SECRET_MIN_LENGTH, format: 'base64url' };
 const PUBLIC_HOST = { type: 'string', format: 'host[:port]' };
+const WEB_URL = { type: 'string', format: 'url' };
 
 export const ENV_SCHEMA = Object.freeze({
   type: 'object',
@@ -87,18 +94,23 @@ export const ENV_SCHEMA = Object.freeze({
     APP_JWT_REFRESH_SECRET: SIGNING_SECRET,
     APP_JWT_REFRESH_SECRET_PREVIOUS: SIGNING_SECRET,
 
-    APP_ALERT_WEBHOOK_URL: TEXT,
-    APP_ALERT_SLACK_URL: TEXT,
-    APP_ALERT_DISCORD_URL: TEXT,
+    APP_ALERT_TELEGRAM_BOT_TOKEN: { type: 'string', format: 'telegram-bot-token' },
+    APP_ALERT_TELEGRAM_CHAT_ID: { type: 'string', format: 'telegram-chat-id' },
+    APP_ALERT_WEBHOOK_URL: WEB_URL,
+    APP_ALERT_SLACK_URL: WEB_URL,
+    APP_ALERT_DISCORD_URL: WEB_URL,
 
     APP_LOG_API_KEY: TEXT,
   },
-  // A setting of the cache Redis without its host would leave the cache in the main Redis without a word.
+  // A setting of the cache Redis without its host would leave the cache in the main Redis without a word,
+  // and half of the settings of a channel would leave the channel off the same way.
   dependencies: {
     APP_CACHE_REDIS_HOST: ['APP_CACHE_REDIS_PORT'],
     APP_CACHE_REDIS_PORT: ['APP_CACHE_REDIS_HOST'],
     APP_CACHE_REDIS_USER: ['APP_CACHE_REDIS_HOST'],
     APP_CACHE_REDIS_PASSWORD: ['APP_CACHE_REDIS_HOST'],
+    APP_ALERT_TELEGRAM_BOT_TOKEN: ['APP_ALERT_TELEGRAM_CHAT_ID'],
+    APP_ALERT_TELEGRAM_CHAT_ID: ['APP_ALERT_TELEGRAM_BOT_TOKEN'],
   },
 });
 

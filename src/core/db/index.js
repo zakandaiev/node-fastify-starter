@@ -9,8 +9,9 @@ import {
   withTransaction,
 } from '#core/db/transaction.js';
 import { camelToSnakeKey, rowToCamel } from '#utils/case.js';
-import { convertStringToMs } from '#utils/date.js';
+import { assertDurations, convertStringToMs } from '#utils/date.js';
 import { UUID_LENGTH } from '#utils/id.js';
+import { mapKeys } from '#utils/object.js';
 import {
   isArray,
   isFunction,
@@ -64,9 +65,7 @@ function assertConfig(config) {
     throw new TypeError('config.db requires connectionLimit to be a positive integer and queueLimit an integer that is not negative');
   }
 
-  if (!DURATION_KEYS.every((key) => convertStringToMs(config[key]) > 0)) {
-    throw new TypeError(`config.db requires ${DURATION_KEYS.join(', ')} to be above zero`);
-  }
+  assertDurations(config, DURATION_KEYS, 'config.db');
 }
 
 // The form of the statement goes to "info", its values to "debug" only: they are personal data,
@@ -248,8 +247,9 @@ function buildInsert(driver, table, row, caller) {
   return `INSERT INTO ${driver.quoteName(table)} (${names}) VALUES (${placeholders})`;
 }
 
+// The driver gets a plain object again: mapKeys() gives one without a prototype.
 function prefixKeys(row, prefix) {
-  return Object.fromEntries(Object.entries(row).map(([field, value]) => [`${prefix}${field}`, value]));
+  return { ...mapKeys(row, (field) => `${prefix}${field}`) };
 }
 
 function buildAssignments(columns, prefix, separator) {
