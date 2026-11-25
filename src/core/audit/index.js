@@ -5,15 +5,14 @@ import { TABLE } from '#enums/table.js';
 import { isUuid, uuidv7 } from '#utils/id.js';
 import { maskSensitiveDeep } from '#utils/sensitive.js';
 import { toJsonTree } from '#utils/serialize.js';
-import { isNonEmptyString, isObject, isString } from '#utils/type.js';
-import { isIP } from 'node:net';
+import { isObject, isString } from '#utils/type.js';
+import { toIpAddress } from '#utils/validate.js';
 
 const SIGNATURE = 'writeAudit({ action, entityType, entityId, actorId, meta, request })';
 
 // <entity>.<verb>, as the columns of audit_logs hold them.
 const ACTION_REGEXP = /^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$/;
 const ACTION_MAX_LENGTH = 64;
-const IP_MAX_LENGTH = 45;
 
 function assertOptional(value, isValid, message) {
   if (value !== undefined && value !== null && !isValid(value)) {
@@ -36,16 +35,6 @@ function assertEntry({
   assertOptional(entityId, isUuid, 'entityId to be the UUID of a row');
   assertOptional(actorId, isUuid, 'actorId to be the UUID of a user');
   assertOptional(meta, isObject, 'meta to be a plain object');
-}
-
-// request.ip may be a text a client wrote: a proxy that passes X-Forwarded-For on as it came leaves it there. The column
-// keeps addresses only, and a text longer than it would fail the insert, and with it the action the record belongs to.
-function readIp(request) {
-  const ip = request?.ip;
-
-  return isNonEmptyString(ip) && ip.length <= IP_MAX_LENGTH && isIP(ip)
-    ? ip
-    : null;
 }
 
 // The mask walks plain objects and lists, and takes what it meets twice for a cycle: it gets the tree JSON makes of
@@ -75,7 +64,7 @@ export async function writeAudit(entry = {}) {
     entityType: entry.entityType ?? null,
     entityId: entry.entityId ?? null,
     meta: readMeta(entry.meta),
-    ip: readIp(request),
+    ip: toIpAddress(request?.ip),
     requestId: request?.id ?? findContext()?.requestId ?? null,
   }, { returning: ['id'] });
 

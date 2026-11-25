@@ -24,6 +24,9 @@ const TITLE_MAX_LENGTH = 200;
 const USER_AGENT_MAX_LENGTH = 256;
 const URL_MAX_LENGTH = 2048;
 
+// What a request line may name in front of the path.
+const REQUEST_ORIGIN_REGEXP = /^(?:[a-z][a-z\d+.-]*:\/\/)?[^/]*/i;
+
 const CAUSE_SEPARATOR = ':';
 const UNREADABLE_CAUSE = 'unreadable';
 
@@ -65,12 +68,13 @@ export function describeRequest(request) {
   });
 }
 
-function readRequestUrl(request) {
-  return `${request.protocol}://${request.host}${cutAddressTail(request.url)}`;
+// The host is ours, not the one the request names: an admin follows this link.
+function readRequestUrl(request, appConfig) {
+  return `${appConfig.url}${cutAddressTail(request.url).replace(REQUEST_ORIGIN_REGEXP, '')}`;
 }
 
 // null is an alert about no address: a report of the frontend without a page must not show the address of the intake.
-function readUrl({ url, request }) {
+function readUrl({ url, request }, appConfig) {
   if (url !== undefined) {
     return isNonEmptyString(url)
       ? truncate(cutAddressTail(url), URL_MAX_LENGTH)
@@ -78,7 +82,7 @@ function readUrl({ url, request }) {
   }
 
   return request
-    ? truncate(readRequestUrl(request), URL_MAX_LENGTH)
+    ? truncate(readRequestUrl(request, appConfig), URL_MAX_LENGTH)
     : null;
 }
 
@@ -109,7 +113,7 @@ export function buildAlertMessage({
     isSilent,
     blocks: [
       toBlock(ALERT_BLOCK.APP, { name, version, mode }),
-      toBlock(ALERT_BLOCK.URL, readUrl({ url, request })),
+      toBlock(ALERT_BLOCK.URL, readUrl({ url, request }, appConfig)),
       toBlock(ALERT_BLOCK.ERROR, error === undefined ? null : cleanValue(error)),
       toBlock(ALERT_BLOCK.REQUEST, request ? describeRequest(request) : null),
       toBlock(ALERT_BLOCK.CLIENT, client === undefined ? null : cleanValue(client)),

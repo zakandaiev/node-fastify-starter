@@ -64,7 +64,7 @@ describe('error-alert plugin with a database', { skip: testDb.skip }, () => {
 
     assert.deepEqual(statuses, [500, 500]);
     assert.deepEqual(readTitles(receiver), [SERVER_ERROR_TITLE, SERVER_ERROR_TITLE]);
-    assert.deepEqual(readUrls(receiver), ['http://localhost:80/first', 'http://localhost:80/second']);
+    assert.deepEqual(readUrls(receiver), ['https://app.test/first', 'https://app.test/second']);
   });
 
   test('sends one "Database connection failed" for a database that refuses the account, whatever route meets it', async (t) => {

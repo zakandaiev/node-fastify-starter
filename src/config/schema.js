@@ -6,6 +6,9 @@ export const SCHEMA_LIMITS = Object.freeze({
   // A filter of several values that comes as a list separated by commas, such as ?groupId=<id>,<id>.
   listMaxValues: 20,
 
+  // The user agent of a session, as its column holds it: the browser inside an app sends a longer one.
+  userAgentMaxLength: 255,
+
   // POST /log/error: the body of a report, and the raw length of each text of it that is cut afterwards.
   reportMaxLength: 64 * 1024,
 });

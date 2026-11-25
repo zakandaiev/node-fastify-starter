@@ -1,5 +1,6 @@
 import {
   createOverloadError,
+  createTransactionTimeoutError,
   DbError,
   describeColumn,
   findDbError,
@@ -7,6 +8,7 @@ import {
   isIdentifier,
   isLockConflict,
   isMissingTable,
+  isTransactionTimeout,
   maskDbErrorValues,
   toDbError,
 } from '#core/db/error.js';
@@ -15,6 +17,7 @@ import { createLogger } from '#core/logger/index.js';
 import { DB_ERROR_KIND } from '#enums/db-error-kind.js';
 import { ERROR_CODE } from '#enums/error-code.js';
 import { createLogSink } from '#root/tests/helper/log.js';
+import { pick } from '#utils/object.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
@@ -326,6 +329,54 @@ describe('DbError', () => {
 
     assert.deepEqual(Object.keys(error), ['code']);
     assert.deepEqual(Object.keys(new DbError('Database error')), []);
+  });
+
+  test('keeps its cause as any other error does, not among its details, and the log writes it', () => {
+    const sink = createLogSink();
+    const cause = new TypeError('The reason');
+    const error = new DbError('Database error', { code: 'SOME_CODE', cause });
+
+    createLogger({ level: 'info', stream: sink.stream }).error({ err: error }, 'Statement failed');
+
+    assert.equal(error.cause, cause);
+    assert.deepEqual({ ...error }, { code: 'SOME_CODE' });
+    assert.deepEqual(pick(sink.lines[0].err.cause, ['type', 'message']), { type: 'TypeError', message: 'The reason' });
+  });
+
+  test('has no cause when it is given none', () => {
+    [new DbError('Database error'), new DbError('Database error', { code: 'SOME_CODE' }), new DbError('Database error', { cause: undefined })].forEach((error) => {
+      assert.equal(Object.hasOwn(error, 'cause'), false);
+    });
+  });
+});
+
+describe('createTransactionTimeoutError', () => {
+  test('is a DbError without a kind, so nothing takes it for a reason to run the transaction again or for an overload', () => {
+    const error = createTransactionTimeoutError();
+
+    assert.ok(error instanceof DbError);
+    assert.deepEqual({ ...error }, { code: 'TRANSACTION_TIMEOUT' });
+    assert.match(error.message, /nothing committed/);
+    assert.equal(isLockConflict(error), false);
+  });
+
+  test('has the cause it is given, and the same details with it', () => {
+    const cause = new DOMException('The operation timed out', 'TimeoutError');
+    const error = createTransactionTimeoutError(cause);
+
+    assert.equal(error.cause, cause);
+    assert.deepEqual({ ...error }, { code: 'TRANSACTION_TIMEOUT' });
+    assert.equal(Object.hasOwn(createTransactionTimeoutError(), 'cause'), false);
+  });
+
+  test('is told by isTransactionTimeout(), also behind a 503, and nothing else is', () => {
+    const error = createTransactionTimeoutError();
+
+    assert.equal(isTransactionTimeout(error), true);
+    assert.equal(isTransactionTimeout(new AppError(ERROR_CODE.SERVICE_UNAVAILABLE_ERROR, { cause: error })), true);
+    [new DbError('other', { code: 'ER_LOCK_DEADLOCK' }), new Error('plain'), Object.assign(new Error('plain'), { code: 'TRANSACTION_TIMEOUT' }), null].forEach((other) => {
+      assert.equal(isTransactionTimeout(other), false);
+    });
   });
 });
 

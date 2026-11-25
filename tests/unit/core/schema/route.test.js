@@ -4,21 +4,26 @@ import {
   readDocumentedSchema,
   rememberSourceSchema,
 } from '#core/schema/docs.js';
-import { assertRouteContract, createRouteHook } from '#core/schema/route.js';
+import { assertRouteContract, AUTH_DECORATOR, createRouteHook } from '#core/schema/route.js';
 import { pingSchema } from '#root/src/routes/v1/system/controller.js';
 import { buildTestApp } from '#root/tests/helper/app.js';
 import { errorEnvelope, listEnvelope, successEnvelope } from '#schemas/common/envelope.js';
 import { json, nullable } from '#schemas/common/field.js';
 import { freezeDeep } from '#utils/object.js';
+import Fastify from 'fastify';
+import fp from 'fastify-plugin';
+import symbols from 'fastify/lib/symbols.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
 const PREFIXES = Object.freeze({ apiPrefix: '/api', healthPrefix: '/health' });
 const PUBLIC = Object.freeze({ auth: false });
+const GUARDED = Object.freeze({ auth: true });
 
 const NO_SECURITY = /GET \/api\/v1\/items\b.*security/;
 const NO_RESPONSE = /GET \/api\/v1\/items\b.*response/;
 const NO_TYPED_DATA = /GET \/api\/v1\/items\b.*data/;
+const OUT_OF_REACH = 'has security: { auth: true } and is out of reach of the auth plugin, which guards what is declared after it, in scopes opened after it';
 
 // The nested object matters: a schema the serializer merges wrongly filters the row itself and writes what is under it whole.
 const ROW = Object.freeze({
@@ -105,6 +110,15 @@ async function createApp(t, overrides) {
   const fastify = await buildTestApp(overrides);
 
   t.after(() => fastify.close());
+
+  return fastify;
+}
+
+function createAppWithoutPlugins(t) {
+  const fastify = Fastify();
+
+  t.after(() => fastify.close());
+  fastify.addHook('onRoute', createRouteHook(PREFIXES));
 
   return fastify;
 }
@@ -201,6 +215,60 @@ describe('createRouteHook', () => {
     assert.throws(() => checkRoute({ method: 'GET', url: '/status' }), /security/);
     assert.doesNotThrow(() => checkRoute({ method: 'GET', url: '/api/items' }));
     assert.doesNotThrow(() => checkRoute({ method: 'GET', url: '/health' }));
+  });
+
+  test('the hook refuses a route with security.auth: true on an instance the auth plugin has not reached, under a prefix or not, and names it with every method', (t) => {
+    const fastify = createAppWithoutPlugins(t);
+    const { schema } = createRoute();
+
+    assert.throws(
+      () => fastify.get('/api/v1/items', { schema, security: GUARDED }, readRow),
+      { name: 'Error', message: `Route GET /api/v1/items ${OUT_OF_REACH}` },
+    );
+    assert.throws(
+      () => fastify.get('/items', { security: { auth: true, scopes: ['items:read'] } }, readRow),
+      { name: 'Error', message: `Route GET /items ${OUT_OF_REACH}` },
+    );
+    assert.throws(
+      () => fastify.route({
+        method: ['PUT', 'PATCH'], url: '/items/:id', security: GUARDED, handler: readRow,
+      }),
+      { name: 'Error', message: `Route PUT,PATCH /items/:id ${OUT_OF_REACH}` },
+    );
+    assert.deepEqual(['/api/v1/items', '/items'].map((url) => fastify.hasRoute({ method: 'GET', url })), [false, false]);
+  });
+
+  test('the hook refuses one beside a plugin that has the name of the auth plugin, and gives requests a user as it does', async (t) => {
+    const fastify = createAppWithoutPlugins(t);
+
+    await fastify.register(fp(async (instance) => {
+      instance.decorateRequest('user', null);
+    }, { name: 'auth' }));
+
+    assert.throws(() => fastify.get('/items', { security: GUARDED }, readRow), { message: `Route GET /items ${OUT_OF_REACH}` });
+  });
+
+  test('the hook takes a public route there and one without security outside the prefixes, and one with security.auth: true behind the auth plugin', (t) => {
+    const fastify = createAppWithoutPlugins(t);
+    const { schema } = createRoute();
+
+    fastify.get('/api/v1/public', { schema, security: PUBLIC }, readRow);
+    fastify.get('/public', { security: PUBLIC }, readRow);
+    fastify.get('/plain', readRow);
+    fastify.decorateRequest(AUTH_DECORATOR, null);
+    fastify.get('/api/v1/items', { schema, security: GUARDED }, readRow);
+    fastify.get('/items', { security: GUARDED }, readRow);
+
+    const urls = ['/api/v1/public', '/public', '/plain', '/api/v1/items', '/items'];
+
+    assert.deepEqual(urls.filter((url) => ['GET', 'HEAD'].every((method) => fastify.hasRoute({ method, url }))), urls);
+  });
+
+  test('the hook called without an instance looks for no auth plugin: it checks the rest of the contract', () => {
+    const checkRoute = createRouteHook(PREFIXES);
+
+    assert.doesNotThrow(() => checkRoute(createRoute({ security: GUARDED })));
+    assert.throws(() => checkRoute(createRoute({ security: GUARDED, schema: undefined })), NO_RESPONSE);
   });
 
   test('the hook gates the expensive keywords of a request and guards the gated copy', () => {
@@ -1132,7 +1200,7 @@ describe('route contract in the app', () => {
     const fastify = await createApp(t);
 
     fastify.get('/api/v1/items/first', { schema: { response: { 200: successEnvelope(createItem()) } }, security: PUBLIC }, readRow);
-    fastify.get('/api/v1/items', { schema: { response: { 200: listEnvelope(createItem()) } }, security: { auth: true, scopes: ['items:read'] } }, (request, reply) => reply.list({ data: [ROW] }));
+    fastify.get('/api/v1/items', { schema: { response: { 200: listEnvelope(createItem()) } }, security: PUBLIC }, (request, reply) => reply.list({ data: [ROW] }));
 
     const [one, list] = await Promise.all(['/api/v1/items/first', '/api/v1/items'].map((url) => fastify.inject(url)));
 
@@ -1310,6 +1378,14 @@ describe('route contract in the app', () => {
   test('does not build an app whose prefix could never match a route', async () => {
     await assert.rejects(buildTestApp({ app: { apiPrefix: '/api/' } }), /prefix/i);
     await assert.rejects(buildTestApp({ app: { healthPrefix: 'health' } }), /prefix/i);
+  });
+
+  // Through the private list of Fastify: no plugin of the app declares a route under a prefix to look at instead.
+  test('is installed before the first plugin of the app: a route of any of them is checked', async (t) => {
+    const fastify = await createApp(t);
+    const [first] = fastify[symbols.kHooks].onRoute;
+
+    assert.throws(() => first.call(fastify, { method: 'GET', url: '/api/v1/items' }), NO_SECURITY);
   });
 
   test('is installed before buildApp loads its own routes: Fastify gets a copy of their schema', async (t) => {

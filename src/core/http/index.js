@@ -7,6 +7,7 @@ import { HTTP_METHOD } from '#enums/http-method.js';
 import { MEDIA_TYPE } from '#enums/media-type.js';
 import { UPSTREAM_FAILURE } from '#enums/upstream-failure.js';
 import { unique } from '#utils/array.js';
+import { isTimeoutError } from '#utils/async.js';
 import { createByteCollector } from '#utils/bytes.js';
 import { convertStringToMs } from '#utils/date.js';
 import {
@@ -53,7 +54,6 @@ const SEARCH_TEXT_REGEXP = /[^&=]+/g;
 // The second sign of padding of a base64 token is written as %3D once URLSearchParams sets another parameter.
 const PADDING_REGEXP = /^(?:=|%3D)*$/i;
 const PERCENT_ESCAPE_REGEXP = /%[0-9A-F]{2}/g;
-const TIMEOUT_ERROR_NAME = 'TimeoutError';
 const REDIRECT_MODE = 'manual';
 
 // What stays of a secret host: its last two labels, the site near enough without the list of public suffixes.
@@ -374,7 +374,7 @@ export function createUpstreamFailure(call, reason, extra = {}) {
 
 // The deadline covers the body too: the signal of fetch() also ends a body that is still streaming.
 function isTimeoutFailure(error, signal) {
-  return (signal.aborted && signal.reason?.name === TIMEOUT_ERROR_NAME) || error?.name === TIMEOUT_ERROR_NAME;
+  return (signal.aborted && isTimeoutError(signal.reason)) || isTimeoutError(error);
 }
 
 function readNetworkCode(error) {

@@ -26,6 +26,7 @@ import { convertStringToMs, convertStringToSeconds } from '#utils/date.js';
 import { sha256 } from '#utils/hash.js';
 import assert from 'node:assert/strict';
 import { beforeEach, describe, test } from 'node:test';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 const { SEED } = MIGRATION_TYPE;
 
@@ -73,6 +74,18 @@ const TABLE_LOCK_WAITS = Object.freeze([
 // An idle limit a file held at a gate outlasts, and one no server gives its sessions by itself.
 const SHORT_IDLE_TIMEOUT = '1s';
 const RUN_IDLE_TIMEOUT = '90m';
+
+// A wait for a lock the pool gives up at, a moment by which it has, and what holds the row of a file up: a dump, and a
+// session that has changed the rows.
+const LOCK_WAIT_TIMEOUT = '1s';
+const PAST_LOCK_WAIT_MS = 1300;
+const RECORD_HOLDS = Object.freeze([
+  ['a dump that has locked its table', (keeper) => keeper.lockTables(['_migrations'], 'READ LOCAL')],
+  ['a session that holds its rows', async (keeper) => {
+    await keeper.query('START TRANSACTION');
+    await keeper.query('SELECT version FROM _migrations FOR UPDATE');
+  }],
+]);
 
 // What a migrator holds at once: the connection with the lock of the database and the one of a file.
 const MIGRATOR_CONNECTIONS = 2;
@@ -161,6 +174,7 @@ const WITNESSES = Object.freeze({
 
 const LOCKS_SQL = 'SELECT CONNECTION_ID() AS sessionId, IS_USED_LOCK(:databaseLock) AS databaseLock, IS_USED_LOCK(:fileLock) AS fileLock';
 const IDLE_LIMITS_SQL = 'SELECT CONNECTION_ID() AS sessionId, @@session.wait_timeout AS sessionLimit, @@global.wait_timeout AS serverLimit';
+const LOCK_WAITS_SQL = 'SELECT CONNECTION_ID() AS sessionId, @@session.innodb_lock_wait_timeout AS rowWait, @@session.lock_wait_timeout AS tableWait';
 const COMMAND_SQL = 'SELECT command FROM information_schema.processlist WHERE id = :id';
 
 const testDb = await createTestDb();
@@ -215,6 +229,12 @@ async function readIdleLimits(pool) {
   const [limits] = await pool.readRows(IDLE_LIMITS_SQL);
 
   return limits;
+}
+
+async function readLockWaits(pool) {
+  const [waits] = await pool.readRows(LOCK_WAITS_SQL);
+
+  return waits;
 }
 
 async function readCommand(id) {
@@ -475,6 +495,40 @@ describe('migrator: the lock of a database', { skip: testDb.skip }, () => {
     await assert.rejects(up({ directory, names: ['nobody'] }, single), /^Error: No migration is named "nobody": /);
 
     assert.deepEqual(await readIdleLimits(single), before);
+  });
+
+  test('gives its connection back to the pool with the waits for a lock the pool gives a session, after a run that passed and after one that was refused', async (t) => {
+    const single = testDb.open({ db: { connectionLimit: 1, lockWaitTimeout: '2.5s' } }, t);
+    const directory = await createMigrationDir(t, USERS);
+    const before = await readLockWaits(single);
+
+    await up({ directory }, single);
+
+    assert.deepEqual([before.rowWait, before.tableWait], [3, 3]);
+    assert.deepEqual(await readLockWaits(single), before);
+
+    await assert.rejects(up({ directory, names: ['nobody'] }, single), /^Error: No migration is named "nobody": /);
+
+    assert.deepEqual(await readLockWaits(single), before);
+  });
+
+  RECORD_HOLDS.forEach(([name, hold]) => {
+    test(`waits longer than a session of the pool for ${name}, and records the file that has run meanwhile`, async (t) => {
+      const keeper = await testDb.openKeeper(t);
+      const gate = await createGate(t);
+      const impatient = testDb.open({ db: { lockWaitTimeout: LOCK_WAIT_TIMEOUT } }, t);
+      const directory = await createMigrationDir(t, { ...USERS, ...heldUp(gate) });
+      const { running } = await catchAtGate(t, gate, up({ directory }, impatient));
+
+      await hold(keeper);
+      await gate.open();
+      await findSessionId(testDb, CLOSE_UP_MARK);
+      await sleep(PAST_LOCK_WAIT_MS);
+      await keeper.release();
+
+      assert.deepEqual((await running).files, ['0001_users.up.sql', '0002_held.up.sql']);
+      assert.deepEqual(await readDirtyMarks(testDb), [['users', false], ['held', false]]);
+    });
   });
 
   test('keeps the connection with the lock open for the idle limit of the config while a file runs: past a short one the server closes it in the middle of the file, under the default it does not', async (t) => {

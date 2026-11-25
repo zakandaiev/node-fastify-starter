@@ -9,6 +9,8 @@ const DURATION_KEYS = [
   'connectTimeout',
   'statementTimeout',
   'slowQueryThreshold',
+  'lockWaitTimeout',
+  'transactionTimeout',
   'migrationLockTimeout',
   'migrationTableLockTimeout',
   'migrationIdleTimeout',
@@ -38,6 +40,19 @@ describe('config.db', () => {
     assert.ok(Number.isInteger(db.queueLimit) && db.queueLimit > 0);
     DURATION_KEYS.forEach((key) => assert.ok(convertStringToSeconds(db[key]) > 0, key));
     assert.ok(convertStringToSeconds(db.slowQueryThreshold) < convertStringToSeconds(db.statementTimeout));
+    assert.ok(convertStringToSeconds(db.lockWaitTimeout) < convertStringToSeconds(db.transactionTimeout));
+  });
+
+  test('waits for a lock a whole number of seconds, as the server counts the wait', () => {
+    const { db } = createConfig(createTestEnv());
+
+    assert.ok(Number.isInteger(convertStringToSeconds(db.lockWaitTimeout)), db.lockWaitTimeout);
+  });
+
+  test('gives up on a read before its wait for a lock runs out: behind a locked table it ends as a statement timeout, which is a 503', () => {
+    const { db } = createConfig(createTestEnv());
+
+    assert.ok(convertStringToSeconds(db.statementTimeout) < convertStringToSeconds(db.lockWaitTimeout));
   });
 
   test('is one flat frozen section: a test replaces a single value of it', () => {

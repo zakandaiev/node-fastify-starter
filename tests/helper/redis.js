@@ -437,12 +437,8 @@ function answerByDefault(args) {
   return toRespError(`ERR unknown command '${args[0]}'`);
 }
 
-// A Redis of the tests' own making that answers what "respond" says: for what the real one will not do on demand,
-// such as refusing a password or loading its data for ever. It records every command it received.
-export async function createFakeRedis(t, respond = () => null) {
-  const sockets = new Set();
-  const commands = [];
-
+// Answers every command its connections send, and keeps those connections in a set.
+function createRespServer(sockets, answer) {
   function drain(socket, buffer) {
     const command = readCommand(buffer);
 
@@ -450,13 +446,12 @@ export async function createFakeRedis(t, respond = () => null) {
       return buffer;
     }
 
-    commands.push(command.args);
-    socket.write(respond(command.args) ?? answerByDefault(command.args));
+    socket.write(answer(command.args));
 
     return drain(socket, buffer.subarray(command.length));
   }
 
-  const server = net.createServer((socket) => {
+  return net.createServer((socket) => {
     let buffer = Buffer.alloc(0);
 
     sockets.add(socket);
@@ -465,6 +460,18 @@ export async function createFakeRedis(t, respond = () => null) {
     socket.on('data', (bytes) => {
       buffer = drain(socket, Buffer.concat([buffer, bytes]));
     });
+  });
+}
+
+// A Redis of the tests' own making that answers what "respond" says: for what the real one will not do on demand,
+// such as refusing a password or loading its data for ever. It records every command it received.
+export async function createFakeRedis(t, respond = () => null) {
+  const sockets = new Set();
+  const commands = [];
+  const server = createRespServer(sockets, (args) => {
+    commands.push(args);
+
+    return respond(args) ?? answerByDefault(args);
   });
 
   function kill() {
@@ -475,13 +482,22 @@ export async function createFakeRedis(t, respond = () => null) {
     return count;
   }
 
-  t.after(() => {
-    kill();
+  // For good, as a process that is gone: a reconnect is refused.
+  function die() {
     server.close();
-  });
+
+    return kill();
+  }
+
+  t.after(die);
 
   server.listen(0, LOOPBACK);
   await once(server, 'listening');
 
-  return { port: server.address().port, commands, kill };
+  return {
+    port: server.address().port,
+    commands,
+    kill,
+    die,
+  };
 }

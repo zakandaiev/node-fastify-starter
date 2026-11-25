@@ -42,6 +42,8 @@ const DURATION_KEYS = Object.freeze([
   'connectTimeout',
   'statementTimeout',
   'slowQueryThreshold',
+  'lockWaitTimeout',
+  'transactionTimeout',
   'migrationLockTimeout',
   'migrationTableLockTimeout',
   'migrationIdleTimeout',
@@ -66,6 +68,11 @@ function assertConfig(config) {
   }
 
   assertDurations(config, DURATION_KEYS, 'config.db');
+
+  // Past the deadline of its transaction a statement that waits for a lock goes on at the server: this is what ends it.
+  if (convertStringToMs(config.transactionTimeout) <= convertStringToMs(config.lockWaitTimeout)) {
+    throw new TypeError('config.db requires transactionTimeout to be above lockWaitTimeout');
+  }
 }
 
 // The form of the statement goes to "info", its values to "debug" only: they are personal data,

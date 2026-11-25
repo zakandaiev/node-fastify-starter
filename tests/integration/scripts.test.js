@@ -1191,7 +1191,7 @@ describe('migrate: as a process', { skip: testDb.skip }, () => {
       ],
       stderr: '',
     });
-    assert.deepEqual(await listTableNames(testDb), ['_migrations', 'audit_logs', 'group_scopes', 'groups', 'user_groups', 'user_identities', 'users']);
+    assert.deepEqual(await listTableNames(testDb), ['_migrations', 'audit_logs', 'group_scopes', 'groups', 'sessions', 'user_groups', 'user_identities', 'users']);
     assert.deepEqual(await testDb.readRows('SELECT COUNT(*) AS total FROM groups'), [{ total: 0 }]);
   });
 

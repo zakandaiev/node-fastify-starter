@@ -8,6 +8,7 @@ import {
   isPrivateAddress,
   isSafeRedirectPath,
   isWebUrl,
+  toIpAddress,
 } from '#utils/validate.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
@@ -256,6 +257,21 @@ describe('ipInCidr', () => {
       assert.equal(ipInCidr(value, '0.0.0.0/0'), false);
       assert.equal(ipInCidr('10.0.0.1', value), false);
     });
+  });
+});
+
+describe('toIpAddress', () => {
+  test('gives an address of either family back as it is written, a zone included', () => {
+    ['203.0.113.7', '2001:db8::1', 'FE80::1%eth0', '::ffff:203.0.113.7', '1111:2222:3333:4444:5555:6666:123.123.123.123'].forEach((address) => {
+      assert.equal(toIpAddress(address), address);
+    });
+  });
+
+  test('gives null for a text that is no address, for an address longer than a column of them and for what is not a string', () => {
+    [...NOT_CANONICAL_ADDRESSES, 'unknown', '203.0.113.7, 10.0.0.1', `fe80::1%${'z'.repeat(60)}`].forEach((value) => {
+      assert.equal(toIpAddress(value), null, JSON.stringify(value));
+    });
+    NOT_STRINGS.forEach((value) => assert.equal(toIpAddress(value), null));
   });
 });
 

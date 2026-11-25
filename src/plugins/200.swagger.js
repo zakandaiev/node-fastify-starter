@@ -7,6 +7,9 @@ import fp from 'fastify-plugin';
 
 const OPENAPI_VERSION = '3.1.0';
 
+const INDEX_PATH = '/';
+const BOTH_SLASHES = 'both';
+
 // The same access token rides in either: the cookie in a browser, the header for curl, tests and the Authorize
 // button. Which operation takes them is the guard's to write.
 const SECURITY_SCHEMES = Object.freeze({
@@ -14,10 +17,17 @@ const SECURITY_SCHEMES = Object.freeze({
   bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' },
 });
 
-function documentRoute({ schema, url }) {
+// The "/" of a plugin with a prefix is served with the slash and without it, and the docs are given the former.
+function readDocumentedUrl(url, { prefix, routePath, prefixTrailingSlash = BOTH_SLASHES }) {
+  return prefix && routePath === INDEX_PATH && prefixTrailingSlash === BOTH_SLASHES
+    ? prefix
+    : url;
+}
+
+function documentRoute({ schema, url, route }) {
   return {
     schema: schema && readDocumentedSchema(schema),
-    url,
+    url: readDocumentedUrl(url, route),
   };
 }
 

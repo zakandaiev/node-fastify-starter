@@ -2,10 +2,11 @@ import { readStructure } from '#core/db/structure.js';
 import { createTestDb } from '#root/tests/helper/db.js';
 import { bindMigrator } from '#root/tests/helper/migration.js';
 import { properties as groupProperties, unique as groupUnique } from '#schemas/entity/group.js';
+import { properties as sessionProperties } from '#schemas/entity/session.js';
 import { properties as userProperties, unique as userUnique } from '#schemas/entity/user.js';
 import { camelToSnakeKey, snakeToCamelKey } from '#utils/case.js';
 import { UUID_REGEXP } from '#utils/id.js';
-import { compact, pick } from '#utils/object.js';
+import { compact, omit, pick } from '#utils/object.js';
 import { isNonEmptyString } from '#utils/type.js';
 import assert from 'node:assert/strict';
 import { before, describe, test } from 'node:test';
@@ -20,6 +21,9 @@ const INDEX_COLUMN_REGEXP = /^\w+/;
 const VARCHAR_REGEXP = /^varchar\((\d+)\)$/;
 const LIST_CHECK_REGEXP = /^`\w+`(?: collate \w+)? in \((.+)\)$/;
 const QUOTED_VALUE_REGEXP = /'([^']*)'/g;
+
+const SESSION_COMPUTED_FIELDS = Object.freeze(['isCurrent']);
+const SESSION_UNTOLD_COLUMNS = Object.freeze(['user_id', 'refresh_token_hash', 'revoked_at', 'created_at', 'updated_at']);
 
 // What a type of a column says of its property, in the words of JSON Schema.
 const TYPES = Object.freeze({
@@ -112,6 +116,15 @@ describe('the entity schemas', { skip: testDb.skip }, () => {
 
   test('describe a group as the table groups holds one', () => {
     assertDescribes(groupProperties, tables.groups);
+  });
+
+  test('describe a session by the columns of the table sessions the API tells of: all but the user, the hash of the refresh token, the end and the timestamps', () => {
+    const { sessions } = tables;
+    const described = omit(sessionProperties, SESSION_COMPUTED_FIELDS);
+    const columnOrder = Object.keys(described).map((key) => camelToSnakeKey(key));
+
+    assert.deepEqual([...columnOrder, ...SESSION_UNTOLD_COLUMNS].toSorted(), sessions.columnOrder.toSorted());
+    assertDescribes(described, { ...sessions, columnOrder });
   });
 
   test('name in unique the unique indexes of their tables, each on the column of the field a duplicate is reported on', () => {

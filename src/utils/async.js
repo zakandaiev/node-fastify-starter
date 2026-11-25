@@ -19,6 +19,10 @@ const RETRY_MIN_DELAY_MS = 100;
 const RETRY_MAX_DELAY_MS = 5000;
 const RETRY_FACTOR = 2;
 
+export function isTimeoutError(error) {
+  return error?.name === TIMEOUT_ERROR_NAME;
+}
+
 function isTimerDelay(ms) {
   return isNumberInRange(ms, 0, TIMER_MAX_MS);
 }
@@ -61,7 +65,8 @@ export async function sleep(ms, { signal } = {}) {
   }
 }
 
-export async function withTimeout(fn, ms, { signal } = {}) {
+// isUnref is for a deadline over work that keeps the process up by itself: one that has lost its work ends nothing.
+export async function withTimeout(fn, ms, { signal, isUnref = false } = {}) {
   assertFunction(fn, 'withTimeout(fn, ms)');
 
   if (!isTimerDelay(ms) || ms === 0) {
@@ -86,6 +91,10 @@ export async function withTimeout(fn, ms, { signal } = {}) {
   }
 
   const timer = setTimeout(abort, ms, timeoutError);
+
+  if (isUnref) {
+    timer.unref();
+  }
 
   signal?.addEventListener('abort', onAbort, { once: true });
 
@@ -280,24 +289,34 @@ export function singleFlight() {
 
   // Promise.try(), not a bare call: a synchronous throw would run the finally before run() has stored the flight,
   // and the key would then hold that rejected promise for good.
-  async function fly(key, fn) {
+  async function fly(key, fn, callers) {
     try {
-      return await Promise.try(fn);
+      return await Promise.try(fn, callers);
     } finally {
       flights.delete(key);
     }
   }
 
-  function run(key, fn) {
+  // fn is given the list of those who wait for it, in the order they came: a caller may join until it has settled.
+  function run(key, fn, caller) {
     if (key === undefined || key === null || !isFunction(fn)) {
-      return Promise.reject(new TypeError('run(key, fn) requires a key and a function'));
+      return Promise.reject(new TypeError('run(key, fn, caller) requires a key and a function'));
     }
 
-    if (!flights.has(key)) {
-      flights.set(key, fly(key, fn));
+    const flight = flights.get(key);
+
+    if (flight) {
+      flight.callers.push(caller);
+
+      return flight.settling;
     }
 
-    return flights.get(key);
+    const callers = [caller];
+    const settling = fly(key, fn, callers);
+
+    flights.set(key, { callers, settling });
+
+    return settling;
   }
 
   return run;

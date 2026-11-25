@@ -108,6 +108,21 @@ export function toTimestamp(value) {
   return toDate(value)?.getTime() ?? null;
 }
 
+// Rounded down, as a JWT counts its times.
+export function toUnixSeconds(value) {
+  const timestamp = toTimestamp(value);
+
+  return timestamp === null
+    ? null
+    : Math.floor(timestamp / MS_IN_SECOND);
+}
+
+export function fromUnixSeconds(seconds) {
+  return isNumber(seconds)
+    ? fromTimestamp(seconds * MS_IN_SECOND)
+    : null;
+}
+
 // Outside these years toISOString() switches to the expanded form "+010000-01-01T...", which toDate() does not read.
 export function toUtcIso(value) {
   const date = toDate(value);
@@ -141,7 +156,10 @@ export function parseStrictUtc(value) {
   return date;
 }
 
+const WHOLE_SECONDS_MIN = 1;
+
 const SECONDS_SIGNATURE = 'convertStringToSeconds(value)';
+const WHOLE_SECONDS_SIGNATURE = 'convertStringToWholeSeconds(value)';
 const MS_SIGNATURE = 'convertStringToMs(value)';
 
 function readDurationMs(value) {
@@ -174,6 +192,11 @@ export function convertStringToMs(value) {
 
 export function convertStringToSeconds(value) {
   return toDurationMs(value, SECONDS_SIGNATURE) / MS_IN_SECOND;
+}
+
+// For a server that counts a wait in whole seconds and takes 0 for no wait at all.
+export function convertStringToWholeSeconds(value) {
+  return Math.max(WHOLE_SECONDS_MIN, Math.ceil(toDurationMs(value, WHOLE_SECONDS_SIGNATURE) / MS_IN_SECOND));
 }
 
 // For a section of the config, when its owner is made: a duration nobody can read would otherwise fail on the day it
@@ -219,6 +242,15 @@ function differenceInMs(left, right) {
   return leftTimestamp === null || rightTimestamp === null
     ? null
     : leftTimestamp - rightTimestamp;
+}
+
+// Rounded down, so the seconds left until a moment are never more than there are.
+export function differenceInSeconds(left, right) {
+  const difference = differenceInMs(left, right);
+
+  return difference === null
+    ? null
+    : Math.floor(difference / MS_IN_SECOND);
 }
 
 export function differenceInDays(left, right) {

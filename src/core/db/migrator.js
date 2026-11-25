@@ -31,7 +31,7 @@ import { MIGRATION_TYPE } from '#enums/migration-type.js';
 import { sortBy } from '#utils/array.js';
 import { mapSeries } from '#utils/async.js';
 import { rowToCamel } from '#utils/case.js';
-import { convertStringToSeconds } from '#utils/date.js';
+import { convertStringToSeconds, convertStringToWholeSeconds } from '#utils/date.js';
 import { uuidv7 } from '#utils/id.js';
 import { pick } from '#utils/object.js';
 import {
@@ -57,9 +57,6 @@ const NO_WAIT = 0;
 const NO_BATCH = 0;
 const ONE_ROW = 1;
 const FIRST_STATEMENT = 1;
-
-// lock_wait_timeout takes whole seconds, and 0 means "do not wait at all".
-const TABLE_LOCK_SECONDS_MIN = 1;
 
 const TABLE_SQL = `
   CREATE TABLE IF NOT EXISTS ${TABLE} (
@@ -111,10 +108,11 @@ const FILE_SESSION_SQL = 'SET SESSION lock_wait_timeout = :seconds, max_statemen
 // of CHARACTER SET utf8mb4 alone would compare as a text for a person, and no guard can tell it from one.
 const FILE_COLLATIONS = `${CHARSET}=${COLLATION.MACHINE}`;
 
-// The connection that holds the lock sends nothing while a file runs, and the server closes a session
-// that stands idle for longer than its wait_timeout.
-const IDLE_SQL = 'SET SESSION wait_timeout = :seconds';
-const IDLE_RESET_SQL = 'SET SESSION wait_timeout = DEFAULT';
+// The connection that holds the lock sends nothing while a file runs, and the server closes a session that stands idle for
+// longer than its wait_timeout. It waits for a lock as the server lets a session wait, not as the pool does: the row of a
+// file that has run, and could not be closed behind a dump, would stay dirty.
+const RUN_SESSION_SQL = 'SET SESSION wait_timeout = :seconds, innodb_lock_wait_timeout = DEFAULT, lock_wait_timeout = DEFAULT';
+const RUN_RESET_SQL = 'SET SESSION wait_timeout = DEFAULT, innodb_lock_wait_timeout = :lockSeconds, lock_wait_timeout = :lockSeconds';
 
 const STATUS_FIELDS = Object.freeze([
   'id',
@@ -178,6 +176,7 @@ function createJob(options, signature) {
     lockTimeout: config.db.migrationLockTimeout,
     tableLockTimeout: config.db.migrationTableLockTimeout,
     idleTimeout: config.db.migrationIdleTimeout,
+    poolLockTimeout: config.db.lockWaitTimeout,
     referencePrefix: config.db.migrationReferencePrefix,
   };
 }
@@ -245,8 +244,8 @@ async function acquireLock(job, query, isWaiting) {
   return second.database;
 }
 
-// The lock and the idle limit stay with the connection when the pool takes it back: one that did not give
-// both up is closed.
+// The lock and the limits of a run stay with the connection when the pool takes it back: one that did not give
+// them up is closed.
 async function releaseLock(job, connection, query) {
   const isReleased = await isDone(async () => {
     const { rows: [{ result }] } = await query(UNLOCK_SQL, { prefix: LOCK_PREFIX });
@@ -255,7 +254,7 @@ async function releaseLock(job, connection, query) {
       throw new Error('The lock was not held');
     }
 
-    await query(IDLE_RESET_SQL);
+    await query(RUN_RESET_SQL, { lockSeconds: convertStringToWholeSeconds(job.poolLockTimeout) });
   });
 
   if (!isReleased) {
@@ -301,7 +300,7 @@ function runLocked(job, fn, { isWaiting = true } = {}) {
     const database = await acquireLock(job, query, isWaiting);
 
     try {
-      await query(IDLE_SQL, { seconds: Math.ceil(convertStringToSeconds(job.idleTimeout)) });
+      await query(RUN_SESSION_SQL, { seconds: convertStringToWholeSeconds(job.idleTimeout) });
       await assertNoFileRunning(query);
 
       return await fn({ ...job, database, query });
@@ -606,9 +605,10 @@ async function closeMark(run, step, durationMs) {
 
 // A file of the live database runs under the second lock; one that builds the reference of "verify" does not.
 async function openFileSession(run, script, step) {
-  const seconds = Math.max(TABLE_LOCK_SECONDS_MIN, Math.ceil(convertStringToSeconds(run.tableLockTimeout)));
-
-  await script.query(FILE_SESSION_SQL, { seconds, collations: FILE_COLLATIONS });
+  await script.query(FILE_SESSION_SQL, {
+    seconds: convertStringToWholeSeconds(run.tableLockTimeout),
+    collations: FILE_COLLATIONS,
+  });
 
   if (step.database) {
     return false;

@@ -1,4 +1,6 @@
+import { absPath } from '#config/path.js';
 import {
+  isTimeoutError,
   mapSeries,
   pLimit,
   retry,
@@ -7,12 +9,16 @@ import {
   withTimeout,
 } from '#utils/async.js';
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { getEventListeners } from 'node:events';
+import { execPath } from 'node:process';
 import { describe, test } from 'node:test';
+import { promisify } from 'node:util';
 
 const TIMER_MAX_MS = 2 ** 31 - 1;
 const LONG_MS = 30_000;
 const SOON_MS = 5000;
+const SHORT_MS = 30;
 const SAMPLES = 200;
 const PENDING = Symbol('pending');
 
@@ -85,6 +91,17 @@ function watchUnhandledRejections(t) {
   t.after(() => process.off('unhandledRejection', onUnhandledRejection));
 
   return onUnhandledRejection;
+}
+
+// What a process that has nothing but this deadline prints before it exits by itself.
+async function printTimeout(ms, options) {
+  const { stdout } = await promisify(execFile)(execPath, ['--input-type=module', '--eval', `
+    import { withTimeout } from '#utils/async.js';
+
+    withTimeout(() => new Promise(() => {}), ${ms}, ${JSON.stringify(options)}).catch((error) => process.stdout.write(error.name));
+  `], { cwd: absPath.root });
+
+  return stdout;
 }
 
 function attemptsOf(fn) {
@@ -437,6 +454,52 @@ describe('withTimeout', SUITE, () => {
     await assert.rejects(withTimeout(fn, 1000, null), TypeError);
 
     assert.equal(fn.mock.callCount(), 0);
+  });
+
+  test('keeps the process up until its deadline, and with isUnref does not: a process that has nothing else exits at once', async () => {
+    const [byDefault, unreferenced] = await Promise.all([printTimeout(SHORT_MS), printTimeout(SOON_MS, { isUnref: true })]);
+
+    assert.equal(byDefault, 'TimeoutError');
+    assert.equal(unreferenced, '');
+  });
+
+  test('rejects at its deadline with isUnref as well, while something else keeps the process up', async (t) => {
+    const handle = setInterval(() => {}, LONG_MS);
+
+    t.after(() => clearInterval(handle));
+
+    const error = await rejectionOf(withTimeout(() => new Promise(() => {}), SHORT_MS, { isUnref: true }));
+
+    assert.equal(error.name, 'TimeoutError');
+  });
+});
+
+describe('isTimeoutError', SUITE, () => {
+  test('is true for the error of withTimeout() and for that of AbortSignal.timeout()', async () => {
+    const errors = await Promise.all([
+      withTimeout(() => new Promise(() => {}), 1),
+      sleep(LONG_MS, { signal: AbortSignal.timeout(1) }),
+    ].map((promise) => rejectionOf(promise)));
+
+    assert.deepEqual(errors.map((error) => isTimeoutError(error)), [true, true]);
+  });
+
+  test('is false for an abort, for an error that only tells of a timeout or is caused by one, and for what is no error', () => {
+    const timeoutError = new DOMException('The operation timed out', 'TimeoutError');
+    const others = [
+      AbortSignal.abort().reason,
+      new Error('TimeoutError'),
+      Object.assign(new Error('timed out'), { code: 'TimeoutError' }),
+      new Error('wrapped', { cause: timeoutError }),
+      'TimeoutError',
+      42,
+      {},
+      null,
+      undefined,
+    ];
+
+    assert.equal(isTimeoutError(timeoutError), true);
+    others.forEach((value) => assert.equal(isTimeoutError(value), false, String(value)));
   });
 });
 
@@ -1078,9 +1141,68 @@ describe('singleFlight', SUITE, () => {
     const results = await Promise.all(range(50).map(() => run('users', load)));
 
     assert.equal(load.mock.callCount(), 1);
-    assert.equal(load.mock.calls[0].arguments.length, 0);
     assert.equal(results.length, 50);
     results.forEach((result) => assert.equal(result, rows));
+  });
+
+  test('gives fn the list of its callers in the order they came, which grows until the flight has settled', async () => {
+    const run = singleFlight();
+    const gate = Promise.withResolvers();
+    const seen = [];
+
+    async function load(callers) {
+      seen.push([...callers]);
+      await gate.promise;
+      seen.push([...callers]);
+
+      return callers;
+    }
+
+    const first = run('users', load, 'first');
+    const second = run('users', load, 'second');
+
+    await nextTurn();
+
+    const third = run('users', load);
+
+    gate.resolve();
+
+    const callers = await first;
+
+    assert.deepEqual(seen, [['first'], ['first', 'second', undefined]]);
+    assert.equal(await second, callers);
+    assert.equal(await third, callers);
+    assert.deepEqual(await run('users', load, 'next'), ['next']);
+    assert.deepEqual(callers, ['first', 'second', undefined]);
+  });
+
+  test('keeps a list of callers for each key', async () => {
+    const run = singleFlight();
+
+    async function load(callers) {
+      await nextTurn();
+
+      return callers;
+    }
+
+    assert.deepEqual(await Promise.all([run('users', load, 1), run('groups', load, 2), run('users', load, 3)]), [[1, 3], [2], [1, 3]]);
+  });
+
+  test('releases the key of its own flight alone: a call of another key still joins the one it is in', async (t) => {
+    const run = singleFlight();
+    const gate = Promise.withResolvers();
+    const load = t.mock.fn(() => gate.promise);
+    const users = run('users', load);
+
+    await run('groups', () => 'groups');
+    await assert.rejects(run('roles', () => Promise.reject(new Error('boom'))), /boom/);
+
+    assert.equal(run('users', load), users);
+
+    gate.resolve('rows');
+
+    assert.equal(await users, 'rows');
+    assert.equal(load.mock.callCount(), 1);
   });
 
   test('gives every call of a key in flight the same promise, also a call that comes later', async (t) => {
@@ -1187,5 +1309,19 @@ describe('singleFlight', SUITE, () => {
     await Promise.all(NOT_FUNCTIONS.map((fn) => assert.rejects(run('users', fn), errorNaming(TypeError, 'run'))));
 
     assert.equal(await run('users', () => 'value'), 'value');
+  });
+
+  test('refuses what is not a function while the key is in flight too, and counts no caller for it', async (t) => {
+    const run = singleFlight();
+    const gate = Promise.withResolvers();
+    const load = t.mock.fn(() => gate.promise);
+    const flight = run('users', load, 'first');
+    const refused = NOT_FUNCTIONS.map((fn) => assert.rejects(run('users', fn, 'refused'), errorNaming(TypeError, 'run')));
+
+    gate.resolve('rows');
+
+    await Promise.all(refused);
+    assert.equal(await flight, 'rows');
+    assert.deepEqual(load.mock.calls.map((call) => call.arguments), [[['first']]]);
   });
 });

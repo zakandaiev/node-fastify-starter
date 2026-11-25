@@ -30,6 +30,12 @@ const LABEL = 'Redis';
 // A command that fails at once is far below this; one that waits for its timeout is not.
 const FAST_FAILURE_MS = 200;
 
+// No command gives up by itself.
+const PATIENT = Object.freeze({ commandTimeout: '10s', socketTimeout: '10s' });
+
+const UNANSWERED = Object.freeze(['multi', 'set', 'exec', 'quit']);
+const TRANSACTION_FAILED_MESSAGE = 'Redis transaction failed';
+
 const MARKER_PASSWORD = 'marker-password-0123456789';
 const WRONGPASS = 'WRONGPASS invalid username-password pair or user is disabled.';
 const REQUEST_ID = 'request-1';
@@ -83,6 +89,29 @@ function answer(name, reply) {
     : null);
 }
 
+function waitForCommand(fake, name) {
+  return waitFor(() => fake.commands.some((args) => args[0] === name), `${name} at Redis`);
+}
+
+// A transaction on its way: Redis has all of it, and answers neither that nor a QUIT.
+async function openTransaction(t) {
+  const opened = await openFake(t, ([name]) => (UNANSWERED.includes(name) ? '' : null), { ...FAST_RECONNECT, ...PATIENT });
+  const running = runRedisSafely((client) => client.multi().set('key', 'value'), TRANSACTION_FAILED_MESSAGE, { redis: opened.redis });
+
+  await waitForCommand(opened.fake, 'exec');
+
+  return { ...opened, running };
+}
+
+function assertFailedOnce(sink, pattern) {
+  const lines = findLines(sink, TRANSACTION_FAILED_MESSAGE);
+
+  assert.equal(lines.length, 1);
+  assert.equal(lines[0].level, LEVEL.ERROR);
+  assert.match(lines[0].err.message, pattern);
+  assert.deepEqual(lines[0].err.previousErrors, []);
+}
+
 describe('createRedis', () => {
   test('requires the redis section with a host, a port, a key prefix and durations above zero', (t) => {
     const { main, log } = openRedis(t);
@@ -106,7 +135,7 @@ describe('createRedis', () => {
     assert.throws(() => createRedis(main, { log: {}, label: LABEL }), /requires a logger and a label/);
   });
 
-  test('gives the client the contract: no offline queue, one retry, a deadline for every command, for a silent socket and for a wait on loading, no resend after a reconnect', (t) => {
+  test('gives the client the contract: no offline queue, one retry, a deadline for every command that nothing stretches, for a silent socket and for a wait on loading, no resend after a reconnect', (t) => {
     const { redis, config } = openRedis(t);
     const { options } = redis.client;
 
@@ -114,6 +143,7 @@ describe('createRedis', () => {
     assert.equal(options.enableOfflineQueue, false);
     assert.equal(options.maxRetriesPerRequest, 1);
     assert.equal(options.autoResendUnfulfilledCommands, false);
+    assert.equal(options.maintNotifications, 'disabled');
     assert.equal(options.commandTimeout, 1000);
     assert.equal(options.socketTimeout, 2000);
     assert.equal(options.connectTimeout, 10000);
@@ -334,13 +364,37 @@ describe('runRedisSafely', () => {
       exec: toRespError('EXECABORT Transaction discarded because of previous errors.'),
     })[args[0]] ?? null);
 
-    const result = await runRedisSafely((client) => client.multi().set('session', secret).get('session'), 'Redis transaction failed', { redis });
-    const [failed] = findLines(sink, 'Redis transaction failed');
+    const result = await runRedisSafely((client) => client.multi().set('session', secret).get('session'), TRANSACTION_FAILED_MESSAGE, { redis });
+    const [failed] = findLines(sink, TRANSACTION_FAILED_MESSAGE);
 
     assert.equal(result, REDIS_FAILURE);
     assert.match(failed.err.message, /^EXECABORT/);
     assert.deepEqual(failed.err.previousErrors.map((previous) => previous.command), [{ name: 'set' }]);
     assert.equal(JSON.stringify(sink.lines).includes(secret), false);
+  });
+
+  // ioredis fails its whole queue with one error: that of the transaction then stands among those of its commands.
+  test('never throws when Redis dies for good with a transaction on its way: one failure, told in one line', async (t) => {
+    const { fake, sink, running } = await openTransaction(t);
+
+    fake.die();
+
+    assert.equal(await running, REDIS_FAILURE);
+    assertFailedOnce(sink, /max retries per request/);
+  });
+
+  test('never throws when the connection is lost with a transaction on its way while the client is closing, and says so in one line as well', async (t) => {
+    const {
+      redis, fake, sink, running,
+    } = await openTransaction(t);
+    const closing = redis.close();
+
+    await waitForCommand(fake, 'quit');
+    fake.kill();
+
+    assert.equal(await running, REDIS_FAILURE);
+    assert.equal(await closing, true);
+    assertFailedOnce(sink, /^Connection is closed/);
   });
 });
 

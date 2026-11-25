@@ -8,6 +8,7 @@ export function createContext({
   db = null,
   redis = null,
   cacheRedis = null,
+  jwt = null,
   requestId = null,
   transaction = null,
 } = {}) {
@@ -25,6 +26,7 @@ export function createContext({
     db,
     redis,
     cacheRedis,
+    jwt,
     requestId,
     transaction,
   });

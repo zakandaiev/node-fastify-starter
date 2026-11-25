@@ -18,7 +18,7 @@ import { beforeEach, describe, test } from 'node:test';
 const { MACHINE, HUMAN } = COLLATION;
 const { SEED } = MIGRATION_TYPE;
 
-const TABLES = Object.freeze(['users', 'user_identities', 'groups', 'group_scopes', 'user_groups', 'audit_logs']);
+const TABLES = Object.freeze(['users', 'user_identities', 'groups', 'group_scopes', 'user_groups', 'audit_logs', 'sessions']);
 
 // Every text column of these tables: a name and a description are a text for a person, everything else
 // a machine string or a contact.
@@ -41,6 +41,9 @@ const TEXT_COLLATIONS = Object.freeze({
   'audit_logs.entity_type': MACHINE,
   'audit_logs.meta': MACHINE,
   'audit_logs.ip': MACHINE,
+  'sessions.refresh_token_hash': MACHINE,
+  'sessions.user_agent': MACHINE,
+  'sessions.ip': MACHINE,
 });
 
 const ADMIN_GROUP = Object.freeze({
@@ -62,6 +65,8 @@ const TIMESTAMPS = Object.freeze({
 const LONG_AGO = '2000-01-01 00:00:00.000';
 const LONG_AGO_UTC = '2000-01-01T00:00:00.000Z';
 
+const FAR_AWAY = '2099-01-01 00:00:00.000';
+
 const UNIQUE_EMAIL = Object.freeze({ kind: 'unique', constraint: 'uq_users_email' });
 const FAILED_CHECK = Object.freeze({ name: 'DbError', code: 'ER_CONSTRAINT_FAILED' });
 
@@ -80,6 +85,19 @@ async function createGroup(slug) {
   const id = uuidv7();
 
   await testDb.readRows('INSERT INTO groups (id, slug, name) VALUES (:id, :slug, :slug)', { id, slug });
+
+  return id;
+}
+
+async function createSession(userId, hash) {
+  const id = uuidv7();
+
+  await testDb.readRows(
+    'INSERT INTO sessions (id, user_id, refresh_token_hash, expires_at) VALUES (:id, :userId, :hash, :expiresAt)',
+    {
+      id, userId, hash, expiresAt: FAR_AWAY,
+    },
+  );
 
   return id;
 }
@@ -230,6 +248,48 @@ describe('the migrations of the repository', { skip: testDb.skip }, () => {
     assert.deepEqual(await testDb.readRows('SELECT actor_id, action, entity_id, updated_at FROM audit_logs'), [{
       actor_id: null, action: 'user.block', entity_id: actor, updated_at: parseStrictUtc(LONG_AGO_UTC),
     }]);
+  });
+
+  test('make a session live, not of dev mode and active since its sign-in', async () => {
+    const user = await createUser();
+    const id = await createSession(user, 'ab'.repeat(32));
+    const [session] = await testDb.readRows('SELECT started_at, rotated_at, revoked_at, user_agent, ip, is_dev FROM sessions WHERE id = :id', { id });
+
+    assert.ok(session.started_at instanceof Date);
+    assert.deepEqual(session, {
+      started_at: session.started_at,
+      rotated_at: session.started_at,
+      revoked_at: null,
+      user_agent: null,
+      ip: null,
+      is_dev: false,
+    });
+  });
+
+  test('delete the sessions of a user with the user, and no session of another', async () => {
+    const [deleted, other] = await Promise.all([createUser(), createUser()]);
+
+    await createSession(deleted, 'aa'.repeat(32));
+    await createSession(deleted, 'bb'.repeat(32));
+    await createSession(other, 'cc'.repeat(32));
+    await testDb.readRows('DELETE FROM users WHERE id = :deleted', { deleted });
+
+    assert.deepEqual(await testDb.readRows('SELECT user_id FROM sessions'), [{ user_id: other }]);
+  });
+
+  test('index the sessions of a user by nothing but the user: what a refresh changes must not be in the index of the foreign key', async () => {
+    const { tables } = await readOwnStructure();
+
+    assert.equal(tables.sessions.indexes.idx_sessions_user.columns, 'user_id');
+  });
+
+  test('index a session by nothing that a refresh writes but its end: no statement looks a session up by its hash', async () => {
+    const { tables } = await readOwnStructure();
+
+    assert.deepEqual(
+      Object.entries(tables.sessions.indexes).map(([name, { columns }]) => [name, columns]).toSorted(),
+      [['PRIMARY', 'id'], ['idx_sessions_expires', 'expires_at'], ['idx_sessions_user', 'user_id']],
+    );
   });
 
   test('delete a group with its scopes and memberships, and leave its members', async () => {

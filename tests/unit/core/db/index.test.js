@@ -20,6 +20,8 @@ const DURATION_KEYS = Object.freeze([
   'connectTimeout',
   'statementTimeout',
   'slowQueryThreshold',
+  'lockWaitTimeout',
+  'transactionTimeout',
   'migrationLockTimeout',
   'migrationTableLockTimeout',
   'migrationIdleTimeout',
@@ -49,7 +51,7 @@ describe('createDb', () => {
   });
 
   test('refuses a duration that is zero, below zero or not a duration, each of them: one read on a rare path only would fail on the day that path is taken', () => {
-    const refusal = /config\.db requires connectTimeout, statementTimeout, slowQueryThreshold, migrationLockTimeout, migrationTableLockTimeout, migrationIdleTimeout to be above zero/;
+    const refusal = /config\.db requires connectTimeout, statementTimeout, slowQueryThreshold, lockWaitTimeout, transactionTimeout, migrationLockTimeout, migrationTableLockTimeout, migrationIdleTimeout to be above zero/;
 
     DURATION_KEYS.forEach((key) => {
       assert.throws(() => createDb({ ...DB_CONFIG, [key]: '0s' }), refusal, key);
@@ -57,6 +59,13 @@ describe('createDb', () => {
       assert.throws(() => createDb({ ...DB_CONFIG, [key]: 10 }), /convertStringToMs\(value\) requires a number with a unit/, key);
       assert.throws(() => createDb({ ...DB_CONFIG, [key]: '3 seconds' }), /convertStringToMs\(value\) requires a number with a unit/, key);
     });
+  });
+
+  test('refuses a deadline of a transaction that is not above the wait for a lock: that wait is what ends a statement left behind at the server', () => {
+    const refusal = /config\.db requires transactionTimeout to be above lockWaitTimeout/;
+
+    assert.throws(() => createDb({ ...DB_CONFIG, lockWaitTimeout: '5s', transactionTimeout: '5s' }), refusal);
+    assert.throws(() => createDb({ ...DB_CONFIG, lockWaitTimeout: '6s', transactionTimeout: '5s' }), refusal);
   });
 
   test('refuses a prefix of the databases "verify" builds that is no name, or leaves no room for the UUID after it', () => {

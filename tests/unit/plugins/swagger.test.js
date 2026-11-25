@@ -159,6 +159,13 @@ function readParameterSchemas(operation) {
   return Object.fromEntries(Object.entries(readParameters(operation)).map(([name, parameter]) => [name, parameter.schema]));
 }
 
+function readSummaries(paths) {
+  const probePaths = Object.keys(paths).filter((path) => path.startsWith(PROBE_URL));
+
+  return Object.fromEntries(probePaths.flatMap((path) => Object.entries(paths[path])
+    .map(([method, { summary }]) => [`${method} ${path.slice(PROBE_URL.length)}`, summary])));
+}
+
 function withoutDescriptions(properties) {
   return Object.fromEntries(Object.entries(properties).map(([name, schema]) => [name, omit(schema, ['description'])]));
 }
@@ -288,6 +295,59 @@ describe('swagger plugin', () => {
     assert.deepEqual(pick(ping.get, ['summary', 'tags']), { summary: 'Check that the API answers', tags: ['System'] });
     assert.deepEqual(readData(ping.get.responses['200']), { type: 'object', properties: { isAlive: { type: 'boolean' } } });
     assert.equal(Object.keys(paths).some((path) => path.startsWith(DOCS_PREFIX)), false);
+  });
+
+  test('documents the "/" of a plugin without its slash, though both addresses are served, and the "/" of the root as it is', async (t) => {
+    const fastify = await buildModeApp(t, MODE.DEV);
+
+    fastify.register(async (scope) => {
+      scope.get('/', { schema: { response: FOUND_RESPONSE }, security: PUBLIC }, answerNothing);
+      scope.delete('/', { schema: REMOVE_SCHEMA, security: PUBLIC }, answerNothing);
+    }, { prefix: PROBE_URL });
+    fastify.get('/', { schema: { response: FOUND_RESPONSE }, security: PUBLIC }, answerNothing);
+
+    const { paths } = await readSpec(fastify);
+    const responses = await injectAll(fastify, [PROBE_URL, `${PROBE_URL}/`, '/']);
+
+    assert.deepEqual(Object.keys(paths[PROBE_URL]), ['get', 'delete']);
+    assert.equal(Object.hasOwn(paths, `${PROBE_URL}/`), false);
+    assert.deepEqual(Object.keys(paths['/']), ['get']);
+    assert.deepEqual(responses.map(({ statusCode }) => statusCode), [204, 204, 204]);
+  });
+
+  test('documents every other route at the address it answers at: one written with a slash, each of a pair, the "/" of a plugin that is served one way only', async (t) => {
+    const fastify = await buildModeApp(t, MODE.DEV);
+
+    ['/explicit/', '/pair', '/pair/'].forEach((path) => {
+      fastify.get(`${PROBE_URL}${path}`, { schema: { summary: path, response: FOUND_RESPONSE }, security: PUBLIC }, answerNothing);
+    });
+    ['slash', 'no-slash', 'both'].forEach((prefixTrailingSlash) => {
+      fastify.register(async (scope) => {
+        scope.get('/', { prefixTrailingSlash, schema: { summary: prefixTrailingSlash, response: FOUND_RESPONSE }, security: PUBLIC }, answerNothing);
+      }, { prefix: `${PROBE_URL}/${prefixTrailingSlash}` });
+    });
+
+    const { paths } = await readSpec(fastify);
+    const addresses = ['explicit', 'pair', 'slash', 'no-slash', 'both'].flatMap((name) => [`/${name}`, `/${name}/`]);
+    const responses = await injectAll(fastify, addresses.map((address) => `${PROBE_URL}${address}`));
+
+    assert.deepEqual(addresses.filter((address, index) => responses[index].statusCode === 204), [
+      '/explicit/',
+      '/pair',
+      '/pair/',
+      '/slash/',
+      '/no-slash',
+      '/both',
+      '/both/',
+    ]);
+    assert.deepEqual(readSummaries(paths), {
+      'get /explicit/': '/explicit/',
+      'get /pair': '/pair',
+      'get /pair/': '/pair/',
+      'get /slash/': 'slash',
+      'get /no-slash': 'no-slash',
+      'get /both': 'both',
+    });
   });
 
   test('says in one info line at the start whether the docs are served, and under which prefix', async (t) => {

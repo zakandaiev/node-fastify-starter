@@ -35,6 +35,9 @@ const UNKNOWN_ERROR_MESSAGE = 'Database error';
 const POOL_SATURATED_MESSAGE = 'The queue of the database pool is full';
 export const POOL_SATURATED_CODE = 'POOL_QUEUE_FULL';
 
+const TRANSACTION_TIMEOUT_MESSAGE = 'withTransaction(fn) was closed at its deadline, with nothing committed: fn had not settled, or a statement it had started';
+const TRANSACTION_TIMEOUT_CODE = 'TRANSACTION_TIMEOUT';
+
 const IDENTIFIER_REGEXP = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
 const EXPRESSION_COLUMN = 'a column named by its expression';
 
@@ -276,8 +279,8 @@ function maskQuoted(text) {
 // Built anew instead of passing the error of the driver on: that one carries "sql" with the values
 // substituted and the raw text of the server, and both would reach the log, the alert and the response.
 export class DbError extends Error {
-  constructor(message, details = {}) {
-    super(message);
+  constructor(message, { cause, ...details } = {}) {
+    super(message, cause === undefined ? undefined : { cause });
 
     Object.assign(this, compact(details));
   }
@@ -406,6 +409,10 @@ export function createOverloadError() {
   }));
 }
 
+export function createTransactionTimeoutError(cause) {
+  return new DbError(TRANSACTION_TIMEOUT_MESSAGE, { code: TRANSACTION_TIMEOUT_CODE, cause });
+}
+
 // The error of the database behind a failure: the error itself, or the cause of the 503 it was turned into.
 export function findDbError(error) {
   if (error instanceof DbError) {
@@ -424,6 +431,10 @@ export function isLockConflict(error) {
 // The wait for a lock that ran out of time, as apart from a deadlock: there another session still holds the lock.
 export function isLockWaitTimeout(error) {
   return findDbError(error)?.errno === ERRNO.LOCK_WAIT_TIMEOUT;
+}
+
+export function isTransactionTimeout(error) {
+  return findDbError(error)?.code === TRANSACTION_TIMEOUT_CODE;
 }
 
 export function isMissingTable(error) {

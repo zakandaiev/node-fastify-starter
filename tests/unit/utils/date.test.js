@@ -6,7 +6,10 @@ import {
   assertDurations,
   convertStringToMs,
   convertStringToSeconds,
+  convertStringToWholeSeconds,
   differenceInDays,
+  differenceInSeconds,
+  fromUnixSeconds,
   getEndOfDay,
   getStartOfDay,
   isExpired,
@@ -18,6 +21,7 @@ import {
   parseStrictUtc,
   toDate,
   toTimestamp,
+  toUnixSeconds,
   toUtcIso,
 } from '#utils/date.js';
 import assert from 'node:assert/strict';
@@ -29,9 +33,11 @@ const PRINT_DATES = 'tests/fixture/print-dates.js';
 
 const MOMENT = '2026-01-31T10:20:30.456Z';
 const MOMENT_MS = 1769854830456;
+const MOMENT_SECONDS = 1769854830;
 const NOW = '2026-01-31T10:00:00.000Z';
 
 const MAX_MS = 8.64e15;
+const MAX_SECONDS = 8.64e12;
 const YEAR_0000_START_MS = -62167219200000;
 const YEAR_9999_END_MS = 253402300799999;
 const MINUTE_MS = 60000;
@@ -134,6 +140,20 @@ const NOT_STRING_MOMENTS = [
   Object.create(null),
   // eslint-disable-next-line no-new-wrappers -- the wrapper object is the case under test
   new String(MOMENT),
+];
+
+// Milliseconds and the whole seconds they are rounded down to.
+const ROUNDED_DOWN = [
+  [0, 0],
+  [1, 0],
+  [999, 0],
+  [1000, 1],
+  [1999, 1],
+  [-1, -1],
+  [-999, -1],
+  [-1000, -1],
+  [-1001, -2],
+  [-2000, -2],
 ];
 
 // New York is behind UTC and moves its clocks on this night, Kolkata is ahead of UTC by a half-hour offset.
@@ -478,6 +498,61 @@ describe('toTimestamp', () => {
 
   test('returns null for what toDate does not read', () => {
     assertNull(toTimestamp, NOT_MOMENTS);
+  });
+});
+
+describe('toUnixSeconds', () => {
+  test('returns the whole seconds of a moment, rounded down on both sides of the epoch', () => {
+    ROUNDED_DOWN.forEach(([timestamp, seconds]) => {
+      assert.equal(toUnixSeconds(timestamp), seconds, `${timestamp} ms`);
+    });
+  });
+
+  test('accepts a Date, a timestamp and an ISO string, up to both ends of the range of a Date', () => {
+    [new Date(MOMENT_MS), MOMENT_MS, MOMENT, '2026-01-31T12:20:30.456+02:00'].forEach((value) => {
+      assert.equal(toUnixSeconds(value), MOMENT_SECONDS, inspect(value));
+    });
+    assert.equal(toUnixSeconds('1970-01-01'), 0);
+    assert.equal(toUnixSeconds(MAX_MS), MAX_SECONDS);
+    assert.equal(toUnixSeconds(-MAX_MS), -MAX_SECONDS);
+  });
+
+  test('returns null for what toDate does not read', () => {
+    assertNull(toUnixSeconds, NOT_MOMENTS);
+  });
+});
+
+describe('fromUnixSeconds', () => {
+  test('returns the moment of the seconds as a Date, a fraction of a second included', () => {
+    assertReads(fromUnixSeconds, [
+      [0, '1970-01-01T00:00:00.000Z'],
+      [1, '1970-01-01T00:00:01.000Z'],
+      [-1, '1969-12-31T23:59:59.000Z'],
+      [MOMENT_SECONDS, '2026-01-31T10:20:30.000Z'],
+      [1.5, '1970-01-01T00:00:01.500Z'],
+      [-0.5, '1969-12-31T23:59:59.500Z'],
+    ]);
+  });
+
+  test('returns null for what is not a finite number, a date and a text of digits included', () => {
+    assertNull(fromUnixSeconds, [...NOT_MOMENTS, new Date(MOMENT_MS), MOMENT, String(MOMENT_SECONDS)]);
+  });
+
+  test('returns null for seconds outside the range a Date can hold', () => {
+    assert.equal(fromUnixSeconds(MAX_SECONDS).getTime(), MAX_MS);
+    assert.equal(fromUnixSeconds(-MAX_SECONDS).getTime(), -MAX_MS);
+    assertNull(fromUnixSeconds, [MAX_SECONDS + 1, -MAX_SECONDS - 1, Number.MAX_VALUE]);
+  });
+
+  test('gives back the seconds toUnixSeconds() reads, and of a moment all but its fraction of a second', () => {
+    [0, 1, -1, MOMENT_SECONDS, -MOMENT_SECONDS, MAX_SECONDS, -MAX_SECONDS].forEach((seconds) => {
+      assert.equal(toUnixSeconds(fromUnixSeconds(seconds)), seconds);
+    });
+    assertReads((value) => fromUnixSeconds(toUnixSeconds(value)), [
+      [MOMENT, '2026-01-31T10:20:30.000Z'],
+      ['2026-01-31T10:20:30.000Z', '2026-01-31T10:20:30.000Z'],
+      ['1969-12-31T23:59:59.001Z', '1969-12-31T23:59:59.000Z'],
+    ]);
   });
 });
 
@@ -833,6 +908,28 @@ describe('convertStringToSeconds', () => {
   });
 });
 
+describe('convertStringToWholeSeconds', () => {
+  test('gives the seconds of a duration, and rounds a part of one up', () => {
+    [['30s', 30], ['10m', 600], ['1d', 86400], ['1.2s', 2], ['1.001s', 2], ['0.05m', 3]].forEach(([value, seconds]) => {
+      assert.equal(convertStringToWholeSeconds(value), seconds, value);
+    });
+  });
+
+  test('is never below one: 0 would be no wait at all', () => {
+    ['1s', '0.5s', '0.001s', '0s', '-0s', '-0.5s', '-1d'].forEach((value) => {
+      assert.equal(convertStringToWholeSeconds(value), 1, value);
+    });
+  });
+
+  test('throws on what is no duration, and names itself and the value', () => {
+    assertThrows(convertStringToWholeSeconds, ['', '10', '1mo', ' 1s', '1S', 600, null, undefined]);
+    assert.throws(() => convertStringToWholeSeconds('10 min'), {
+      name: 'TypeError',
+      message: 'convertStringToWholeSeconds(value) requires a number with a unit s, m, h, d or w, such as "10m" or "1.5h": received \'10 min\'',
+    });
+  });
+});
+
 describe('assertDurations', () => {
   const SECTION = Object.freeze({ timeout: '5s', ttl: '0.001s', other: 'anything' });
 
@@ -953,6 +1050,27 @@ describe('addToDate', () => {
 
   test('throws on an invalid duration even when the date is invalid', () => {
     assertThrows((duration) => addToDate(null, duration), [...NOT_DURATIONS, undefined]);
+  });
+});
+
+describe('differenceInSeconds', () => {
+  test('counts whole seconds, rounded down on both sides of zero: never more than there are', () => {
+    ROUNDED_DOWN.forEach(([ms, seconds]) => {
+      assert.equal(differenceInSeconds(MOMENT_MS + ms, MOMENT_MS), seconds, `${ms} ms`);
+    });
+  });
+
+  test('accepts a Date, a timestamp and an ISO string on either side', () => {
+    assert.equal(differenceInSeconds(new Date(MOMENT_MS), '2026-01-31T10:20:00Z'), 30);
+    assert.equal(differenceInSeconds('2026-01-31T12:20:30+02:00', new Date(0)), MOMENT_SECONDS);
+    assert.equal(differenceInSeconds(0, '2026-01-31T10:20:30Z'), -MOMENT_SECONDS);
+    assert.equal(differenceInSeconds(MAX_MS, -MAX_MS), 2 * MAX_SECONDS);
+  });
+
+  test('returns null when either moment is invalid', () => {
+    assertNull((value) => differenceInSeconds(value, MOMENT), NOT_MOMENTS);
+    assertNull((value) => differenceInSeconds(MOMENT, value), NOT_MOMENTS);
+    assert.equal(differenceInSeconds(null, null), null);
   });
 });
 
@@ -1240,12 +1358,14 @@ describe('date.js', () => {
     const results = [
       toDate(value),
       toTimestamp(value),
+      toUnixSeconds(value),
       toUtcIso(value),
       addToDate(value, '1d'),
       addToDate(value, '-1.5h'),
       addToDate(value, '0s'),
       getStartOfDay(value),
       getEndOfDay(value),
+      differenceInSeconds(value, other),
       differenceInDays(value, other),
       differenceInDays(other, value),
       isPast(value, other),

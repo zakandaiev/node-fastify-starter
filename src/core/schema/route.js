@@ -41,6 +41,9 @@ const PREFIX_REGEXP = /^\/[^/]+(?:\/[^/]+)*$/;
 
 const PROPERTY_NAMES_KEYWORD = 'propertyNames';
 
+// Put on requests by the auth plugin alone. A scope opened before that plugin has none, whatever it decorates itself.
+export const AUTH_DECORATOR = Symbol('auth');
+
 function isUnderPrefix(url, prefix) {
   return url === prefix || url.startsWith(`${prefix}/`);
 }
@@ -346,6 +349,13 @@ function guardBodyMediaTypes(routeOptions) {
   return true;
 }
 
+// The guard is put on the routes declared after its plugin, in scopes opened after it: any other would be open to anyone.
+function assertGuard(fastify, routeOptions) {
+  if (routeOptions.security?.auth === true && fastify?.hasRequestDecorator(AUTH_DECORATOR) === false) {
+    throw new Error(`${formatRoute(routeOptions)} has security: { auth: true } and is out of reach of the auth plugin, which guards what is declared after it, in scopes opened after it`);
+  }
+}
+
 // Synchronous: Fastify ignores the promise of an async onRoute hook, and the route would go live unchecked.
 // The schema is replaced, never changed in place: the HEAD twin of a GET route gets the original options again.
 export function createRouteHook({ apiPrefix, healthPrefix } = {}) {
@@ -356,6 +366,8 @@ export function createRouteHook({ apiPrefix, healthPrefix } = {}) {
   }
 
   function checkRoute(routeOptions) {
+    assertGuard(this, routeOptions);
+
     if (isObject(routeOptions.schema)) {
       const source = routeOptions.schema;
 

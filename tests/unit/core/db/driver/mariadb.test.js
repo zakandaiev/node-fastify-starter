@@ -7,6 +7,7 @@ import {
 import { DbError } from '#core/db/error.js';
 import { createTestConfig } from '#root/tests/helper/config.js';
 import { createDownEnv } from '#root/tests/helper/db.js';
+import { PromisePool } from 'mysql2/promise';
 import assert from 'node:assert/strict';
 import net from 'node:net';
 import { describe, test } from 'node:test';
@@ -27,6 +28,27 @@ function createDriver(t, overrides = {}, env = {}) {
   t.after(() => driver.close());
 
   return driver;
+}
+
+// The shape of a connection the pool hands out: a new wrapper each time around the same connection.
+function createConnection(failure = null) {
+  const calls = [];
+
+  return {
+    calls,
+    connection: {},
+    query(sql) {
+      calls.push(sql);
+
+      return failure
+        ? Promise.reject(failure)
+        : Promise.resolve([[], []]);
+    },
+    destroy() {
+      calls.push('destroy');
+    },
+    release() {},
+  };
 }
 
 describe('assertServer', () => {
@@ -113,26 +135,6 @@ describe('SESSION_SQL', () => {
 });
 
 describe('initSession', () => {
-  // The shape of a connection the pool hands out: a new wrapper each time around the same connection.
-  function createConnection(failure = null) {
-    const calls = [];
-
-    return {
-      calls,
-      connection: {},
-      query(sql) {
-        calls.push(sql);
-
-        return failure
-          ? Promise.reject(failure)
-          : Promise.resolve([[], []]);
-      },
-      destroy() {
-        calls.push('destroy');
-      },
-    };
-  }
-
   test('sends the session statement to a connection once, however many times it is handed out', async () => {
     const connection = createConnection();
     const again = { ...connection };
@@ -140,6 +142,14 @@ describe('initSession', () => {
     assert.equal(await initSession(connection), true);
     assert.equal(await initSession(again), false);
     assert.deepEqual(connection.calls, [SESSION_SQL]);
+  });
+
+  test('sends the statement it is given in place of the plain one', async () => {
+    const connection = createConnection();
+    const sql = `${SESSION_SQL}, innodb_lock_wait_timeout = 5, lock_wait_timeout = 5`;
+
+    assert.equal(await initSession(connection, sql), true);
+    assert.deepEqual(connection.calls, [sql]);
   });
 
   test('closes a connection that refused the session statement and rejects with what the server answered', async () => {
@@ -169,6 +179,32 @@ describe('createMariadbDriver', () => {
       rejectedCount: 0,
       timeoutCount: 0,
     });
+  });
+
+  test('limits both waits for a lock in the session of a connection of the pool, by db.lockWaitTimeout in whole seconds of at least one', async (t) => {
+    const cases = [['0s', 1], ['0.05s', 1], ['1s', 1], ['1.2s', 2], ['5s', 5], ['1m', 60]];
+
+    t.mock.method(PromisePool.prototype, 'getConnection', async () => createConnection());
+
+    const sent = await Promise.all(cases.map(([lockWaitTimeout]) => createDriver(t, { lockWaitTimeout }).withConnection(({ calls }) => [...calls])));
+
+    assert.deepEqual(sent, cases.map(([, seconds]) => [`${SESSION_SQL}, innodb_lock_wait_timeout = ${seconds}, lock_wait_timeout = ${seconds}`]));
+  });
+
+  test('hands out no connection whose session the server has refused to set: it is closed, and the caller gets the answer', async (t) => {
+    const refusal = Object.assign(new Error("Unknown system variable 'lc_messages'"), { errno: 1193, sqlState: 'HY000', code: 'ER_UNKNOWN_SYSTEM_VARIABLE' });
+    const connection = createConnection(refusal);
+    const fn = t.mock.fn();
+
+    t.mock.method(PromisePool.prototype, 'getConnection', async () => connection);
+
+    await assert.rejects(
+      createDriver(t, { lockWaitTimeout: '1s' }).withConnection(fn),
+      (error) => error instanceof DbError && error.code === 'ER_UNKNOWN_SYSTEM_VARIABLE' && error.isConnectFailure === true,
+    );
+
+    assert.equal(fn.mock.callCount(), 0);
+    assert.deepEqual(connection.calls, [`${SESSION_SQL}, innodb_lock_wait_timeout = 1, lock_wait_timeout = 1`, 'destroy']);
   });
 
   test('writes the values of a statement into it the way the text protocol sends them', (t) => {

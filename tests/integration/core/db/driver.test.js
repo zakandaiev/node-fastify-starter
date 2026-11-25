@@ -1,11 +1,17 @@
 import { SESSION_SQL } from '#core/db/driver/mariadb.js';
 import { DbError } from '#core/db/error.js';
 import { withTransaction } from '#core/db/transaction.js';
+import { DB_ERROR_KIND } from '#enums/db-error-kind.js';
+import { rejectionOf } from '#root/tests/helper/async.js';
 import { createTestDb } from '#root/tests/helper/db.js';
 import { createLogSink } from '#root/tests/helper/log.js';
-import { pick } from '#utils/object.js';
+import { convertStringToSeconds } from '#utils/date.js';
+import { omit } from '#utils/object.js';
 import assert from 'node:assert/strict';
 import { before, describe, test } from 'node:test';
+
+// A statement that must fail and waits instead is a test that never ends: the limit turns it into a failure.
+const HANG_TIMEOUT_MS = 5000;
 
 const CLOCK_TOLERANCE_MS = 5000;
 const SECRET = 'john@example.com';
@@ -64,21 +70,71 @@ describe('db: time', { skip: testDb.skip }, () => {
         @@session.autocommit AS autocommit,
         @@session.lc_messages AS language,
         @@session.group_concat_max_len = @@session.max_allowed_packet AS isAggregateWhole,
+        @@session.innodb_lock_wait_timeout AS rowWaitSeconds,
+        @@session.lock_wait_timeout AS tableWaitSeconds,
         SLEEP(0.05) AS waited
     `)));
     const ids = sessions.map(([row]) => row.id);
+    const lockWaitSeconds = convertStringToSeconds(testDb.config.db.lockWaitTimeout);
 
     assert.ok(new Set(ids).size > 1);
     sessions.forEach(([session]) => {
-      assert.deepEqual(pick(session, ['timeZone', 'charset', 'autocommit', 'language', 'isAggregateWhole']), {
+      assert.deepEqual(omit(session, ['id', 'sqlMode', 'waited']), {
         timeZone: '+00:00',
         charset: 'utf8mb4',
         autocommit: 1,
         language: 'en_US',
         isAggregateWhole: 1,
+        rowWaitSeconds: lockWaitSeconds,
+        tableWaitSeconds: lockWaitSeconds,
       });
       assert.equal(session.sqlMode.includes('NO_BACKSLASH_ESCAPES'), false);
     });
+  });
+});
+
+describe('db: the wait for a lock', { skip: testDb.skip }, () => {
+  test('of a row and of a table is counted in whole seconds, never zero, and a script session keeps those of the server', async (t) => {
+    const READ_SQL = 'SELECT @@session.innodb_lock_wait_timeout AS rowSeconds, @@session.lock_wait_timeout AS tableSeconds';
+    const pools = [['0.2s', 1], ['1.2s', 2], ['4s', 4]].map(([lockWaitTimeout, seconds]) => [testDb.open({ db: { lockWaitTimeout } }, t), seconds]);
+    const found = await Promise.all(pools.map(([pool]) => pool.readRows(READ_SQL)));
+    const server = await readRows('SELECT @@global.innodb_lock_wait_timeout AS rowSeconds, @@global.lock_wait_timeout AS tableSeconds');
+    const script = await db.driver.withScript({ database: testDb.name }, ({ query: ask }) => ask(READ_SQL));
+
+    assert.deepEqual(found, pools.map(([, seconds]) => [{ rowSeconds: seconds, tableSeconds: seconds }]));
+    assert.deepEqual(script.rows, server);
+  });
+
+  test('ends as a lock conflict for a write to a table another session has locked, as a dump does, while a read of it passes', { timeout: HANG_TIMEOUT_MS }, async (t) => {
+    const keeper = testDb.open({ db: { connectionLimit: 1 } }, t);
+    const writer = testDb.open({ db: { connectionLimit: 1, lockWaitTimeout: '1s' } }, t);
+
+    function write() {
+      return writer.readRows("UPDATE dumped SET note = 'written'");
+    }
+
+    function read() {
+      return writer.readRows('SELECT note FROM dumped');
+    }
+
+    await query("CREATE TABLE dumped (note VARCHAR(20) NOT NULL) AS SELECT 'first' AS note");
+    await keeper.readRows('LOCK TABLES dumped READ');
+
+    const error = await rejectionOf(write());
+    const found = await read();
+
+    await keeper.readRows('UNLOCK TABLES');
+    await write();
+
+    assert.ok(error instanceof DbError);
+    assert.deepEqual({ ...error }, {
+      kind: DB_ERROR_KIND.DEADLOCK,
+      code: 'ER_LOCK_WAIT_TIMEOUT',
+      errno: 1205,
+      sqlState: 'HY000',
+    });
+    assert.deepEqual(found, [{ note: 'first' }]);
+    assert.deepEqual(await read(), [{ note: 'written' }]);
   });
 });
 

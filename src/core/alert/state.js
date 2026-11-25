@@ -1,5 +1,6 @@
 import { REDIS_FAILURE, runRedisSafely } from '#core/redis/index.js';
 import { sha256 } from '#utils/hash.js';
+import { readLru, writeLru } from '#utils/lru.js';
 import { addWindowCount, takeWindowSlot } from '#utils/window.js';
 
 const DEDUPE_NAMESPACE = 'alert:dedupe:';
@@ -45,31 +46,8 @@ function getSpaceMemory(redis, space) {
   return spaces.get(space);
 }
 
-// The least recently used mark goes first once the map is full: a read moves a mark to the end.
-function readMark(memory, key, now) {
-  const entry = memory.marks.get(key);
-
-  memory.marks.delete(key);
-
-  if (entry === undefined || entry.until <= now) {
-    return false;
-  }
-
-  memory.marks.set(key, entry);
-
-  return true;
-}
-
-function writeMark(memory, key, { ttlMs, maxEntries }, now) {
-  memory.marks.delete(key);
-
-  if (memory.marks.size >= maxEntries) {
-    memory.marks.delete(memory.marks.keys().next().value);
-  }
-
-  memory.marks.set(key, { until: now + ttlMs });
-
-  return true;
+function hasMark(memory, key, now) {
+  return readLru(memory.marks, key, now) !== undefined;
 }
 
 function toDedupeKey(space, dedupeKey) {
@@ -83,7 +61,7 @@ function toWindowKey(namespace, window) {
 // A mark in memory counts too: while Redis refused writes and answered reads, the marks went there.
 export async function isDeduped({ redis, space, dedupeKey }) {
   const key = toDedupeKey(space, dedupeKey);
-  const isInMemory = readMark(getSpaceMemory(redis, space), key, performance.now());
+  const isInMemory = hasMark(getSpaceMemory(redis, space), key, performance.now());
   const found = await runRedisSafely((client) => client.exists(key), DEDUPE_READ_FAILED_MESSAGE, { redis });
 
   return isInMemory || (found !== REDIS_FAILURE && found > 0);
@@ -106,11 +84,11 @@ export async function claimDedupe({
     return reply === SET_OK;
   }
 
-  if (readMark(memory, key, now)) {
+  if (hasMark(memory, key, now)) {
     return false;
   }
 
-  return writeMark(memory, key, { ttlMs, maxEntries }, now);
+  return writeLru(memory.marks, key, true, { until: now + ttlMs, maxEntries });
 }
 
 // Released where the mark was set: a mark held by memory while Redis was away is gone with the memory one.

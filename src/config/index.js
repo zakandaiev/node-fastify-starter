@@ -1,5 +1,6 @@
 import { createAlertConfig } from '#config/alert.js';
 import { createAppConfig } from '#config/app.js';
+import { createAuthConfig } from '#config/auth.js';
 import { createCacheConfig } from '#config/cache.js';
 import { createDbConfig } from '#config/db.js';
 import { createHttpConfig } from '#config/http.js';
@@ -16,6 +17,7 @@ export function createConfig(env) {
     db: createDbConfig(env),
     redis: createRedisConfig(env),
     cache: createCacheConfig(),
+    auth: createAuthConfig(env),
     http: createHttpConfig(),
     alert: createAlertConfig(env),
     logger: createLoggerConfig(env),

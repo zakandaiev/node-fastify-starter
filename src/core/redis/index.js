@@ -26,6 +26,8 @@ const UNSUBSCRIBE = 'unsubscribe';
 // and the timer ioredis arms for it would hold the process for that long.
 const DISCONNECT_TIMEOUT_MS = 0;
 
+const MAINT_NOTIFICATIONS_OFF = 'disabled';
+
 const SUBSCRIBER_SUFFIX = ' subscriber';
 const ERROR_KIND_SEPARATOR = ' ';
 const FAILURE_KEY_SEPARATOR = '\n';
@@ -72,9 +74,9 @@ function assertOptions(options) {
   }
 }
 
-// The contract: a command never waits for a connection (no offline queue) and never outlives commandTimeout;
-// a command its caller saw fail is not sent again after a reconnect (it may have run already, or run later
-// behind the caller's back); a connection that stops answering is torn down after socketTimeout.
+// The contract: a command never waits for a connection (no offline queue) and never outlives commandTimeout, which the
+// maintenance notifications of a managed Redis would stretch to 10 s; a command its caller saw fail is not sent again
+// after a reconnect (it may have run already, or behind the caller's back); a silent connection ends at socketTimeout.
 function toClientOptions(config) {
   const stepMs = convertStringToMs(config.reconnectStep);
   const maxDelayMs = convertStringToMs(config.reconnectMaxDelay);
@@ -89,6 +91,7 @@ function toClientOptions(config) {
     enableOfflineQueue: false,
     maxRetriesPerRequest: 1,
     autoResendUnfulfilledCommands: false,
+    maintNotifications: MAINT_NOTIFICATIONS_OFF,
     connectTimeout: convertStringToMs(config.connectTimeout),
     commandTimeout: convertStringToMs(config.commandTimeout),
     socketTimeout: convertStringToMs(config.socketTimeout),
@@ -98,9 +101,8 @@ function toClientOptions(config) {
   };
 }
 
-// A reply error carries the arguments of its command: the password of HELLO ... AUTH, the value of a SET.
-// The log gets a copy with the name of the command only, also for the errors of a transaction it holds;
-// the error itself is left as it is.
+// A reply error carries the arguments of its command: the password of HELLO ... AUTH, the value of a SET. The log gets a
+// copy with the name of the command only, also for the errors of a transaction it holds.
 function toLoggableError(error) {
   if (!(error instanceof Error)) {
     return error;

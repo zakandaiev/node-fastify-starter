@@ -53,8 +53,8 @@ function readBlockNames(message) {
 function createRequest(overrides = {}) {
   return {
     method: 'POST',
-    protocol: 'https',
-    host: 'app.test',
+    protocol: 'http',
+    host: 'evil.test',
     url: '/api/v1/orders/7?token=query-secret#fragment-secret',
     ip: '203.0.113.7',
     id: '019a1b2c-3d4e-7f5a-8b6c-7d8e9f0a1b2c',
@@ -149,8 +149,51 @@ describe('buildAlertMessage', () => {
 });
 
 describe('buildAlertMessage: the Url block', () => {
-  test('is built from the protocol, the host and the path of the request, without the query and the fragment', () => {
+  test('is the address of the app with the path of the request, without the query, the fragment and the host the request names', () => {
     assert.equal(findBlock(build({ request: createRequest() }), ALERT_BLOCK.URL).value, 'https://app.test/api/v1/orders/7');
+  });
+
+  test('is the same whatever host the client names, in Host, in X-Forwarded-Host or in both, from an address that is trusted or not', async (t) => {
+    const fastify = await buildTestApp();
+    const seen = [];
+
+    t.after(() => fastify.close());
+    fastify.get('/capture', async (request, reply) => {
+      seen.push({ host: request.host, url: findBlock(build({ request }, fastify.config.app), ALERT_BLOCK.URL).value });
+
+      return reply.noContent();
+    });
+
+    const requests = [
+      { host: 'evil.test' },
+      { 'x-forwarded-host': 'evil.test/login?from=' },
+      { host: 'evil.test', 'x-forwarded-host': 'app.test, evil.test', 'x-forwarded-proto': 'ftp' },
+    ].flatMap((headers) => ['127.0.0.1', '203.0.113.7'].map((remoteAddress) => ({ url: '/capture', headers, remoteAddress })));
+
+    await Promise.all(requests.map((request) => fastify.inject(request)));
+
+    assert.deepEqual(new Set(seen.map(({ host }) => host)), new Set(['evil.test', 'evil.test/login?from=', 'localhost:80']));
+    assert.deepEqual(seen.map(({ url }) => url), requests.map(() => 'https://app.test/capture'));
+  });
+
+  test('is the path alone behind our host, whatever a request line names in front of it', () => {
+    const cases = [
+      ['http://evil.test/orders/7', '/orders/7'],
+      ['HTTPS://user:pass@evil.test:81/orders/7?token=query-secret', '/orders/7'],
+      ['ftp://evil.test/orders/7', '/orders/7'],
+      ['x-1.0+evil://evil.test/orders/7', '/orders/7'],
+      ['http://evil.test', ''],
+      ['http://evil.test?token=query-secret', ''],
+      ['*@evil.test/orders/7', '/orders/7'],
+      ['*', ''],
+      ['//evil.test/orders/7', '//evil.test/orders/7'],
+      ['/orders/http://evil.test/7', '/orders/http://evil.test/7'],
+    ];
+
+    assert.deepEqual(
+      cases.map(([url]) => findBlock(build({ request: createRequest({ url }) }), ALERT_BLOCK.URL).value),
+      cases.map(([, path]) => `https://app.test${path}`),
+    );
   });
 
   test('is the url option when there is one, before the request and without its query and fragment', () => {
@@ -160,11 +203,15 @@ describe('buildAlertMessage: the Url block', () => {
     assert.equal(findBlock(build({ url }), ALERT_BLOCK.URL).value, 'https://shop.test/cart');
   });
 
-  test('is cut to 2048 characters', () => {
-    const { value } = findBlock(build({ url: `https://app.test/${'a'.repeat(3000)}` }), ALERT_BLOCK.URL);
+  test('is cut to 2048 characters, the address of a request too', () => {
+    const path = `/${'a'.repeat(3000)}`;
 
-    assert.equal(value.length, 2048);
-    assert.equal(value.endsWith(SUFFIX), true);
+    [{ url: `https://app.test${path}` }, { request: createRequest({ url: path }) }].forEach((input) => {
+      const { value } = findBlock(build(input), ALERT_BLOCK.URL);
+
+      assert.equal(value.length, 2048);
+      assert.equal(value.endsWith(SUFFIX), true);
+    });
   });
 });
 
@@ -289,7 +336,8 @@ describe('describeRequest', () => {
       method: 'POST',
       url: '/capture?token=query-secret',
       headers: {
-        host: 'app.test',
+        host: 'evil.test',
+        'x-forwarded-host': 'evil.test',
         'user-agent': userAgent,
         cookie: 'session=cookie-secret',
         authorization: 'Bearer header-secret',
@@ -298,7 +346,7 @@ describe('describeRequest', () => {
     });
 
     assert.equal(response.statusCode, 204);
-    assert.equal(findBlock(message, ALERT_BLOCK.URL).value, 'http://app.test/capture');
+    assert.equal(findBlock(message, ALERT_BLOCK.URL).value, 'https://app.test/capture');
     assert.deepEqual(findBlock(message, ALERT_BLOCK.REQUEST).value, {
       method: 'POST',
       ip: '127.0.0.1',

@@ -18,6 +18,9 @@ const IPV6 = 'ipv6';
 const FAMILIES = Object.freeze({ 4: IPV4, 6: IPV6 });
 const PREFIX_MAX_LENGTHS = Object.freeze({ [IPV4]: 32, [IPV6]: 128 });
 
+// The longest text of an address is an IPv4 one inside an IPv6 one; a zone after "%" could be of any length.
+export const IP_MAX_LENGTH = 45;
+
 const CIDR_SEPARATOR = '/';
 const ZONE_SEPARATOR = '%';
 const PREFIX_LENGTH_REGEXP = /^(?:0|[1-9]\d{0,2})$/;
@@ -170,6 +173,14 @@ export function ipInCidr(address, cidr) {
   list.addSubnet(block.network, block.prefixLength, block.family);
 
   return list.check(address, family);
+}
+
+// For a column of addresses: the ip of a request may be a text its client wrote (a proxy that passes X-Forwarded-For
+// on as it came), and one longer than the column would fail the insert.
+export function toIpAddress(value) {
+  return getFamily(value) !== null && value.length <= IP_MAX_LENGTH
+    ? value
+    : null;
 }
 
 export function isLoopbackAddress(address) {

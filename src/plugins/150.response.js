@@ -60,10 +60,9 @@ function noContent() {
     .send();
 }
 
-// Throws instead of calling reply.send(error): an async handler that forgets to return the call would answer
-// a second time while an onError hook is still awaited, and that rejection is unhandled.
-// Being a throw, it works only on the stack of a handler or a hook: in a callback of a stream, a timer
-// or an emitter nothing catches it and the process exits. There the error goes to reply.send(error).
+// Throws instead of calling reply.send(error): an async handler that forgets to return the call would answer a second
+// time while a hook keeps the first answer waiting, and nobody may hold what that fails with. A throw works only on the
+// stack of a handler or a hook: in a callback of a stream, a timer or an emitter the error goes to reply.send(error).
 function fail(error) {
   if (!(error instanceof Error)) {
     throw new TypeError('reply.fail(error) requires an Error: reply.fail(new AppError(code))');

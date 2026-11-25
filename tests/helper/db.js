@@ -239,7 +239,8 @@ export async function createDownEnv() {
 export async function createDownDb(t, sections = {}) {
   const down = openPool(createTestConfig({ ...sections, env: { ...sections.env, ...(await createDownEnv()) } }));
 
-  t.after(() => down.db.close());
+  // A connection that is still being opened fails the close, and after a hook that rejects node:test runs no other.
+  t.after(() => Promise.allSettled([down.db.close()]));
 
   return down;
 }
@@ -386,6 +387,37 @@ async function holdTable(scope, t, table) {
   return reader;
 }
 
+// Holds what a statement of an app then waits for, on a connection outside the pools. Opened before the app: the hooks
+// of a test run in the order they were made, and an app does not close while a statement of it waits.
+async function openKeeper(scope, t) {
+  const connection = await connectAdmin(scope.env);
+
+  t.after(() => connection.end());
+  await connection.query(`USE \`${scope.name}\``);
+
+  async function holdRow(table, id) {
+    await connection.query('BEGIN');
+    await connection.query(`SELECT id FROM ${table} WHERE id = ? FOR UPDATE`, [id]);
+  }
+
+  // WRITE: nobody else reads the tables. READ: nobody writes them.
+  function lockTables(tables, mode) {
+    return connection.query(`LOCK TABLES ${tables.map((table) => `${table} ${mode}`).join(', ')}`);
+  }
+
+  async function release() {
+    await connection.query('ROLLBACK');
+    await connection.query('UNLOCK TABLES');
+  }
+
+  return {
+    query: connection.query.bind(connection),
+    holdRow,
+    lockTables,
+    release,
+  };
+}
+
 // Another empty database on the server, for what reaches out of its own. It goes with the test,
 // or with the file when no test is given.
 async function createNeighbour(scope, t = null) {
@@ -432,6 +464,7 @@ export async function createTestDb() {
     runAsAdmin: runAsAdmin.bind(null, scope),
     alterDatabase: alterDatabase.bind(null, scope),
     holdTable: holdTable.bind(null, scope),
+    openKeeper: openKeeper.bind(null, scope),
     reset: () => resetDatabase(env, name),
     ...openOnDatabase(scope),
   };

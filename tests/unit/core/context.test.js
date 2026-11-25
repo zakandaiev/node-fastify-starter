@@ -28,6 +28,7 @@ describe('createContext', () => {
     assert.equal(context.db, null);
     assert.equal(context.redis, null);
     assert.equal(context.cacheRedis, null);
+    assert.equal(context.jwt, null);
     assert.equal(context.requestId, null);
     assert.equal(context.transaction, null);
   });
@@ -49,17 +50,20 @@ describe('createContext', () => {
     const db = {};
     const redis = {};
     const cacheRedis = {};
+    const jwt = {};
     const context = createContext({
       config: {},
       log,
       db,
       redis,
       cacheRedis,
+      jwt,
     });
 
     assert.equal(context.db, db);
     assert.equal(context.redis, redis);
     assert.equal(context.cacheRedis, cacheRedis);
+    assert.equal(context.jwt, jwt);
   });
 });
 

@@ -9,10 +9,17 @@ export function createDbConfig(env) {
     // The pools of every process (API replicas, worker) plus the migrator must stay below max_connections.
     connectionLimit: 10,
     queueLimit: 50,
-    connectTimeout: '10s',
+    connectTimeout: '4s',
 
     statementTimeout: '3s',
     slowQueryThreshold: '1s',
+
+    // How long a statement waits for a row or a table another session holds, in whole seconds, before it fails.
+    lockWaitTimeout: '5s',
+
+    // A transaction whose function has not settled by then fails, and its connection is closed: one that never
+    // settles would keep a connection of the pool for good.
+    transactionTimeout: '30s',
 
     // The first is how long a migrator waits for another one, the second how long a statement of a migration
     // file waits for a table another session holds: without it that is a day, with every query on the table behind it.

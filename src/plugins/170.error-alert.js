@@ -63,8 +63,9 @@ function describeServerFault(error, request) {
   };
 }
 
-// A 503 is an overload, not a bug, and is no 5xx alert. Of its causes these are reported, since an admin can act on
-// them: a slow statement, a full pool, a server out of connections. A guest can cause them: the class is "warning".
+// A 503 is no 5xx alert. Of its causes a slow statement, a full pool and a server out of connections are reported, with
+// the class "warning": a guest can cause them. A connection that does not open is the same outage as behind a 500, and
+// comes last: a server out of connections opens none either.
 function describeOverload(error, request) {
   const dbError = findDbError(error);
 
@@ -88,7 +89,9 @@ function describeOverload(error, request) {
     };
   }
 
-  return null;
+  return dbError?.isConnectFailure
+    ? describeServerFault(error, request)
+    : null;
 }
 
 function describeReport(error, request) {
@@ -125,14 +128,16 @@ function logChannels(fastify) {
     : NO_CHANNEL_MESSAGE);
 }
 
-// The hook runs before the error handler and sees the error as it was thrown. It returns nothing: a value
-// returned by an onError hook replaces the error for the hooks after it.
+// The hook runs before the error handler and sees the error as it was thrown. A callback hook that gives nothing on:
+// a value would replace the error for the hooks after it, and while an async one is pending, a handler that forgot to
+// return its answer sends again, which Fastify refuses with a rejection nobody holds.
 async function useErrorAlert(fastify) {
   assertAlertConfig(fastify.config.alert);
   logChannels(fastify);
 
-  fastify.addHook('onError', async (request, reply, error) => {
+  fastify.addHook('onError', (request, reply, error, done) => {
     reportFailure(request, error);
+    done();
   });
 }
 

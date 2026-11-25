@@ -13,6 +13,7 @@ describe('TABLE', () => {
       GROUP_SCOPES: 'group_scopes',
       USER_GROUPS: 'user_groups',
       AUDIT_LOGS: 'audit_logs',
+      SESSIONS: 'sessions',
     });
     assert.ok(Object.isFrozen(TABLE));
   });

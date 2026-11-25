@@ -3,6 +3,7 @@ import { AppError } from '#core/error/index.js';
 import { maskErrorValues } from '#core/error/mask.js';
 import { formatValidation, normalizeValidation } from '#core/error/validation.js';
 import { createEnvelope } from '#core/response/index.js';
+import { CACHE_CONTROL } from '#enums/cache-control.js';
 import { ERROR_CATALOG, ERROR_CODE } from '#enums/error-code.js';
 import { HEADER } from '#enums/header.js';
 import { HTTP_METHOD } from '#enums/http-method.js';
@@ -20,10 +21,10 @@ import {
   isPositiveInteger,
   isString,
 } from '#utils/type.js';
+import symbols from 'fastify/lib/symbols.js';
 import { STATUS_CODES, validateHeaderName, validateHeaderValue } from 'node:http';
 
 const JSON_CONTENT_TYPE = MEDIA_TYPE.JSON_UTF8;
-const NO_STORE = 'no-store';
 const CONNECTION_CLOSE = 'close';
 const HTTP_VERSION = 'HTTP/1.1';
 const HTTP_LINE_BREAK = '\r\n';
@@ -34,6 +35,15 @@ const HANDLER_FAILED_MESSAGE = 'Error handler failed';
 const CLIENT_ERROR_MESSAGE = 'Connection closed on a client error';
 
 const CONNECTION_RESET_CODE = 'ECONNRESET';
+
+const SERVER_FAILURE = Object.freeze({ code: ERROR_CODE.SERVER_ERROR, statusCode: HTTP_STATUS.INTERNAL_SERVER_ERROR });
+
+// The handler Fastify asks next when the answer of the last one could not be sent. After the handler of the root there
+// is only its own, which answers with the text of the error, and no public way puts another in between.
+const { kReplyNextErrorHandler } = symbols;
+const LAST_LINK = Object.freeze({ func: handleError });
+
+const answeredReplies = new WeakSet();
 
 const UNIQUE_OPERATOR = 'unique';
 
@@ -225,14 +235,20 @@ function reviveResponse(request, reply) {
   return true;
 }
 
+// Only those that are there: Node takes the removal of another for a ban on it, and a stream a hook makes of the body
+// would get neither its length nor chunks.
+function dropBodyHeaders(reply) {
+  BODY_HEADERS.filter((name) => reply.hasHeader(name)).forEach((name) => reply.removeHeader(name));
+}
+
 // The reply still carries what the route did to it before it failed: a serializer of its own, the caching
 // policy of the answer that never came. An error is never stored, unless the error itself says otherwise.
 function resetReply(request, reply) {
   reviveResponse(request, reply);
   reply.serializer(null);
-  BODY_HEADERS.forEach((name) => reply.removeHeader(name));
+  dropBodyHeaders(reply);
   dropUnsendableHeaders(reply);
-  reply.header(HEADER.CACHE_CONTROL, NO_STORE);
+  reply.header(HEADER.CACHE_CONTROL, CACHE_CONTROL.NO_STORE);
 }
 
 // The body goes out as a string: serialized here, a failure lands in the catch of handleError,
@@ -291,6 +307,7 @@ function respond(error, request, reply) {
   const appConfig = request.server.config.app;
   const failure = describeFailure(error, request, appConfig);
 
+  answeredReplies.add(reply);
   logFailure(error, failure, request);
   sendFailure(failure, request, reply, appConfig);
 
@@ -306,12 +323,20 @@ function readFallbackStatus(error) {
   }
 }
 
-// Nothing of the failed attempt is sent: neither its headers nor the reason phrase, the missing body
-// and the chunked framing its writeHead left. A "connection: close" it carried still closes the connection.
-function sendRawFailure(error, request, reply) {
+function describeFallback(error) {
+  const statusCode = readFallbackStatus(error);
+
+  return statusCode < HTTP_STATUS.INTERNAL_SERVER_ERROR
+    ? { code: ERROR_CODE.BAD_REQUEST_ERROR, statusCode }
+    : SERVER_FAILURE;
+}
+
+// Nothing of the failed attempt is sent but the headers given here: neither its own nor the reason phrase, the missing
+// body and the chunked framing its writeHead left. A "connection: close" it carried still closes the connection.
+function sendRawFailure(request, reply, { code, statusCode, headers }) {
   const { raw } = reply;
 
-  if (raw.destroyed || raw.writableEnded) {
+  if (reply.sent || raw.destroyed) {
     return false;
   }
 
@@ -321,14 +346,6 @@ function sendRawFailure(error, request, reply) {
     return false;
   }
 
-  const status = readFallbackStatus(error);
-  const isClientError = status < HTTP_STATUS.INTERNAL_SERVER_ERROR;
-  const code = isClientError
-    ? ERROR_CODE.BAD_REQUEST_ERROR
-    : ERROR_CODE.SERVER_ERROR;
-  const statusCode = isClientError
-    ? status
-    : HTTP_STATUS.INTERNAL_SERVER_ERROR;
   const body = JSON.stringify(createEnvelope({
     code,
     message: ERROR_CATALOG[code].message,
@@ -340,17 +357,18 @@ function sendRawFailure(error, request, reply) {
   raw.writeHead(statusCode, {
     [HEADER.CONTENT_TYPE]: JSON_CONTENT_TYPE,
     [HEADER.CONTENT_LENGTH]: Buffer.byteLength(body),
-    [HEADER.CACHE_CONTROL]: NO_STORE,
+    [HEADER.CACHE_CONTROL]: CACHE_CONTROL.NO_STORE,
     ...(isString(request.id) && { [HEADER.REQUEST_ID]: request.id }),
+    ...headers,
   });
   raw.end(body);
 
   return true;
 }
 
-function answerHandlerFailure(error, request, reply) {
+function answerHandlerFailure(request, reply, failure) {
   try {
-    sendRawFailure(error, request, reply);
+    sendRawFailure(request, reply, failure);
   } catch {
     tearDown(reply.raw);
   }
@@ -364,14 +382,38 @@ function logHandlerFailure(request, handlerError) {
   }
 }
 
+function readCookies(reply) {
+  const cookies = reply.getHeader(HEADER.SET_COOKIE);
+
+  return cookies !== undefined && isSendableHeader(HEADER.SET_COOKIE, cookies)
+    ? { [HEADER.SET_COOKIE]: cookies }
+    : {};
+}
+
+// The second call for one reply: an onSend hook has failed on the body of the error too. It is the server's own answer
+// that failed, so it is a 500 whatever was thrown; the cookies written by then stay, they may be those of a rotation that
+// is committed.
+function answerAgain(error, request, reply) {
+  answerHandlerFailure(request, reply, { ...SERVER_FAILURE, headers: readCookies(reply) });
+  logHandlerFailure(request, error);
+
+  return true;
+}
+
 // Synchronous and total, with no decorator, hook or context behind it: the router calls the same function
 // as frameworkErrors, outside the try/catch of Fastify, where an exception takes the process down.
 // It ends without a value: Fastify sends whatever an error handler returns as the body.
 export function handleError(error, request, reply) {
   try {
-    respond(error, request, reply);
+    reply[kReplyNextErrorHandler] = LAST_LINK;
+
+    if (answeredReplies.has(reply)) {
+      answerAgain(error, request, reply);
+    } else {
+      respond(error, request, reply);
+    }
   } catch (handlerError) {
-    answerHandlerFailure(error, request, reply);
+    answerHandlerFailure(request, reply, describeFallback(error));
     logHandlerFailure(request, handlerError);
   }
 }
@@ -391,7 +433,7 @@ function writeClientError(socket, { code, statusCode, requestId }) {
     `${HEADER.DATE}: ${nowUtc().toUTCString()}`,
     `${HEADER.CONTENT_TYPE}: ${JSON_CONTENT_TYPE}`,
     `${HEADER.CONTENT_LENGTH}: ${Buffer.byteLength(body)}`,
-    `${HEADER.CACHE_CONTROL}: ${NO_STORE}`,
+    `${HEADER.CACHE_CONTROL}: ${CACHE_CONTROL.NO_STORE}`,
     `${HEADER.REQUEST_ID}: ${requestId}`,
     `${HEADER.CONNECTION}: ${CONNECTION_CLOSE}`,
   ].join(HTTP_LINE_BREAK);

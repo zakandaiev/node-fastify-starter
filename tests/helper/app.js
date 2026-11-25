@@ -35,3 +35,14 @@ export function errorBody(response, code, message) {
     meta: { requestId: readRequestId(response) },
   };
 }
+
+export function describeAnswer(response) {
+  return {
+    statusCode: response.statusCode,
+    body: response.json(),
+    retryAfter: response.headers[HEADER.RETRY_AFTER],
+    challenge: response.headers['www-authenticate'],
+    cacheControl: response.headers['cache-control'],
+    cookies: response.headers[HEADER.SET_COOKIE],
+  };
+}

@@ -18,7 +18,7 @@ import { CHARSET } from '#enums/collation.js';
 import { DB_ERROR_KIND } from '#enums/db-error-kind.js';
 import { ISOLATION_LEVEL } from '#enums/isolation-level.js';
 import { pLimit } from '#utils/async.js';
-import { convertStringToMs, convertStringToSeconds } from '#utils/date.js';
+import { convertStringToMs, convertStringToSeconds, convertStringToWholeSeconds } from '#utils/date.js';
 import { compact } from '#utils/object.js';
 import { isArray, isFunction, isNonEmptyString } from '#utils/type.js';
 import { createConnection, createPool } from 'mysql2/promise';
@@ -51,6 +51,8 @@ const SCRIPT_LEFT_DATABASE_CODE = 'SCRIPT_LEFT_DATABASE';
 
 const SEVERAL_STATEMENTS_MESSAGE = 'script.query(sql, binding) takes one statement with no semicolon inside it: a compound statement (BEGIN ... END, IF ... END IF) and a text of several are run with script.run(text)';
 const SEVERAL_STATEMENTS_CODE = 'SEVERAL_STATEMENTS';
+
+const ABORTED_MESSAGE = 'The connection was closed with a statement in flight';
 
 const UNREADABLE_JSON_CODE = 'UNREADABLE_JSON';
 const DUPLICATE_COLUMN_CODE = 'DUPLICATE_COLUMN';
@@ -195,15 +197,22 @@ export function assertServer({ version, timeZone, sqlMode } = {}) {
   }
 }
 
+// The second wait is for a table another session has locked, such as a dump: it would last a day.
+function buildPoolSessionSql(config) {
+  const seconds = convertStringToWholeSeconds(config.lockWaitTimeout);
+
+  return `${SESSION_SQL}, innodb_lock_wait_timeout = ${seconds}, lock_wait_timeout = ${seconds}`;
+}
+
 // Sent to a connection once, before it is handed out for the first time. A session that could not be set
 // is closed, and what the server answered is the error of the caller that asked for the connection.
-export async function initSession(connection) {
+export async function initSession(connection, sql = SESSION_SQL) {
   if (sessions.has(connection.connection)) {
     return false;
   }
 
   try {
-    await connection.query(SESSION_SQL);
+    await connection.query(sql);
   } catch (error) {
     connection.destroy();
 
@@ -270,7 +279,7 @@ async function connect(state) {
 async function acquire(state) {
   const connection = await connect(state);
 
-  await initSession(connection);
+  await initSession(connection, state.sessionSql);
 
   return connection;
 }
@@ -371,6 +380,13 @@ async function rollback(connection) {
 // A connection that may still hold an open transaction must not go back to the pool.
 function destroy(connection) {
   connection.destroy();
+}
+
+// For a connection whose statement may never be answered. destroy() alone says goodbye and waits for the answer: the
+// statement in flight would stay pending, and with it close() of the pool.
+function abort(connection) {
+  connection.destroy();
+  connection.connection.stream.destroy(new Error(ABORTED_MESSAGE));
 }
 
 async function checkServer(state, connection) {
@@ -614,6 +630,7 @@ export function createMariadbDriver(config) {
   const state = {
     pool,
     connectionOptions,
+    sessionSql: buildPoolSessionSql(config),
     gate: pLimit(config.connectionLimit),
     escape: (value) => pool.escape(value),
     connectionLimit: config.connectionLimit,
@@ -638,6 +655,7 @@ export function createMariadbDriver(config) {
     commit,
     rollback,
     destroy,
+    abort,
     quoteName,
     escapeName,
     buildUpsertClause,

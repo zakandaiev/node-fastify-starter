@@ -73,6 +73,64 @@
 
 - `async writeAudit(entry = {})`
 
+## #core/auth/authenticate.js
+
+- `async authenticateRequest(request)`
+
+## #core/auth/client.js
+
+- `readClient(request)`
+
+## #core/auth/cookie.js
+
+- `clearAuthCookies(reply)`
+- `endAuthCookies(request, reply)`
+- `setAuthCookies(reply, issued)`
+
+## #core/auth/read.js
+
+- `createUnavailableError(cause)`
+- `isDatabaseAway(error)`
+- `async readInTime(read)`
+
+## #core/auth/refresh.js
+
+- `async refreshSession({ token, request, isAbandoned = isNever } = {})`
+
+## #core/auth/registry.js
+
+- `async isSessionAlive(sid)`
+- `async markSessionAlive(sid, ttlSeconds)`
+- `async markSessionsRevoked(sids)`
+- `watchRevokedSessions({ redis, config, log })`
+
+## #core/auth/session.js
+
+- `async createSession({ userId, client, isDev = false } = {})`
+- `async listSessions(userId)`
+- `async revokeAllSessions(userId, { except = NO_SID } = {})`
+- `async revokeSession({ sid, userId } = {})`
+
+## #core/auth/settings.js
+
+- `TTL_MIN`
+- `assertAuthConfig(authConfig)`
+- `readLifetimes(authConfig)`
+
+## #core/auth/token.js
+
+- `isAtMaxAge(startedAt)`
+- `issueTokens({ userId, sid, scopes, startedAt })`
+- `listJwtSpaces(authConfig)`
+- `readAccessToken(request)`
+- `readRefreshToken(request)`
+- `verifyAccessToken(token)`
+- `verifyRefreshToken(token)`
+
+## #core/authz/scope.js
+
+- `async readUserScopes(userId)`
+
 ## #core/cache/index.js
 
 - `assertCacheTables(tables, signature)`
@@ -86,7 +144,7 @@
 
 ## #core/context/index.js
 
-- `createContext({ config, log, db = null, redis = null, cacheRedis = null, requestId = null, transaction = null } = {})`
+- `createContext({ config, log, db = null, redis = null, cacheRedis = null, jwt = null, requestId = null, transaction = null } = {})`
 - `findContext()`
 - `getContext()`
 - `runInContext(context, fn)`
@@ -103,13 +161,14 @@
 - `SESSION_SQL`
 - `assertServer({ version, timeZone, sqlMode } = {})`
 - `createMariadbDriver(config)`
-- `async initSession(connection)`
+- `async initSession(connection, sql = SESSION_SQL)`
 
 ## #core/db/error.js
 
 - `class DbError`
 - `POOL_SATURATED_CODE`
 - `createOverloadError()`
+- `createTransactionTimeoutError(cause)`
 - `describeColumn(name)`
 - `findDbError(error)`
 - `isDatabaseAccessDenied(error)`
@@ -117,6 +176,7 @@
 - `isLockConflict(error)`
 - `isLockWaitTimeout(error)`
 - `isMissingTable(error)`
+- `isTransactionTimeout(error)`
 - `maskDbErrorValues(text)`
 - `toDbError(error, { isScript = false, isConnectFailure = false } = {})`
 
@@ -226,6 +286,7 @@
 - `async afterCommit(fn)`
 - `findTransaction(context, driver)`
 - `isInTransaction()`
+- `retryOnLockConflict(run, message)`
 - `async runInTransaction(scope, run)`
 - `async withTransaction(fn, { isolation, retry = false } = {})`
 
@@ -323,6 +384,7 @@
 
 ## #core/schema/route.js
 
+- `AUTH_DECORATOR`
 - `assertRouteContract(routeOptions)`
 - `createRouteHook({ apiPrefix, healthPrefix } = {})`
 
@@ -351,12 +413,13 @@
 
 ## #utils/async.js
 
+- `isTimeoutError(error)`
 - `async mapSeries(items, fn)`
 - `pLimit(concurrency)`
 - `async retry(fn, { retries = RETRY_RETRIES, minDelayMs = RETRY_MIN_DELAY_MS, maxDelayMs = RETRY_MAX_DELAY_MS, factor = RETRY_FACTOR, signal, shouldRetry } = {})`
 - `singleFlight()`
 - `async sleep(ms, { signal } = {})`
-- `async withTimeout(fn, ms, { signal } = {})`
+- `async withTimeout(fn, ms, { signal, isUnref = false } = {})`
 
 ## #utils/bytes.js
 
@@ -377,7 +440,10 @@
 - `assertDurations(section, keys, name)`
 - `convertStringToMs(value)`
 - `convertStringToSeconds(value)`
+- `convertStringToWholeSeconds(value)`
 - `differenceInDays(left, right)`
+- `differenceInSeconds(left, right)`
+- `fromUnixSeconds(seconds)`
 - `getEndOfDay(value)`
 - `getStartOfDay(value)`
 - `isExpired(value, ttl, now = nowUtc())`
@@ -389,6 +455,7 @@
 - `parseStrictUtc(value)`
 - `toDate(value)`
 - `toTimestamp(value)`
+- `toUnixSeconds(value)`
 - `toUtcIso(value)`
 
 ## #utils/encoding.js
@@ -414,7 +481,9 @@
 
 ## #utils/header.js
 
+- `hasBearerScheme(authorization)`
 - `readBearerToken(authorization)`
+- `readCookie(header, name)`
 - `readOriginHost(headers)`
 
 ## #utils/id.js
@@ -425,6 +494,11 @@
 - `uuidTimestamp(value)`
 - `uuidVersion(value)`
 - `uuidv7()`
+
+## #utils/lru.js
+
+- `readLru(entries, key, now)`
+- `writeLru(entries, key, value, { until, maxEntries } = {})`
 
 ## #utils/mime.js
 
@@ -524,6 +598,7 @@
 ## #utils/validate.js
 
 - `EMAIL_MAX_LENGTH`
+- `IP_MAX_LENGTH`
 - `ipInCidr(address, cidr)`
 - `isCidr(value)`
 - `isEmail(value)`
@@ -532,6 +607,7 @@
 - `isPrivateAddress(address)`
 - `isSafeRedirectPath(value)`
 - `isWebUrl(value)`
+- `toIpAddress(value)`
 
 ## #utils/window.js
 

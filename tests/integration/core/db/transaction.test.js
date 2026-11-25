@@ -4,8 +4,12 @@ import { AppError } from '#core/error/index.js';
 import { DB_ERROR_KIND } from '#enums/db-error-kind.js';
 import { ERROR_CODE } from '#enums/error-code.js';
 import { ISOLATION_LEVEL } from '#enums/isolation-level.js';
+import { rejectionOf, timeIt } from '#root/tests/helper/async.js';
 import { countSessionsLeft, createTestDb } from '#root/tests/helper/db.js';
 import { createLogSink } from '#root/tests/helper/log.js';
+import { createTcpProxy } from '#root/tests/helper/redis.js';
+import { getServiceAddress } from '#root/tests/helper/service.js';
+import { convertStringToMs, convertStringToSeconds } from '#utils/date.js';
 import assert from 'node:assert/strict';
 import {
   before,
@@ -17,6 +21,8 @@ import { setImmediate as nextLoop, setTimeout as sleep } from 'node:timers/promi
 
 // A call that must settle and does not is a test that never ends: the limit turns it into a failure.
 const HANG_TIMEOUT_MS = 5000;
+
+const LOOPBACK = '127.0.0.1';
 
 const testDb = await createTestDb();
 const { db, run } = testDb;
@@ -1170,5 +1176,194 @@ describe('withTransaction: a full pool', { skip: testDb.skip }, () => {
     assert.deepEqual([stats.activeCount, stats.queueLength, stats.rejectedCount], [1, 1, 1]);
     assert.deepEqual((await waiting).rows, [{ queued: 1 }]);
     assert.equal(tight.db.getStats().queueLength, 0);
+  });
+});
+
+describe('withTransaction: the deadline', { skip: testDb.skip }, () => {
+  const EXPIRED = { name: 'DbError', code: 'TRANSACTION_TIMEOUT' };
+  const NEVER = new Promise(() => {});
+  const SHORT_DEADLINE = '0.4s';
+
+  // The server counts the wait for a lock in whole seconds: none of these tests waits for one.
+  const DEADLINE = Object.freeze({ lockWaitTimeout: '0.1s', transactionTimeout: SHORT_DEADLINE });
+
+  // A wait for a lock of two seconds fits into it, also one that is half a second longer: the clock of the server, which a
+  // wait is counted by, is stepped back now and then.
+  const LOCK_DEADLINES = Object.freeze({ lockWaitTimeout: '2s', transactionTimeout: '3s' });
+
+  beforeEach(() => run(async () => {
+    await db.query('DELETE FROM marks');
+    await db.query('DELETE FROM accounts');
+    await db.query('INSERT INTO accounts (id, balance) VALUES (1, 100), (2, 100)');
+  }));
+
+  function openSingle(t, sections = {}) {
+    return testDb.open({ ...sections, db: { ...DEADLINE, connectionLimit: 1, ...sections.db } }, t);
+  }
+
+  function transactOn(pool, fn, options) {
+    return pool.run(() => withTransaction(fn, options));
+  }
+
+  // The pool has one connection: a slot that was not given back would keep this waiting.
+  async function assertPoolGoesOn(pool) {
+    const [row] = await pool.readRows('SELECT 1 AS alive');
+
+    assert.deepEqual(row, { alive: 1 });
+    assert.equal(pool.db.getStats().activeCount, 0);
+  }
+
+  test('closes a transaction whose function never settles: nothing is committed, and the pool goes on with a new connection', { timeout: HANG_TIMEOUT_MS }, async (t) => {
+    const sink = createLogSink();
+    const single = openSingle(t, { logger: { level: 'error', stream: sink.stream } });
+
+    await assert.rejects(transactOn(single, async () => {
+      await mark('never committed', single.db);
+      await NEVER;
+    }), EXPIRED);
+
+    await assertPoolGoesOn(single);
+
+    assert.deepEqual(await readMarks(), []);
+    assert.deepEqual(sink.lines, []);
+  });
+
+  test('closes one whose statement is in flight, and refuses what its function still sends: none of it runs on its own', { timeout: HANG_TIMEOUT_MS }, async (t) => {
+    const single = openSingle(t);
+    const late = Promise.withResolvers();
+
+    await assert.rejects(transactOn(single, async () => {
+      const [first] = await Promise.allSettled([single.db.query('SELECT SLEEP(5)')]);
+      const [second, nested, callback] = await Promise.allSettled([
+        mark('late', single.db),
+        withTransaction(() => mark('late and nested', single.db)),
+        afterCommit(() => {}),
+      ]);
+
+      late.resolve([first, second, nested, callback]);
+    }), EXPIRED);
+
+    const results = await late.promise;
+
+    await assertPoolGoesOn(single);
+
+    assert.deepEqual(results.map((result) => result.status), ['rejected', 'rejected', 'rejected', 'rejected']);
+    assert.equal(results[0].reason.isFatal, true);
+    results.slice(1).forEach((result) => assert.equal(result.reason.code, EXPIRED.code));
+    assert.deepEqual(await readMarks(), []);
+  });
+
+  test('closes a nested call that waits for work the function around it has not finished: neither of them would ever go on', { timeout: HANG_TIMEOUT_MS }, async (t) => {
+    const single = openSingle(t);
+
+    await assert.rejects(transactOn(single, () => {
+      const released = Promise.withResolvers();
+      const nested = withTransaction(() => released.promise);
+
+      return Promise.all([nested, mark('behind the nested call', single.db).then(released.resolve)]);
+    }), EXPIRED);
+
+    await assertPoolGoesOn(single);
+
+    assert.deepEqual(await readMarks(), []);
+  });
+
+  test('does not run the function again, also when it had swallowed a lock conflict: the first run may still be there', { timeout: 2 * HANG_TIMEOUT_MS }, async (t) => {
+    const single = openSingle(t, { db: LOCK_DEADLINES });
+    const release = await holdRow(1);
+    const swallowed = [];
+
+    try {
+      await assert.rejects(transactOn(single, async () => {
+        swallowed.push(await rejectionOf(add(1, 1, single.db)));
+        await NEVER;
+      }, { retry: true }), EXPIRED);
+    } finally {
+      await release();
+    }
+
+    assert.deepEqual(swallowed.map((error) => error.code), ['ER_LOCK_WAIT_TIMEOUT']);
+    await assertPoolGoesOn(single);
+  });
+
+  // The stack of an error holds ten frames: one more await on the way to the deadline would cut the caller off.
+  test('tells who called it in the cause of the error, also when the function runs again', { timeout: HANG_TIMEOUT_MS }, async (t) => {
+    const single = openSingle(t);
+    const conflicts = [new DbError('A lock conflict', { kind: DB_ERROR_KIND.DEADLOCK })];
+
+    async function callThatHangs() {
+      await transactOn(single, async () => {
+        if (conflicts.length) {
+          throw conflicts.shift();
+        }
+
+        await NEVER;
+      }, { retry: true });
+    }
+
+    const error = await rejectionOf(callThatHangs());
+
+    assert.equal(error.code, EXPIRED.code);
+    assert.match(error.cause.stack, /callThatHangs/);
+  });
+
+  test('drops the callbacks of a transaction it has closed', { timeout: HANG_TIMEOUT_MS }, async (t) => {
+    const single = openSingle(t);
+    const calls = [];
+
+    await assert.rejects(transactOn(single, async () => {
+      await afterCommit(() => calls.push('never'));
+      await NEVER;
+    }), EXPIRED);
+
+    assert.deepEqual(calls, []);
+  });
+
+  test('counts from the moment the transaction has its connection: one that waited for it longer than the deadline commits', { timeout: 2 * HANG_TIMEOUT_MS }, async (t) => {
+    const single = openSingle(t);
+    const busy = single.readRows('SELECT SLEEP(1)');
+
+    await transactOn(single, () => mark('waited', single.db));
+    await busy;
+
+    assert.deepEqual(await readMarks(), ['waited']);
+  });
+
+  test('lets the pool close while a statement of the closed transaction has no answer', { timeout: HANG_TIMEOUT_MS }, async (t) => {
+    const single = openSingle(t);
+
+    const SLEEP = '4s';
+
+    await assert.rejects(transactOn(single, () => single.db.query('SELECT SLEEP(:seconds)', { seconds: convertStringToSeconds(SLEEP) })), EXPIRED);
+
+    const { durationMs } = await timeIt(() => single.db.close());
+
+    assert.ok(durationMs < convertStringToMs(SLEEP), `close() took ${Math.round(durationMs)} ms`);
+  });
+});
+
+describe('withTransaction: the deadline and COMMIT', { skip: testDb.skip }, () => {
+  beforeEach(() => run(() => db.query('DELETE FROM marks')));
+
+  test('does not cover COMMIT: one the server answers after the deadline is waited for, and its callbacks run', { timeout: HANG_TIMEOUT_MS }, async (t) => {
+    const proxy = await createTcpProxy(t, getServiceAddress('mariadb'));
+    const slow = testDb.open({
+      env: { APP_DATABASE_HOST: LOOPBACK, APP_DATABASE_PORT: String(proxy.port) },
+      db: { lockWaitTimeout: '0.1s', transactionTimeout: '0.4s', connectionLimit: 1 },
+    }, t);
+    const calls = [];
+
+    const result = await slow.run(() => withTransaction(async () => {
+      await mark('committed late', slow.db);
+      await afterCommit(() => calls.push('ran'));
+      proxy.freeze();
+      setTimeout(() => proxy.thaw(), 900);
+
+      return 'done';
+    }));
+
+    assert.equal(result, 'done');
+    assert.deepEqual(calls, ['ran']);
+    assert.deepEqual(await readMarks(), ['committed late']);
   });
 });

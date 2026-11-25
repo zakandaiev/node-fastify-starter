@@ -31,7 +31,12 @@ export const PROCESS_KEY_PREFIX = `${REDIS_TEST_PREFIX}${uuidv7()}:`;
 // A test that waits for a lock nobody lets go must fail in seconds, not hold its file for the minutes of the app.
 const TEST_CONFIG = Object.freeze({
   logger: { level: 'silent', isPretty: false },
-  db: { migrationLockTimeout: '5s', migrationTableLockTimeout: '2s' },
+  db: {
+    migrationLockTimeout: '5s',
+    migrationTableLockTimeout: '2s',
+    lockWaitTimeout: '3s',
+    transactionTimeout: '10s',
+  },
   redis: { keyPrefix: PROCESS_KEY_PREFIX },
 });
 

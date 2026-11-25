@@ -17,6 +17,7 @@ import { buildTestApp, errorBody, readRequestId } from '#root/tests/helper/app.j
 import { timeIt, waitFor } from '#root/tests/helper/async.js';
 import { createLogSink, findLogLines, LOG_LEVEL } from '#root/tests/helper/log.js';
 import { REDIS_DOWN_ENV } from '#root/tests/helper/redis.js';
+import { sendRawRequest } from '#root/tests/helper/socket.js';
 import { pick } from '#utils/object.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
@@ -143,7 +144,7 @@ describe('error-alert plugin: server errors', () => {
     assert.equal(alert.body.isSilent, false);
     assert.deepEqual(alert.body.blocks.map((block) => block.name), ['App', 'Url', 'Error', 'Request']);
     assert.deepEqual(readBlock(alert.body, 'App'), { name: fastify.config.app.name, version: fastify.config.app.version, mode: 'prod' });
-    assert.equal(readBlock(alert.body, 'Url'), 'http://localhost:80/orders/42');
+    assert.equal(readBlock(alert.body, 'Url'), 'https://app.test/orders/42');
     assert.deepEqual(readBlock(alert.body, 'Request'), {
       method: 'GET',
       ip: '127.0.0.1',
@@ -180,6 +181,21 @@ describe('error-alert plugin: server errors', () => {
     assert.equal(response.status, 500);
     assert.equal(alert.body.title, SERVER_ERROR_TITLE);
     assert.equal(readBlock(alert.body, 'Request').requestId, response.headers.get('x-request-id'));
+  });
+
+  test('names our host also for a request line that names another in front of its path', async (t) => {
+    const receiver = await createAlertReceiver(t, accept);
+    const { fastify } = await buildApp(t, { receiver });
+
+    fastify.get('/boom', failWith(new Error('Route failed')));
+    await fastify.listen({ host: '127.0.0.1', port: 0 });
+
+    const received = await sendRawRequest(fastify.server.address().port, `GET http://evil.test/boom?token=${QUERY_SECRET} HTTP/1.1\r\nHost: evil.test\r\nConnection: close\r\n\r\n`);
+
+    await waitForAlerts(receiver, 1);
+
+    assert.match(received, /^HTTP\/1\.1 500 /);
+    assert.deepEqual(readUrls(receiver), ['https://app.test/boom']);
   });
 
   test('does not hold the response for a channel that hangs: the 500 comes at once', async (t) => {
@@ -261,7 +277,7 @@ describe('error-alert plugin: server errors', () => {
     await sleep(SETTLE_MS);
 
     assert.equal(receiver.requests.length, 1);
-    assert.equal(readBlock(alert.body, 'Url'), 'http://localhost:80/boom');
+    assert.equal(readBlock(alert.body, 'Url'), 'https://app.test/boom');
   });
 
   test('gives one bug one alert: the same route and the same masked cause whatever ids and values the requests carry', async (t) => {
@@ -287,9 +303,9 @@ describe('error-alert plugin: server errors', () => {
     assert.deepEqual(responses.map((response) => response.statusCode), [500, 500, 500, 500]);
     assert.deepEqual(readTitles(receiver), [SERVER_ERROR_TITLE, SERVER_ERROR_TITLE, SERVER_ERROR_TITLE]);
     assert.deepEqual(readUrls(receiver), [
-      'http://localhost:80/orders/1',
-      'http://localhost:80/orders/typo',
-      'http://localhost:80/users/3',
+      'https://app.test/orders/1',
+      'https://app.test/orders/typo',
+      'https://app.test/users/3',
     ]);
     assert.equal(readBlock(receiver.requests[0].body, 'Error').message, "Duplicate entry '***' for key 'uq_users_email'");
   });
@@ -312,7 +328,7 @@ describe('error-alert plugin: upstreams and the database', () => {
     assert.deepEqual(responses.map((response) => response.statusCode), [502, 502, 502]);
     assert.deepEqual(responses[0].json(), errorBody(responses[0], 'UPSTREAM_ERROR', 'Upstream error'));
     assert.deepEqual(readTitles(receiver), [UPSTREAM_ERROR_TITLE, UPSTREAM_ERROR_TITLE]);
-    assert.deepEqual(readUrls(receiver), ['http://localhost:80/invoices', 'http://localhost:80/stock']);
+    assert.deepEqual(readUrls(receiver), ['https://app.test/invoices', 'https://app.test/stock']);
     assert.deepEqual(receiver.requests.map((request) => pick(readBlock(request.body, 'Error').cause, UPSTREAM_KEYS)), [
       {
         type: 'UpstreamError',
@@ -387,7 +403,7 @@ describe('error-alert plugin: upstreams and the database', () => {
 
     assert.deepEqual(responses.map((response) => response.statusCode), [500, 500, 500]);
     assert.deepEqual(readTitles(receiver), [DATABASE_CONNECTION_TITLE, DATABASE_CONNECTION_TITLE]);
-    assert.deepEqual(readUrls(receiver), ['http://localhost:80/orders', 'http://localhost:80/reports']);
+    assert.deepEqual(readUrls(receiver), ['https://app.test/orders', 'https://app.test/reports']);
   });
 
   test('keeps the route of a session that is lost in the middle of a statement: the database may be well', async (t) => {
@@ -405,7 +421,7 @@ describe('error-alert plugin: upstreams and the database', () => {
     await waitForAlerts(receiver, 2);
 
     assert.deepEqual(readTitles(receiver), [SERVER_ERROR_TITLE, SERVER_ERROR_TITLE]);
-    assert.deepEqual(readUrls(receiver), ['http://localhost:80/orders', 'http://localhost:80/users']);
+    assert.deepEqual(readUrls(receiver), ['https://app.test/orders', 'https://app.test/users']);
   });
 
   test('tells a server that refuses connections from a full pool: a title and an alert of its own', async (t) => {
@@ -458,7 +474,7 @@ describe('error-alert plugin: upstreams and the database', () => {
     assert.equal(receiver.requests.length, 1);
     assert.equal(alert.body.title, STATEMENT_TIMEOUT_TITLE);
     assert.equal(alert.body.throttleClass, 'warning');
-    assert.equal(readBlock(alert.body, 'Url'), 'http://localhost:80/report');
+    assert.equal(readBlock(alert.body, 'Url'), 'https://app.test/report');
 
     const errorBlock = readBlock(alert.body, 'Error');
 
@@ -517,10 +533,134 @@ describe('error-alert plugin: upstreams and the database', () => {
 
     assert.deepEqual(readTitles(receiver), [POOL_SATURATED_TITLE, STATEMENT_TIMEOUT_TITLE, STATEMENT_TIMEOUT_TITLE]);
     assert.deepEqual(readUrls(receiver), [
-      'http://localhost:80/orders',
-      'http://localhost:80/reports/daily',
-      'http://localhost:80/reports/weekly',
+      'https://app.test/orders',
+      'https://app.test/reports/daily',
+      'https://app.test/reports/weekly',
     ]);
+  });
+});
+
+describe('error-alert plugin: a 503 of a database that cannot be reached', () => {
+  function refuse(details) {
+    const cause = new DbError('The database does not let the app in', { isConnectFailure: true, ...details });
+
+    return failWith(new AppError(ERROR_CODE.SERVICE_UNAVAILABLE_ERROR, { cause }));
+  }
+
+  test('sends one "Database connection failed" whatever route meets the outage, and one for each code: the class is "failure"', async (t) => {
+    const receiver = await createAlertReceiver(t, accept);
+    const { fastify } = await buildApp(t, { receiver, alert: { throttleWindow: NO_THROTTLE } });
+
+    fastify.get('/orders', refuse({ code: 'ECONNREFUSED' }));
+    fastify.get('/users', refuse({ code: 'ECONNREFUSED' }));
+    fastify.get('/reports', refuse({ code: 'ER_ACCESS_DENIED_ERROR' }));
+
+    const responses = await injectInTurn(fastify, ['/orders', '/users', '/reports']);
+
+    await waitForAlerts(receiver, 2);
+    await sleep(SETTLE_MS);
+
+    assert.deepEqual(responses.map((response) => response.statusCode), [503, 503, 503]);
+    assert.deepEqual(responses[0].json(), errorBody(responses[0], 'SERVICE_UNAVAILABLE_ERROR', 'Service unavailable'));
+    assert.equal(responses[0].headers['retry-after'], '60');
+    assert.deepEqual(readTitles(receiver), [DATABASE_CONNECTION_TITLE, DATABASE_CONNECTION_TITLE]);
+    assert.deepEqual(readUrls(receiver), ['https://app.test/orders', 'https://app.test/reports']);
+    assert.deepEqual(receiver.requests.map((request) => request.body.throttleClass), ['failure', 'failure']);
+    assert.deepEqual(receiver.requests.map((request) => readBlock(request.body, 'Error').cause.code), ['ECONNREFUSED', 'ER_ACCESS_DENIED_ERROR']);
+  });
+
+  test('is the same outage as behind a 500: whichever a request meets first is the one alert', async (t) => {
+    const receiver = await createAlertReceiver(t, accept);
+    const { fastify } = await buildApp(t, { receiver, alert: { throttleWindow: NO_THROTTLE } });
+
+    function fail(code) {
+      return failWith(new DbError('The database does not let the app in', { code, isConnectFailure: true }));
+    }
+
+    fastify.get('/orders', fail('ECONNREFUSED'));
+    fastify.get('/users', refuse({ code: 'ECONNREFUSED' }));
+    fastify.get('/reports', refuse({ code: 'ETIMEDOUT' }));
+    fastify.get('/stock', fail('ETIMEDOUT'));
+
+    const responses = await injectInTurn(fastify, ['/orders', '/users', '/reports', '/stock']);
+
+    await waitForAlerts(receiver, 2);
+    await sleep(SETTLE_MS);
+
+    assert.deepEqual(responses.map((response) => response.statusCode), [500, 503, 503, 500]);
+    assert.deepEqual(readTitles(receiver), [DATABASE_CONNECTION_TITLE, DATABASE_CONNECTION_TITLE]);
+    assert.deepEqual(readUrls(receiver), ['https://app.test/orders', 'https://app.test/reports']);
+  });
+
+  test('stays "Database refuses connections" of the class "warning" for a server out of connections, which opens none either', async (t) => {
+    const receiver = await createAlertReceiver(t, accept);
+    const { fastify } = await buildApp(t, { receiver });
+
+    fastify.get('/orders', refuse({ kind: DB_ERROR_KIND.OVERLOAD, code: 'ER_USER_LIMIT_REACHED', errno: 1226 }));
+
+    const response = await fastify.inject('/orders');
+    const [alert] = await waitForAlerts(receiver, 1);
+
+    await sleep(SETTLE_MS);
+
+    assert.equal(response.statusCode, 503);
+    assert.equal(receiver.requests.length, 1);
+    assert.equal(alert.body.title, CONNECTIONS_REFUSED_TITLE);
+    assert.equal(alert.body.throttleClass, 'warning');
+    assert.deepEqual(readBlock(alert.body, 'Error'), {
+      message: 'The database does not let the app in',
+      code: 'ER_USER_LIMIT_REACHED',
+      pool: fastify.db.getStats(),
+    });
+  });
+
+  test('stays "Database statement timeout" of the class "warning" for a connection whose session could not be set in time', async (t) => {
+    const receiver = await createAlertReceiver(t, accept);
+    const { fastify } = await buildApp(t, { receiver });
+
+    fastify.get('/report', refuse({ kind: DB_ERROR_KIND.TIMEOUT, code: 'ER_STATEMENT_TIMEOUT', errno: 1969 }));
+
+    await fastify.inject('/report');
+
+    const [alert] = await waitForAlerts(receiver, 1);
+
+    assert.equal(alert.body.title, STATEMENT_TIMEOUT_TITLE);
+    assert.equal(alert.body.throttleClass, 'warning');
+  });
+
+  test('sends nothing for a 503 with no connection that failed to open behind it: only the 500 after them reaches the receiver', async (t) => {
+    const receiver = await createAlertReceiver(t, accept);
+    const { fastify, sink } = await buildApp(t, { receiver, alert: { throttleWindow: NO_THROTTLE } });
+    const causes = {
+      none: undefined,
+      other: new Error('Another service is away'),
+      timeout: new DOMException('The operation timed out after 5000 ms', 'TimeoutError'),
+      upstream: new UpstreamError('network', { service: 'billing' }),
+      lost: new DbError('Connection lost: The server closed the connection.', { code: 'PROTOCOL_CONNECTION_LOST', isFatal: true }),
+      conflict: new DbError('Lock wait timeout exceeded', { kind: DB_ERROR_KIND.DEADLOCK, code: 'ER_LOCK_WAIT_TIMEOUT', errno: 1205 }),
+    };
+
+    Object.entries(causes).forEach(([name, cause]) => {
+      fastify.get(`/${name}`, failWith(new AppError(ERROR_CODE.SERVICE_UNAVAILABLE_ERROR, { cause })));
+    });
+    fastify.get('/pressure', failWith(Object.assign(new Error('Service Unavailable'), { statusCode: 503 })));
+    fastify.get('/boom', failWith(new Error('Route failed')));
+
+    const urls = [...Object.keys(causes).map((name) => `/${name}`), '/pressure'];
+    const responses = await Promise.all(urls.map((url) => fastify.inject(url)));
+
+    await sleep(SETTLE_MS);
+
+    assert.deepEqual(responses.map((response) => response.statusCode), urls.map(() => 503));
+    assert.deepEqual(receiver.requests, []);
+    assert.deepEqual(findLogLines(sink, REPORT_FAILED_MESSAGE), []);
+
+    await fastify.inject('/boom');
+    await waitForAlerts(receiver, 1);
+    await sleep(SETTLE_MS);
+
+    assert.deepEqual(readTitles(receiver), [SERVER_ERROR_TITLE]);
+    assert.deepEqual(readUrls(receiver), ['https://app.test/boom']);
   });
 });
 
@@ -580,7 +720,7 @@ describe('error-alert plugin: anything can be thrown', () => {
 
     assert.deepEqual(responses.map((response) => response.statusCode), [500, 500, 500]);
     assert.deepEqual(readTitles(receiver), [SERVER_ERROR_TITLE, SERVER_ERROR_TITLE, SERVER_ERROR_TITLE]);
-    assert.deepEqual(readUrls(receiver), ['http://localhost:80/text', 'http://localhost:80/null', 'http://localhost:80/number']);
+    assert.deepEqual(readUrls(receiver), ['https://app.test/text', 'https://app.test/null', 'https://app.test/number']);
     assert.deepEqual(receiver.requests.map((request) => readBlock(request.body, 'Error')), [
       "Duplicate entry '***' for key 'uq_users_email'",
       undefined,

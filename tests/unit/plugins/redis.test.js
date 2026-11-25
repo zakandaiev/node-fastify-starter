@@ -84,7 +84,8 @@ describe('redis plugin', () => {
     const disconnect = t.mock.method(Redis.prototype, 'disconnect');
 
     await assert.rejects(buildApp(t, { app: { apiPrefix: '/*/x' }, logger: { level: 'error', stream: sink.stream } }), /Wildcard/);
-    assert.equal(disconnect.mock.callCount(), 1);
+    // The client of the app, and the one that listens to the revocations of sessions.
+    assert.equal(disconnect.mock.callCount(), 2);
     assert.deepEqual(sink.lines.filter((line) => line.msg === 'Failed to close the app after a failed start'), []);
   });
 });
