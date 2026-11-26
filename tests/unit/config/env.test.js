@@ -1,9 +1,15 @@
-import { ENV_SCHEMA, isCi, parseEnv } from '#config/env.js';
+import {
+  ENV_SCHEMA,
+  isCi,
+  parseEnv,
+  readEnvList,
+} from '#config/env.js';
 import { resolvePath } from '#config/path.js';
 import packageData from '#root/package.json' with { type: 'json' };
 import { TELEGRAM_TEST_ENV } from '#root/tests/helper/alert.js';
 import { TEST_ENV, createTestEnv } from '#root/tests/helper/config.js';
 import { createWorkDir, runNode } from '#root/tests/helper/process.js';
+import { EMAIL_MAX_LENGTH } from '#utils/validate.js';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import nodePath from 'node:path';
@@ -155,6 +161,29 @@ describe('parseEnv', () => {
     ['https://example.com', 'example.com/api', 'example.com:65536', 'example.com:'].forEach((value) => {
       assert.ok(getErrorLines({ ...TEST_ENV, APP_HOST: value }).includes('  - APP_HOST must match format "host[:port]"'), value);
     });
+  });
+
+  test('takes the admin emails as addresses separated by commas, with blanks around them and a trailing comma', () => {
+    ['anna@example.com', ' Anna@Example.com , borys@example.com ', 'anna@example.com,', 'anna@example.com,,borys@example.com', ' , '].forEach((value) => {
+      assert.equal(parseEnv({ ...TEST_ENV, APP_ADMIN_EMAILS: value }).APP_ADMIN_EMAILS, value, value);
+    });
+  });
+
+  test('refuses an admin email list with an item that is no address, and does not print it', () => {
+    const tooLong = `${'a'.repeat(EMAIL_MAX_LENGTH)}@example.com`;
+
+    ['anna', 'anna@example.com;borys@example.com', 'anna@example.com borys@example.com', 'anna@example.com,borys', `anna@example.com,${tooLong}`].forEach((value) => {
+      const lines = getErrorLines({ ...TEST_ENV, APP_ADMIN_EMAILS: value });
+
+      assert.ok(lines.includes('  - APP_ADMIN_EMAILS must match format "email-list"'), value);
+      assert.equal(lines.join('\n').includes('example.com'), false, value);
+    });
+  });
+
+  test('splits a list of env alike for its format and for the config that reads it', () => {
+    assert.deepEqual(readEnvList(' anna@example.com ,, borys@example.com, '), ['anna@example.com', 'borys@example.com']);
+    assert.deepEqual(readEnvList(' , '), []);
+    assert.deepEqual(readEnvList(), []);
   });
 
   test('keeps a variable the schema does not describe, such as the credentials of an OAuth provider', () => {

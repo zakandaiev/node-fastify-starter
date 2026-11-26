@@ -11,6 +11,8 @@ export const ERROR_CODE = Object.freeze({
   ORIGIN_ERROR: 'ORIGIN_ERROR',
   NOT_FOUND_ERROR: 'NOT_FOUND_ERROR',
   NO_CHANGES: 'NO_CHANGES',
+  CONTACT_TAKEN: 'CONTACT_TAKEN',
+  IDENTITY_TAKEN: 'IDENTITY_TAKEN',
   PAYLOAD_TOO_LARGE_ERROR: 'PAYLOAD_TOO_LARGE_ERROR',
   UNSUPPORTED_MEDIA_TYPE_ERROR: 'UNSUPPORTED_MEDIA_TYPE_ERROR',
   VALIDATION_ERROR: 'VALIDATION_ERROR',
@@ -46,6 +48,9 @@ export const ERROR_CATALOG = Object.freeze({
   [ERROR_CODE.ORIGIN_ERROR]: defineClientError(HTTP_STATUS.FORBIDDEN, 'Origin is not allowed'),
   [ERROR_CODE.NOT_FOUND_ERROR]: defineClientError(HTTP_STATUS.NOT_FOUND, 'Not found'),
   [ERROR_CODE.NO_CHANGES]: defineClientError(HTTP_STATUS.CONFLICT, 'No changes'),
+  // Neither tells which contact or which account it met: the answer must not reveal who has signed up.
+  [ERROR_CODE.CONTACT_TAKEN]: defineClientError(HTTP_STATUS.CONFLICT, 'Contact belongs to another account'),
+  [ERROR_CODE.IDENTITY_TAKEN]: defineClientError(HTTP_STATUS.CONFLICT, 'Identity is linked to another account'),
   [ERROR_CODE.PAYLOAD_TOO_LARGE_ERROR]: defineClientError(HTTP_STATUS.PAYLOAD_TOO_LARGE, 'Payload too large'),
   [ERROR_CODE.UNSUPPORTED_MEDIA_TYPE_ERROR]: defineClientError(HTTP_STATUS.UNSUPPORTED_MEDIA_TYPE, 'Unsupported media type'),
   [ERROR_CODE.VALIDATION_ERROR]: defineClientError(HTTP_STATUS.UNPROCESSABLE_ENTITY, 'Validation error'),

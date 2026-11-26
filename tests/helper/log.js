@@ -21,6 +21,14 @@ export function createLogSink() {
   return { lines, stream };
 }
 
+// The start of an app writes lines of its own, a warning among them (no provider of the tests has credentials, nobody
+// can sign in): a test that reads every line of its requests forgets them first.
+export function forgetLines(sink) {
+  sink.lines.length = 0;
+
+  return sink;
+}
+
 export function findLogLines(sink, message) {
   return sink.lines.filter((line) => line.msg === message);
 }

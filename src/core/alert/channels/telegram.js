@@ -14,7 +14,7 @@ import { fetchUpstream } from '#core/http/index.js';
 import { ALERT_CHANNEL } from '#enums/alert-channel.js';
 import { HTTP_METHOD } from '#enums/http-method.js';
 import { HTTP_STATUS } from '#enums/http-status.js';
-import { isObject, isString } from '#utils/type.js';
+import { isString, parseJsonObject } from '#utils/type.js';
 
 // sendMessage of the Bot API takes 4096 characters after the markup is parsed: the raw text is counted, which is longer.
 const MAX_LENGTH = 4096;
@@ -121,18 +121,6 @@ function classifyRefusal(status, answer) {
     : DELIVERY_FAILURE.FAILED;
 }
 
-function readAnswer(text) {
-  try {
-    const answer = JSON.parse(text);
-
-    return isObject(answer)
-      ? answer
-      : null;
-  } catch {
-    return null;
-  }
-}
-
 // The new id of a migrated group is never passed on: the id of the group lives in the environment only.
 function describeRefusal(status, answer) {
   const reason = classifyRefusal(status, answer);
@@ -159,7 +147,7 @@ async function send(rendered, { settings, config }) {
       timeout: config.alert.sendTimeout,
       secrets: [settings.botToken],
     });
-    const answer = readAnswer(text);
+    const answer = parseJsonObject(text);
 
     return status === HTTP_STATUS.OK && answer?.ok === true
       ? delivered()

@@ -10,6 +10,8 @@ const EXPECTED_STATUSES = {
   ORIGIN_ERROR: 403,
   NOT_FOUND_ERROR: 404,
   NO_CHANGES: 409,
+  CONTACT_TAKEN: 409,
+  IDENTITY_TAKEN: 409,
   PAYLOAD_TOO_LARGE_ERROR: 413,
   UNSUPPORTED_MEDIA_TYPE_ERROR: 415,
   VALIDATION_ERROR: 422,
@@ -52,7 +54,7 @@ describe('ERROR_CATALOG', () => {
   test('logs client errors and an overload as warnings, and never alerts on them', () => {
     const quiet = Object.entries(ERROR_CATALOG).filter(([, entry]) => entry.statusCode < 500 || entry.statusCode === 503);
 
-    assert.equal(quiet.length, 12);
+    assert.equal(quiet.length, 14);
     quiet.forEach(([code, entry]) => {
       assert.equal(entry.logLevel, 'warn', code);
       assert.equal(entry.isAlertable, false, code);

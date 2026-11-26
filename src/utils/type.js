@@ -99,6 +99,24 @@ export function isStringValidJson(value) {
   }
 }
 
+// The object a JSON text holds, or null: for an answer that may be anything. The error of the parse is not passed on:
+// it quotes the text around the place it failed.
+export function parseJsonObject(value) {
+  if (!isString(value)) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+
+    return isObject(parsed)
+      ? parsed
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 export function toString(value) {
   if (isString(value)) {
     return value;

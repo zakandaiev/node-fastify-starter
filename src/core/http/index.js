@@ -70,6 +70,7 @@ const FAILURE_MESSAGES = Object.freeze({
   [UPSTREAM_FAILURE.TOO_LARGE]: 'The answer of the upstream is larger than its ceiling',
   [UPSTREAM_FAILURE.STATUS]: 'The upstream answered with a status that is not a success',
   [UPSTREAM_FAILURE.INVALID_JSON]: 'The answer of the upstream is not JSON',
+  [UPSTREAM_FAILURE.INVALID_ANSWER]: 'The answer of the upstream is not what the call expects',
   [UPSTREAM_FAILURE.REFUSED_HOST]: 'The host is not on the allow-list of the fetch',
   [UPSTREAM_FAILURE.REFUSED_ADDRESS]: 'The host is a private address',
   [UPSTREAM_FAILURE.REFUSED_TYPE]: 'The upstream answered with a type the fetch does not take',

@@ -1,4 +1,5 @@
 import { FILTER_OPERATOR, FILTER_TYPE } from '#enums/filter-type.js';
+import { UNIQUE_INDEX } from '#enums/unique-index.js';
 import { USER_STATUS } from '#enums/user-status.js';
 import {
   dateTimeUtc,
@@ -49,7 +50,7 @@ export const sort = freezeDeep([
 
 // The index of the database -> the field of the API that a duplicate is reported on.
 export const unique = freezeDeep({
-  uq_users_email: 'email',
+  [UNIQUE_INDEX.USERS_EMAIL]: 'email',
 });
 
 export const example = freezeDeep({

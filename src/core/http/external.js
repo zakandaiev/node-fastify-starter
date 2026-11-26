@@ -27,7 +27,12 @@ import {
   isPositiveInteger,
   toNumber,
 } from '#utils/type.js';
-import { ipInCidr, isCidr, isPrivateAddress } from '#utils/validate.js';
+import {
+  ipInCidr,
+  isCidr,
+  isPrivateAddress,
+  toHostAddress,
+} from '#utils/validate.js';
 import { lookup as dnsLookup } from 'node:dns';
 import http from 'node:http';
 import https from 'node:https';
@@ -43,7 +48,6 @@ const ACCEPT_SEPARATOR = ', ';
 const HOST_SEPARATOR = '.';
 const CLOSED_MESSAGE = 'The connection closed without an answer';
 const CLOSED_CODE = 'ECONNRESET';
-const IPV6_BRACKETS_REGEXP = /^\[|\]$/g;
 
 const REDIRECT_STATUSES = Object.freeze([
   HTTP_STATUS.MOVED_PERMANENTLY,
@@ -156,7 +160,7 @@ function checkHop(url, options) {
     throw refuse(UPSTREAM_FAILURE.INVALID_URL);
   }
 
-  const hostname = target.hostname.replace(IPV6_BRACKETS_REGEXP, '');
+  const hostname = toHostAddress(target.hostname);
 
   if (!isAllowedHost(hostname, options.allowedHosts)) {
     throw refuse(UPSTREAM_FAILURE.REFUSED_HOST);

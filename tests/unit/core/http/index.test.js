@@ -18,6 +18,7 @@ import {
   UpstreamError,
 } from '#core/http/index.js';
 import { createLogger, serializeError } from '#core/logger/index.js';
+import { UPSTREAM_FAILURE } from '#enums/upstream-failure.js';
 import { buildTestApp } from '#root/tests/helper/app.js';
 import { rejectionOf, timeIt } from '#root/tests/helper/async.js';
 import { createTestConfig } from '#root/tests/helper/config.js';
@@ -1019,6 +1020,13 @@ describe('UpstreamError', () => {
         message: /requires a reason from src\/enums\/upstream-failure\.js/,
       }, String(reason));
     });
+  });
+
+  test('takes every reason of src/enums/upstream-failure.js, each with a message of its own', () => {
+    const messages = Object.values(UPSTREAM_FAILURE).map((reason) => new UpstreamError(reason).message);
+
+    assert.equal(new Set(messages).size, messages.length);
+    assert.equal(new UpstreamError(UPSTREAM_FAILURE.INVALID_ANSWER).message, 'The answer of the upstream is not what the call expects');
   });
 
   test('carries its reason, its details and its cause, and leaves out a detail that is undefined or null', () => {

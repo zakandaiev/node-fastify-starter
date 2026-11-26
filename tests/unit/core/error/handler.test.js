@@ -6,7 +6,7 @@ import { DB_ERROR_KIND } from '#enums/db-error-kind.js';
 import { ERROR_CATALOG, ERROR_CODE } from '#enums/error-code.js';
 import { buildTestApp } from '#root/tests/helper/app.js';
 import { createTestConfig } from '#root/tests/helper/config.js';
-import { createLogSink } from '#root/tests/helper/log.js';
+import { createLogSink, forgetLines } from '#root/tests/helper/log.js';
 import { sendRawRequest } from '#root/tests/helper/socket.js';
 import { errorEnvelope, successEnvelope } from '#schemas/common/envelope.js';
 import { uuidVersion } from '#utils/id.js';
@@ -53,6 +53,8 @@ const APP_ERROR_STATUSES = Object.freeze({
   ORIGIN_ERROR: 403,
   NOT_FOUND_ERROR: 404,
   NO_CHANGES: 409,
+  CONTACT_TAKEN: 409,
+  IDENTITY_TAKEN: 409,
   PAYLOAD_TOO_LARGE_ERROR: 413,
   UNSUPPORTED_MEDIA_TYPE_ERROR: 415,
   VALIDATION_ERROR: 422,
@@ -97,10 +99,10 @@ async function startApp(t, { mode = MODE.PROD, ...sections } = {}) {
 }
 
 async function startLoggedApp(t, options = {}) {
-  const { lines, stream } = createLogSink();
-  const fastify = await startApp(t, { ...options, logger: { level: 'info', stream } });
+  const sink = createLogSink();
+  const fastify = await startApp(t, { ...options, logger: { level: 'info', stream: sink.stream } });
 
-  return { fastify, lines };
+  return { fastify, lines: forgetLines(sink).lines };
 }
 
 function startAppInEveryMode(t) {

@@ -20,11 +20,12 @@ import {
   findSessionId,
   killSession,
 } from '#root/tests/helper/db.js';
-import { findLogLines, LOG_LEVEL } from '#root/tests/helper/log.js';
+import { findLogLines, forgetLines, LOG_LEVEL } from '#root/tests/helper/log.js';
 import { bindMigrator } from '#root/tests/helper/migration.js';
 import { createTcpProxy } from '#root/tests/helper/redis.js';
 import { getServiceAddress } from '#root/tests/helper/service.js';
 import {
+  AUTH_COOKIES,
   openLoggedApp,
   readAuthCookies,
   readSessionRow,
@@ -171,10 +172,6 @@ function readVerbs(sink) {
 
 function readTakeBacks(sink) {
   return findLogLines(sink, ABANDONED_MESSAGE).map((line) => pick(line, ['level', 'sid', 'isTakenBack']));
-}
-
-function forgetLines(sink) {
-  sink.lines.length = 0;
 }
 
 function assertUnavailable(error) {
@@ -731,7 +728,7 @@ describe('refreshSession for a client that leaves while its row is rotated', { s
     const response = await joining;
 
     assert.equal(response.statusCode, HTTP_STATUS.OK);
-    assert.deepEqual(Object.keys(readAuthCookies(response)).toSorted(), Object.values(COOKIE).toSorted());
+    assert.deepEqual(Object.keys(readAuthCookies(response)).toSorted(), AUTH_COOKIES.toSorted());
     assert.deepEqual(readUpdates(sink), [1]);
 
     const again = await postRefresh(fastify, takeRefreshCookie(response)[COOKIE.REFRESH_TOKEN]);

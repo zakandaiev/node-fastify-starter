@@ -3,7 +3,7 @@ import { AppError } from '#core/error/index.js';
 import { loadUniqueFields } from '#core/schema/unique.js';
 import { ERROR_CODE } from '#enums/error-code.js';
 import { buildTestApp, errorBody, readRequestId } from '#root/tests/helper/app.js';
-import { createLogSink, LOG_LEVEL } from '#root/tests/helper/log.js';
+import { createLogSink, forgetLines, LOG_LEVEL } from '#root/tests/helper/log.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { setImmediate as nextLoop } from 'node:timers/promises';
@@ -25,6 +25,7 @@ async function startApp(t) {
   const reported = [];
   const fastify = await buildTestApp({ logger: { level: 'warn', stream: sink.stream } });
 
+  forgetLines(sink);
   t.after(() => fastify.close());
   fastify.addHook('onError', (request, reply, error, done) => {
     reported.push({ requestId: request.id, error });

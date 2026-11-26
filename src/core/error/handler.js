@@ -14,6 +14,7 @@ import { uuidv7 } from '#utils/id.js';
 import { getPath, omit } from '#utils/object.js';
 import {
   isArray,
+  isFunction,
   isNonEmptyArray,
   isNonEmptyString,
   isNonNegativeInteger,
@@ -276,6 +277,40 @@ function sendFailure(failure, request, reply, appConfig) {
     .send(body);
 }
 
+// A route a browser comes to by a navigation, such as the callback of a sign-in, names in config.failureLocation(code,
+// request) the page that tells of its failure. On the frameworkErrors path the config of the request is empty.
+function findFailureLocation(request) {
+  const failureLocation = request.routeOptions?.config?.failureLocation;
+
+  return isFunction(failureLocation)
+    ? failureLocation
+    : null;
+}
+
+// A location Node would refuse makes writeHead throw after reply.send() has returned: it is refused here instead,
+// where the catch of handleError answers.
+function askFailureLocation(failureLocation, code, request) {
+  const location = failureLocation(code, request);
+
+  if (!isNonEmptyString(location) || !isSendableHeader(HEADER.LOCATION, location)) {
+    throw new TypeError('config.failureLocation(code, request) of a route requires a location to return, as a Location header takes it');
+  }
+
+  return location;
+}
+
+// No JSON and no header of the error: a challenge or a Retry-After speaks to an API client, and a browser follows the
+// redirect at once. The cookies the route has set stay.
+function sendFailureRedirect(location, request, reply) {
+  resetReply(request, reply);
+
+  reply
+    .code(HTTP_STATUS.FOUND)
+    .header(HEADER.REQUEST_ID, request.id)
+    .header(HEADER.LOCATION, location)
+    .send();
+}
+
 function logFailure(error, failure, request) {
   const validation = isNonEmptyArray(failure.validation)
     ? failure.validation.map((entry) => omit(entry, VALIDATION_LOG_OMITTED_KEYS))
@@ -309,7 +344,14 @@ function respond(error, request, reply) {
 
   answeredReplies.add(reply);
   logFailure(error, failure, request);
-  sendFailure(failure, request, reply, appConfig);
+
+  const failureLocation = findFailureLocation(request);
+
+  if (failureLocation) {
+    sendFailureRedirect(askFailureLocation(failureLocation, failure.code, request), request, reply);
+  } else {
+    sendFailure(failure, request, reply, appConfig);
+  }
 
   return true;
 }

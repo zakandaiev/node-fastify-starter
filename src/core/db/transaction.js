@@ -8,10 +8,10 @@ import {
   withTimeout,
 } from '#utils/async.js';
 import { convertStringToMs } from '#utils/date.js';
-import { isBoolean, isFunction } from '#utils/type.js';
+import { isBoolean, isFunction, isNonEmptyString } from '#utils/type.js';
 
 const SAVEPOINT_PREFIX = 'sp_';
-const LOCK_CONFLICT_RETRIES = 1;
+const ONE_RETRY = 1;
 const NO_DELAY_MS = 0;
 
 const RETRY_MESSAGE = 'Database transaction is run again after a lock conflict';
@@ -277,12 +277,17 @@ async function runCallbacks(callbacks, log) {
   });
 }
 
-// Once more, since the server has undone the first run: for work that holds nothing but statements of one database.
-export function retryOnLockConflict(run, message) {
+// Once more and at once, for work the failed run has left nothing of: a transaction the server has undone, or one that
+// lost a race the second run sees the winner of. The warning is the only trace of the first run.
+export function retryOnce(run, { shouldRetry, message } = {}) {
+  if (!isFunction(run) || !isFunction(shouldRetry) || !isNonEmptyString(message)) {
+    throw new TypeError('retryOnce(run, { shouldRetry, message }) requires the work, a function that tells an error worth one more run, and the message of its warning');
+  }
+
   const { log } = getContext();
 
-  function shouldRetry(error) {
-    if (!isLockConflict(error)) {
+  function shouldRunAgain(error) {
+    if (!shouldRetry(error)) {
       return false;
     }
 
@@ -292,11 +297,16 @@ export function retryOnLockConflict(run, message) {
   }
 
   return runWithRetry(run, {
-    retries: LOCK_CONFLICT_RETRIES,
+    retries: ONE_RETRY,
     minDelayMs: NO_DELAY_MS,
     maxDelayMs: NO_DELAY_MS,
-    shouldRetry,
+    shouldRetry: shouldRunAgain,
   });
+}
+
+// For work that holds nothing but statements of one database.
+export function retryOnLockConflict(run, message) {
+  return retryOnce(run, { shouldRetry: isLockConflict, message });
 }
 
 function runAttempts(context, fn, { isolation, retry }) {

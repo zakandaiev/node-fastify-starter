@@ -1,5 +1,11 @@
+import { readEnvList } from '#config/env.js';
+import { normalizeEmail } from '#utils/string.js';
+
 export function createAuthConfig(env) {
   return Object.freeze({
+    // A verified email of this list joins the group admin at its sign-in; normalized as a stored email is.
+    adminEmails: Object.freeze(readEnvList(env.APP_ADMIN_EMAILS).map((email) => normalizeEmail(email))),
+
     accessSecret: env.APP_JWT_ACCESS_SECRET,
     refreshSecret: env.APP_JWT_REFRESH_SECRET,
 

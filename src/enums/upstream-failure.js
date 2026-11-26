@@ -5,6 +5,7 @@ export const UPSTREAM_FAILURE = Object.freeze({
   TOO_LARGE: 'too-large',
   STATUS: 'status',
   INVALID_JSON: 'invalid-json',
+  INVALID_ANSWER: 'invalid-answer',
   REFUSED_HOST: 'refused-host',
   REFUSED_ADDRESS: 'refused-address',
   REFUSED_TYPE: 'refused-type',

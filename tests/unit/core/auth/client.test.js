@@ -1,7 +1,8 @@
 import { SCHEMA_LIMITS } from '#config/schema.js';
-import { readClient } from '#core/auth/client.js';
+import { CLIENT_ADDRESS_HEADERS, isLoopbackOnlyRequest, readClient } from '#core/auth/client.js';
 import { HEADER } from '#enums/header.js';
 import { buildTestApp } from '#root/tests/helper/app.js';
+import { createTestConfig } from '#root/tests/helper/config.js';
 import { createDownEnv } from '#root/tests/helper/db.js';
 import { REDIS_DOWN_ENV } from '#root/tests/helper/redis.js';
 import * as sessionSchema from '#schemas/entity/session.js';
@@ -25,8 +26,42 @@ const PAIR = String.fromCodePoint(0x1F600);
 const LONGEST_IP = 'ffff:ffff:ffff:ffff:ffff:ffff:255.255.255.255';
 const ZONED_IP = `fe80::1%${'z'.repeat(IP_LENGTH)}`;
 
+const LOOPBACK = '127.0.0.1';
+const LAN_IP = '192.168.1.20';
+const DEV_SERVER_HOST = 'localhost:5173';
+
+// APP_HOST of the tests is "app.test".
+const TEST_CONFIG = createTestConfig();
+
+const PROXY_HEADERS = Object.freeze(CLIENT_ADDRESS_HEADERS.filter((name) => name !== HEADER.X_FORWARDED_FOR));
+
 function read({ userAgent = USER_AGENT, ip = IP } = {}) {
   return readClient({ headers: { [HEADER.USER_AGENT]: userAgent }, ip });
+}
+
+// A Host of null is a request without one.
+function isLocal({
+  socket = { remoteAddress: LOOPBACK },
+  host = DEV_SERVER_HOST,
+  headers = {},
+  config = TEST_CONFIG,
+} = {}) {
+  return isLoopbackOnlyRequest({
+    socket,
+    headers: host === null
+      ? headers
+      : { [HEADER.HOST]: host, ...headers },
+    server: { config },
+  });
+}
+
+// The values a check lets in, and those it shuts out: a failure names them.
+function listLetIn(values, toOptions) {
+  return values.filter((value) => isLocal(toOptions(value)));
+}
+
+function listShutOut(values, toOptions) {
+  return values.filter((value) => !isLocal(toOptions(value)));
 }
 
 async function buildApp(t) {
@@ -34,6 +69,11 @@ async function buildApp(t) {
 
   t.after(() => fastify.close());
   fastify.get('/client', (request) => readClient(request));
+  fastify.get('/local', (request) => ({
+    isLocal: isLoopbackOnlyRequest(request),
+    ip: request.ip,
+    hostname: request.hostname,
+  }));
 
   return fastify;
 }
@@ -117,5 +157,135 @@ describe('readClient: a request of the app', () => {
       [sessionSchema.properties.userAgent.maxLength, sessionSchema.properties.ip.maxLength],
       [USER_AGENT_LENGTH, IP_LENGTH],
     );
+  });
+});
+
+describe('isLoopbackOnlyRequest: the socket', () => {
+  test('lets in a socket of loopback, of either family and in the IPv4-mapped form', () => {
+    const addresses = [LOOPBACK, '127.10.20.30', '::1', '::ffff:127.0.0.1', '::ffff:7f00:1'];
+
+    assert.deepEqual(listShutOut(addresses, (remoteAddress) => ({ socket: { remoteAddress } })), []);
+  });
+
+  // A socket that has closed has no address.
+  test('shuts out a socket of the network, of the internet or of no host, and one that has closed', () => {
+    const addresses = [LAN_IP, PROXY_IP, IP, '::ffff:192.168.1.20', '2001:db8::7', 'fe80::1', '0.0.0.0', '::', 'localhost', '', undefined];
+
+    assert.deepEqual(listLetIn(addresses, (remoteAddress) => ({ socket: { remoteAddress } })), []);
+  });
+});
+
+describe('isLoopbackOnlyRequest: the headers of a proxy', () => {
+  test('lets in a dev proxy on this machine, whose X-Forwarded-For holds loopback hops only', () => {
+    const hops = [LOOPBACK, '::1', '::ffff:127.0.0.1', '127.0.0.1, ::1', ' 127.0.0.1 ,127.0.0.2 '];
+
+    assert.deepEqual(listShutOut(hops, (hop) => ({ headers: { [HEADER.X_FORWARDED_FOR]: hop } })), []);
+  });
+
+  test('shuts out X-Forwarded-For with a hop of another machine, an empty hop or a hop that is no address', () => {
+    const hops = [
+      IP,
+      LAN_IP,
+      `${LOOPBACK}, ${IP}`,
+      `${LAN_IP}, ${LOOPBACK}`,
+      '',
+      ' ',
+      `${LOOPBACK},`,
+      `,${LOOPBACK}`,
+      `${LOOPBACK},,::1`,
+      `${LOOPBACK}:5173`,
+      '[::1]',
+      'localhost',
+      'unknown',
+    ];
+
+    assert.deepEqual(listLetIn(hops, (hop) => ({ headers: { [HEADER.X_FORWARDED_FOR]: hop } })), []);
+  });
+
+  test('shuts out every other header that names a client, whatever it holds and whatever comes beside it', () => {
+    const values = [LOOPBACK, 'for=127.0.0.1', ''];
+    const cases = PROXY_HEADERS.flatMap((name) => values.flatMap((value) => [
+      { [name]: value },
+      { [name]: value, [HEADER.X_FORWARDED_FOR]: LOOPBACK },
+    ]));
+
+    assert.equal(PROXY_HEADERS.length, 4);
+    assert.deepEqual(listLetIn(cases, (headers) => ({ headers })), []);
+  });
+
+  test('come from one frozen list', () => {
+    assert.deepEqual(CLIENT_ADDRESS_HEADERS, ['x-forwarded-for', 'forwarded', 'x-real-ip', 'cf-connecting-ip', 'true-client-ip']);
+    assert.ok(Object.isFrozen(CLIENT_ADDRESS_HEADERS));
+  });
+});
+
+describe('isLoopbackOnlyRequest: the Host', () => {
+  test('lets in a name a browser on this machine writes, a loopback address and the host of the app', () => {
+    const hosts = [
+      'localhost',
+      DEV_SERVER_HOST,
+      'LocalHost:80',
+      'app.localhost',
+      'app.localhost:3000',
+      'a.b.localhost',
+      LOOPBACK,
+      '127.0.0.1:4173',
+      '127.1.2.3:4173',
+      '[::1]:4173',
+      '[::ffff:127.0.0.1]',
+      'app.test',
+      'app.test:8443',
+      'APP.TEST',
+    ];
+
+    assert.deepEqual(listShutOut(hosts, (host) => ({ host })), []);
+  });
+
+  test('shuts out another name, as a page whose DNS points at 127.0.0.1 sends it, and a Host that is none', () => {
+    const hosts = [
+      'evil.com',
+      'evil.com:5173',
+      'localhost.evil.com',
+      'evillocalhost',
+      'localhost.',
+      LAN_IP,
+      `${LAN_IP}:5173`,
+      'app.test.evil.com',
+      'evil.com@localhost',
+      'user:secret@localhost',
+      'local host',
+      '',
+      null,
+    ];
+
+    assert.deepEqual(listLetIn(hosts, (host) => ({ host })), []);
+  });
+
+  test('compares the name of APP_HOST, whatever port either names', () => {
+    const config = createTestConfig({ env: { APP_HOST: 'nfs.local:4173' } });
+
+    assert.deepEqual(listShutOut(['nfs.local', 'nfs.local:9000'], (host) => ({ host, config })), []);
+    assert.deepEqual(listLetIn(['nfs.local.evil.com', 'app.test'], (host) => ({ host, config })), []);
+  });
+});
+
+describe('isLoopbackOnlyRequest: a request of the app', () => {
+  test('reads the socket and the raw Host, not the address and the name trustProxy takes from the headers', async (t) => {
+    const fastify = await buildApp(t);
+    const responses = await Promise.all([
+      fastify.inject({ url: '/local' }),
+      fastify.inject({ url: '/local', headers: { [HEADER.X_FORWARDED_FOR]: LOOPBACK }, remoteAddress: LOOPBACK }),
+      fastify.inject({ url: '/local', headers: { [HEADER.X_FORWARDED_FOR]: LOOPBACK }, remoteAddress: LAN_IP }),
+      fastify.inject({ url: '/local', headers: { [HEADER.X_FORWARDED_FOR]: IP }, remoteAddress: LOOPBACK }),
+      fastify.inject({ url: '/local', headers: { [HEADER.HOST]: 'evil.com', 'x-forwarded-host': 'localhost' } }),
+    ]);
+
+    assert.deepEqual(responses.map((response) => response.json()), [
+      { isLocal: true, ip: LOOPBACK, hostname: 'localhost' },
+      { isLocal: true, ip: LOOPBACK, hostname: 'localhost' },
+      { isLocal: false, ip: LOOPBACK, hostname: 'localhost' },
+      { isLocal: false, ip: IP, hostname: 'localhost' },
+      { isLocal: false, ip: LOOPBACK, hostname: 'localhost' },
+    ]);
   });
 });

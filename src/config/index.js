@@ -5,6 +5,7 @@ import { createCacheConfig } from '#config/cache.js';
 import { createDbConfig } from '#config/db.js';
 import { createHttpConfig } from '#config/http.js';
 import { createLoggerConfig } from '#config/logger.js';
+import { createOauthConfig } from '#config/oauth.js';
 import { createRedisConfig } from '#config/redis.js';
 
 export function createConfig(env) {
@@ -18,6 +19,7 @@ export function createConfig(env) {
     redis: createRedisConfig(env),
     cache: createCacheConfig(),
     auth: createAuthConfig(env),
+    oauth: createOauthConfig(env),
     http: createHttpConfig(),
     alert: createAlertConfig(env),
     logger: createLoggerConfig(env),

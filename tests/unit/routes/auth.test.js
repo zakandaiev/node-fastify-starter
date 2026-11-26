@@ -1,9 +1,18 @@
+import { RESERVED_ROUTE_NAMES } from '#core/auth/oauth/provider.js';
 import { issueTokens } from '#core/auth/token.js';
 import { assertRouteContract } from '#core/schema/route.js';
 import { COOKIE } from '#enums/cookie.js';
 import { HEADER } from '#enums/header.js';
 import { TOKEN_TYPE } from '#enums/token-type.js';
-import { getMeSchema, postLogoutSchema, postRefreshSchema } from '#root/src/routes/v1/auth/controller.js';
+import {
+  getMeSchema,
+  getProvidersSchema,
+  getSignInCallbackSchema,
+  getSignInSchema,
+  postLoginDevSchema,
+  postLogoutSchema,
+  postRefreshSchema,
+} from '#root/src/routes/v1/auth/controller.js';
 import useAuthRoutes from '#root/src/routes/v1/auth/index.js';
 import { deleteSessionSchema, deleteSessionsSchema, getSessionsSchema } from '#root/src/routes/v1/sessions/controller.js';
 import useSessionRoutes from '#root/src/routes/v1/sessions/index.js';
@@ -18,6 +27,7 @@ import {
   toBearer,
 } from '#root/tests/helper/session.js';
 import { example as sessionExample } from '#schemas/entity/session.js';
+import { unique } from '#utils/array.js';
 import { nowUtc } from '#utils/date.js';
 import { uuidv7 } from '#utils/id.js';
 import { omit } from '#utils/object.js';
@@ -28,6 +38,13 @@ const REFRESH_URL = '/api/v1/auth/refresh';
 const PUBLIC = Object.freeze({ auth: false });
 const GUARDED = Object.freeze({ auth: true });
 const SCOPES = Object.freeze(['users:read']);
+
+// Google with both credentials, Telegram without, in dev mode.
+const GOOGLE_DEV_ENV = Object.freeze({
+  APP_MODE: 'dev',
+  APP_OAUTH_GOOGLE_CLIENT_ID: 'google-client-id',
+  APP_OAUTH_GOOGLE_CLIENT_SECRET: 'google-client-secret',
+});
 
 const TTL_SECONDS = 600;
 const EXPIRED_TTL_SECONDS = -60;
@@ -194,18 +211,25 @@ describe('POST /api/v1/auth/refresh with the database down', () => {
   });
 });
 
-describe('routes of auth and sessions: who may call them', () => {
-  test('each has the method, the path and the security of its contract: only the refresh is public', async (t) => {
-    const fastify = await buildDownApp(t);
-    const routes = [];
+// The routes a registration of the auth and the session routes declares, under prefixes of their own.
+async function listDeclaredRoutes(fastify) {
+  const routes = [];
 
-    // A copy: Fastify writes the second spelling of the root of a prefix into the same options.
-    fastify.addHook('onRoute', (routeOptions) => routes.push({ ...routeOptions }));
-    await fastify.register(useAuthRoutes, { prefix: '/api/v2/auth' });
-    await fastify.register(useSessionRoutes, { prefix: '/api/v2/sessions' });
+  // A copy: Fastify writes the second spelling of the root of a prefix into the same options.
+  fastify.addHook('onRoute', (routeOptions) => routes.push({ ...routeOptions }));
+  await fastify.register(useAuthRoutes, { prefix: '/api/v2/auth' });
+  await fastify.register(useSessionRoutes, { prefix: '/api/v2/sessions' });
+
+  return routes;
+}
+
+describe('routes of auth and sessions: who may call them', () => {
+  test('each has the method, the path and the security of its contract: only the refresh and the list of providers are public, and a provider without credentials has no routes', async (t) => {
+    const routes = await listDeclaredRoutes(await buildDownApp(t));
 
     assert.deepEqual(routes.filter(({ method }) => method !== 'HEAD').map(({ method, url, security }) => [method, url, security]), [
       ['GET', '/api/v2/auth/me', GUARDED],
+      ['GET', '/api/v2/auth/providers', PUBLIC],
       ['POST', '/api/v2/auth/refresh', PUBLIC],
       ['POST', '/api/v2/auth/logout', GUARDED],
       ['GET', '/api/v2/sessions', GUARDED],
@@ -215,6 +239,36 @@ describe('routes of auth and sessions: who may call them', () => {
     routes.forEach((route) => {
       assert.doesNotThrow(() => assertRouteContract(route));
     });
+  });
+
+  test('a provider with both credentials gets a public start and a public callback without a HEAD twin, and dev mode the public dev sign-in', async (t) => {
+    const routes = await listDeclaredRoutes(await buildDownApp(t, { env: GOOGLE_DEV_ENV }));
+    const authRoutes = routes.filter(({ url }) => url.startsWith('/api/v2/auth/'));
+
+    assert.deepEqual(authRoutes.map(({ method, url, security }) => [method, url, security]), [
+      ['GET', '/api/v2/auth/me', GUARDED],
+      ['HEAD', '/api/v2/auth/me', GUARDED],
+      ['GET', '/api/v2/auth/providers', PUBLIC],
+      ['HEAD', '/api/v2/auth/providers', PUBLIC],
+      ['POST', '/api/v2/auth/refresh', PUBLIC],
+      ['POST', '/api/v2/auth/logout', GUARDED],
+      ['GET', '/api/v2/auth/google', PUBLIC],
+      ['GET', '/api/v2/auth/google/callback', PUBLIC],
+      ['POST', '/api/v2/auth/login-dev', PUBLIC],
+    ]);
+    authRoutes.forEach((route) => {
+      assert.doesNotThrow(() => assertRouteContract(route));
+    });
+  });
+
+  test('every route of the folder but those of a provider is named in RESERVED_ROUTE_NAMES: a provider of such an id would take its place', async (t) => {
+    const routes = await listDeclaredRoutes(await buildDownApp(t, { env: GOOGLE_DEV_ENV }));
+    const segments = routes
+      .filter(({ url }) => url.startsWith('/api/v2/auth/'))
+      .map(({ url }) => url.slice('/api/v2/auth/'.length).split('/')[0])
+      .filter((segment) => segment !== 'google');
+
+    assert.deepEqual(unique(segments).toSorted(), [...RESERVED_ROUTE_NAMES].toSorted());
   });
 
   test('a guest gets 401 that names the Bearer scheme from every guarded one, before a wrong id, a wrong query or a body too large is looked at', async (t) => {
@@ -297,6 +351,19 @@ describe('routes of auth and sessions: what they say', () => {
     assert.deepEqual(
       [postLogoutSchema, deleteSessionSchema, deleteSessionsSchema].map(({ response }) => omit(response[204], ['description'])),
       [{ type: 'null' }, { type: 'null' }, { type: 'null' }],
+    );
+    assert.deepEqual(schemas.flatMap(({ response }) => listNames(response)).filter((name) => SECRET_NAME_REGEXP.test(name)), []);
+  });
+
+  test('of the routes of signing in only the dev sign-in names a token, the access token it hands out for the header; a provider is its id and its name, and its start and its callback answer with a redirect alone', () => {
+    const schemas = [getProvidersSchema, getSignInSchema, getSignInCallbackSchema];
+
+    assert.deepEqual(readKeys(getProvidersSchema.response[200].properties.data.items), ['id', 'name']);
+    assert.deepEqual(readKeys(postLoginDevSchema.response[200].properties.data), [...STATE_KEYS, 'accessToken']);
+    assert.deepEqual([postLoginDevSchema.body.required, postLoginDevSchema.body.properties.email.type], [['email'], 'string']);
+    assert.deepEqual(
+      [getSignInSchema, getSignInCallbackSchema].map(({ response }) => Object.keys(response)),
+      [['302'], ['302']],
     );
     assert.deepEqual(schemas.flatMap(({ response }) => listNames(response)).filter((name) => SECRET_NAME_REGEXP.test(name)), []);
   });

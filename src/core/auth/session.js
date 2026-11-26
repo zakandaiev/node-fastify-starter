@@ -14,7 +14,7 @@ import { isUuid, uuidv7 } from '#utils/id.js';
 // Under REPEATABLE READ a locking read fails once another session has changed its row since the first plain read of
 // the transaction, and every refresh of the user changes one. A transaction around these calls names both, and only the
 // level is checked; it also locks the row of the user before anything that refers to the user.
-const SESSION_TRANSACTION = Object.freeze({ isolation: ISOLATION_LEVEL.READ_COMMITTED, retry: true });
+export const SESSION_TRANSACTION = Object.freeze({ isolation: ISOLATION_LEVEL.READ_COMMITTED, retry: true });
 
 const LOCK_USER_SQL = 'SELECT status FROM users WHERE id = :userId FOR UPDATE';
 

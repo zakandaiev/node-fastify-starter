@@ -1,6 +1,6 @@
 import { resolvePath } from '#config/path.js';
 import { isBlankString } from '#utils/type.js';
-import { isWebUrl } from '#utils/validate.js';
+import { isEmail, isWebUrl } from '#utils/validate.js';
 import Ajv from 'ajv';
 import { readFileSync } from 'node:fs';
 import nodePath from 'node:path';
@@ -12,6 +12,7 @@ const ENV_PREFIX = 'APP_';
 const ENV_FILE = '.env';
 const BYTE_ORDER_MARK = String.fromCharCode(0xFEFF);
 const SECRET_MIN_LENGTH = 32;
+const LIST_SEPARATOR = ',';
 
 const HOST_REGEXP = /^[A-Za-z0-9.-]+(:[0-9]{1,5})?$/;
 const INTEGER_REGEXP = /^[0-9]+$/;
@@ -26,10 +27,24 @@ function isPublicHost(value) {
   return HOST_REGEXP.test(value) && URL.canParse(`http://${value}`);
 }
 
+// The items of a list as env writes it, "anna@example.com, borys@example.com": a blank one, as after a trailing comma,
+// is no item. The format of a variable and the config that reads it split it here alike.
+export function readEnvList(value = '') {
+  return value
+    .split(LIST_SEPARATOR)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function isEmailList(value) {
+  return readEnvList(value).every((item) => isEmail(item));
+}
+
 const FORMATS = Object.freeze({
   // docker compose interpolates $ " \ in env files, base64url has none of them
   base64url: /^[A-Za-z0-9_-]+$/,
   'host[:port]': isPublicHost,
+  'email-list': isEmailList,
   // A channel with an address fetch() refuses would only show itself as an alert that never came.
   url: isWebUrl,
   'telegram-bot-token': /^[0-9]+:[A-Za-z0-9_-]+$/,
@@ -71,7 +86,7 @@ export const ENV_SCHEMA = Object.freeze({
     APP_HOST: PUBLIC_HOST,
     APP_HEALTH_PORT: PORT,
 
-    APP_ADMIN_EMAILS: TEXT,
+    APP_ADMIN_EMAILS: { type: 'string', format: 'email-list' },
 
     APP_DATABASE_HOST: TEXT,
     APP_DATABASE_PORT: PORT,

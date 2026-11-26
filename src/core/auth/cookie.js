@@ -1,15 +1,27 @@
 import { COOKIE } from '#enums/cookie.js';
 import { HEADER } from '#enums/header.js';
 import { hasBearerScheme } from '#utils/header.js';
+import { isNonEmptyString } from '#utils/type.js';
 
 const HTTPS = 'https';
 const SAME_SITE = 'lax';
 const ROOT_PATH = '/';
 const MARKER_VALUE = '1';
 
+// What every cookie of the app is set with. Lax, not Strict: a sign-in comes back from its provider by a navigation
+// from another site, and its cookies must ride with it.
+export function readCookieBase(appConfig) {
+  // The whole config passed by mistake would drop Secure without a word.
+  if (!isNonEmptyString(appConfig?.protocol)) {
+    throw new TypeError('readCookieBase(appConfig) requires config.app, which names the protocol of the app');
+  }
+
+  return { sameSite: SAME_SITE, secure: appConfig.protocol === HTTPS };
+}
+
 // The two markers are read by the page: they say that a token is there, and hold none.
 function describeCookies({ app, auth }) {
-  const shared = { sameSite: SAME_SITE, secure: app.protocol === HTTPS };
+  const shared = readCookieBase(app);
 
   return {
     [COOKIE.ACCESS_TOKEN]: { ...shared, httpOnly: true, path: app.apiPrefix },

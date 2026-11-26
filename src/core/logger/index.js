@@ -1,7 +1,7 @@
 import { maskErrorValues } from '#core/error/mask.js';
 import { mapKeys } from '#utils/object.js';
 import { maskSensitiveDeep, OMIT_VALUE, UNREADABLE_PLACEHOLDER } from '#utils/sensitive.js';
-import { cutAddressTail } from '#utils/string.js';
+import { cutAddressTail, cutAddressTails } from '#utils/string.js';
 import {
   isArray,
   isFunction,
@@ -200,11 +200,19 @@ function serializeReply(reply) {
   };
 }
 
+// Fastify writes the raw URL into a message of its own, beside no error to cut: the warning of a reply whose head has
+// gone already ("... in the "/callback?code=…" (GET) route?"). An address in a text of a message loses its query.
+function serializeMessage(message) {
+  return serializeError(isString(message)
+    ? cutAddressTails(message)
+    : message);
+}
+
 // pino copies err.message into msg when a call gives no message of its own, and that copy passes by
 // serializers.err: it is masked the same way, a message that is not a text included.
 const SERIALIZERS = Object.freeze({
   err: serializeError,
-  msg: serializeError,
+  msg: serializeMessage,
   req: serializeRequest,
   res: serializeReply,
 });

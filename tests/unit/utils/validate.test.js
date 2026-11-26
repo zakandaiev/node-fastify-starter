@@ -1,14 +1,18 @@
 import {
   EMAIL_MAX_LENGTH,
+  REDIRECT_PATH_MAX_LENGTH,
   ipInCidr,
   isCidr,
   isEmail,
   isLoopbackAddress,
+  isLoopbackHostname,
   isPhone,
   isPrivateAddress,
   isSafeRedirectPath,
   isWebUrl,
+  toHostAddress,
   toIpAddress,
+  toValidEmail,
 } from '#utils/validate.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
@@ -137,6 +141,19 @@ describe('EMAIL_MAX_LENGTH', () => {
 
     assert.equal(isEmail(`  ${address}  `), true);
     assert.equal(isEmail(`  a${address}  `), false);
+  });
+});
+
+describe('toValidEmail', () => {
+  test('gives an email in the form it is stored and searched in: trimmed, in lower case and NFC', () => {
+    assert.equal(toValidEmail('  Anna@Example.COM '), 'anna@example.com');
+    assert.equal(toValidEmail('Ce\u0301line@example.com'), 'c\u00e9line@example.com');
+  });
+
+  test('gives null for what is no email, a text that is not one included', () => {
+    ['anna.example.com', '', ' ', null, undefined, 42, {}, `${'a'.repeat(EMAIL_MAX_LENGTH)}@example.com`].forEach((value) => {
+      assert.equal(toValidEmail(value), null);
+    });
   });
 });
 
@@ -313,6 +330,27 @@ describe('isLoopbackAddress', () => {
   });
 });
 
+describe('toHostAddress', () => {
+  test('takes the brackets off an IPv6 hostname, as URL writes it, and leaves any other as it is', () => {
+    assert.deepEqual(['[::1]', '[2001:db8::1]', '127.0.0.1', 'example.com', 'localhost'].map((hostname) => toHostAddress(hostname)), ['::1', '2001:db8::1', '127.0.0.1', 'example.com', 'localhost']);
+  });
+
+  test('leaves a bracket without its pair, and gives a text for what is no text', () => {
+    assert.deepEqual(['[::1', '::1]', '[]'].map((hostname) => toHostAddress(hostname)), ['[::1', '::1]', '']);
+    assert.deepEqual([null, undefined].map((hostname) => toHostAddress(hostname)), ['', '']);
+  });
+});
+
+describe('isLoopbackHostname', () => {
+  test('accepts localhost and a loopback address, an IPv6 one in brackets too', () => {
+    assertAll(isLoopbackHostname, ['localhost', '127.0.0.1', '127.8.9.10', '[::1]', '::1', '[::ffff:7f00:1]'], true);
+  });
+
+  test('refuses a name any resolver may send elsewhere and every other address', () => {
+    assertAll(isLoopbackHostname, ['app.localhost', 'localhost.example.com', 'LOCALHOST', '10.0.0.1', '[fe80::1]', '', null, undefined], false);
+  });
+});
+
 describe('isPrivateAddress', () => {
   // [first address, last address, the address before the block, the address after it]
   const IPV4_BLOCKS = [
@@ -432,7 +470,31 @@ describe('isWebUrl', () => {
 
 describe('isSafeRedirectPath', () => {
   test('accepts a local path with a query and a fragment', () => {
-    assertAll(isSafeRedirectPath, ['/', '/dashboard', '/users/0198c0de-0000-7000-8000-000000000000', '/search?q=a%20b&page=2#results', "/~user/it's", '/a/../b', '/@evil.com'], true);
+    assertAll(isSafeRedirectPath, ['/', '/dashboard', '/users/0198c0de-0000-7000-8000-000000000000', '/search?q=a%20b&page=2#results', "/~user/it's", '/@evil.com'], true);
+  });
+
+  test('rejects a segment of one or two dots, also spelled %2e in any case: URL parsing removes it, and "/.//evil.com" leaves the pathname "//evil.com"', () => {
+    assertAll(isSafeRedirectPath, [
+      '/.//evil.com',
+      '/..//evil.com',
+      '/%2e//evil.com',
+      '/%2E%2e//evil.com',
+      '/.%2E//evil.com',
+      '/%2e.//evil.com',
+      '/a/../b',
+      '/a/./b',
+      '/a/..',
+      '/.',
+      '/..',
+      '/./?next=/',
+      '/..#top',
+    ], false);
+    assert.equal(new URL('/.//evil.com', 'https://app.test').pathname, '//evil.com');
+    assert.equal(new URL('/%2E%2e//evil.com', 'https://app.test').pathname, '//evil.com');
+  });
+
+  test('accepts dots that are not a whole segment, and dot segments of the query or the fragment', () => {
+    assertAll(isSafeRedirectPath, ['/a.b', '/.well-known/x', '/...', '/%2e%2e%2e', '/a/..b', '/a/.%2e./b', '/%2ea', '/search?path=/../x', '/page#/./x'], true);
   });
 
   test('rejects a target on another host', () => {
@@ -453,9 +515,10 @@ describe('isSafeRedirectPath', () => {
     assert.equal(isSafeRedirectPath('/%D1%88%D0%BB%D1%8F%D1%85'), true);
   });
 
-  test('accepts 512 characters and rejects 513', () => {
-    assert.equal(isSafeRedirectPath(`/${'a'.repeat(511)}`), true);
-    assert.equal(isSafeRedirectPath(`/${'a'.repeat(512)}`), false);
+  test('accepts REDIRECT_PATH_MAX_LENGTH characters, 512, and rejects one more', () => {
+    assert.equal(REDIRECT_PATH_MAX_LENGTH, 512);
+    assert.equal(isSafeRedirectPath(`/${'a'.repeat(REDIRECT_PATH_MAX_LENGTH - 1)}`), true);
+    assert.equal(isSafeRedirectPath(`/${'a'.repeat(REDIRECT_PATH_MAX_LENGTH)}`), false);
   });
 
   test('rejects what is not a string', () => {

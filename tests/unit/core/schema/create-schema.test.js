@@ -800,7 +800,7 @@ describe('createSchema: response', () => {
       description: 'Unauthorized: AUTHENTICATION_ERROR, SESSION_REVOKED',
       examples: [{ status: 'error', code: ERROR_CODE.AUTHENTICATION_ERROR, message: ERROR_CATALOG.AUTHENTICATION_ERROR.message }],
     });
-    assert.equal(readErrorResponse(HTTP_STATUS.CONFLICT).description, 'Conflict: NO_CHANGES');
+    assert.equal(readErrorResponse(HTTP_STATUS.CONFLICT).description, 'Conflict: NO_CHANGES, CONTACT_TAKEN, IDENTITY_TAKEN');
     assert.equal(readErrorResponse(HTTP_STATUS.BAD_GATEWAY).description, 'Bad Gateway: UPSTREAM_ERROR');
     assert.equal(readErrorResponse(HTTP_STATUS.NOT_FOUND, { description: 'No such user' }).description, 'No such user');
   });
@@ -864,7 +864,7 @@ describe('createSchema: defaultResponses, meta and build', () => {
       .build();
 
     assert.equal(response[HTTP_STATUS.NOT_FOUND].description, 'No such user');
-    assert.equal(response[HTTP_STATUS.CONFLICT].description, 'Conflict: NO_CHANGES');
+    assert.equal(response[HTTP_STATUS.CONFLICT].description, 'Conflict: NO_CHANGES, CONTACT_TAKEN, IDENTITY_TAKEN');
   });
 
   test('defaultResponses() keeps a status declared after it: the steps of the chain come in any order', () => {

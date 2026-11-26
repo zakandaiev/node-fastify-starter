@@ -1,7 +1,7 @@
 import { AppError } from '#core/error/index.js';
 import { ERROR_CODE } from '#enums/error-code.js';
 import { buildTestApp, readRequestId } from '#root/tests/helper/app.js';
-import { createLogSink } from '#root/tests/helper/log.js';
+import { createLogSink, forgetLines } from '#root/tests/helper/log.js';
 import { listEnvelope, successEnvelope } from '#schemas/common/envelope.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
@@ -77,6 +77,16 @@ function serverErrorBody(response) {
 
 function injectAll(fastify, urls) {
   return Promise.all(urls.map((url) => fastify.inject(url)));
+}
+
+async function buildWarnLoggedApp(t) {
+  const sink = createLogSink();
+  const fastify = await buildTestApp({ logger: { level: 'warn', stream: sink.stream } });
+
+  t.after(() => fastify.close());
+  forgetLines(sink);
+
+  return { fastify, sink };
 }
 
 async function useShop(fastify) {
@@ -534,9 +544,7 @@ describe('reply decorators', () => {
   // With reply.send(error) inside fail(), the handler below answered a second time while the hook was awaited:
   // an unhandled rejection, and the process was gone.
   test('fail() without a return in an async handler answers once while an onError hook is awaited', async (t) => {
-    const sink = createLogSink();
-    const fastify = await buildTestApp({ logger: { level: 'warn', stream: sink.stream } });
-    t.after(() => fastify.close());
+    const { fastify, sink } = await buildWarnLoggedApp(t);
 
     fastify.addHook('onError', async () => {
       await sleep(HOOK_DELAY_MS);
@@ -583,9 +591,7 @@ describe('reply decorators', () => {
   });
 
   test('answer once when an async handler returns them, also while async hooks hold the response', async (t) => {
-    const sink = createLogSink();
-    const fastify = await buildTestApp({ logger: { level: 'warn', stream: sink.stream } });
-    t.after(() => fastify.close());
+    const { fastify, sink } = await buildWarnLoggedApp(t);
 
     fastify.addHook('onSend', async (request, reply, payload) => {
       await sleep(HOOK_DELAY_MS);
@@ -720,9 +726,7 @@ describe('reply decorators and the response schema of the route', () => {
   });
 
   test('say in the log which status has no schema', async (t) => {
-    const sink = createLogSink();
-    const fastify = await buildTestApp({ logger: { level: 'warn', stream: sink.stream } });
-    t.after(() => fastify.close());
+    const { fastify, sink } = await buildWarnLoggedApp(t);
 
     declare(fastify, '/api/v1/users', { 200: successEnvelope(USER_SCHEMA) }, sendCreated);
 

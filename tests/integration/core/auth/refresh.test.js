@@ -25,6 +25,7 @@ import {
 } from '#root/tests/helper/redis.js';
 import { getServiceAddress } from '#root/tests/helper/service.js';
 import {
+  AUTH_COOKIES,
   connectAppRedis,
   createUser,
   grantScopes,
@@ -1312,7 +1313,7 @@ describe('refreshSession: Redis', { skip: testDb.skip || testRedis.skip }, () =>
     const response = await running;
 
     assert.equal(response.statusCode, HTTP_STATUS.OK);
-    assert.deepEqual(Object.keys(readAuthCookies(response)).toSorted(), Object.values(COOKIE).toSorted());
+    assert.deepEqual(Object.keys(readAuthCookies(response)).toSorted(), AUTH_COOKIES.toSorted());
 
     const { refreshToken } = readTokens(response);
 

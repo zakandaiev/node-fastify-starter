@@ -20,7 +20,8 @@ const LOOPBACK = '127.0.0.1';
 const KEY_SEPARATOR = ':';
 const ALIVE_MARK = '1';
 
-const AUTH_COOKIES = Object.freeze(Object.values(COOKIE));
+// The cookies of a signed-in browser: the two tokens and their markers, not those of a sign-in on its way.
+export const AUTH_COOKIES = Object.freeze([COOKIE.ACCESS_TOKEN, COOKIE.REFRESH_TOKEN, COOKIE.HAS_SESSION, COOKIE.HAS_ACCESS]);
 
 export const TEST_CLIENT = Object.freeze({ userAgent: 'session-test-agent', ip: '203.0.113.7' });
 

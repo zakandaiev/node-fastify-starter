@@ -4,6 +4,7 @@ import {
   afterCommit,
   findTransaction,
   isInTransaction,
+  retryOnce,
   retryOnLockConflict,
   withTransaction,
 } from '#core/db/transaction.js';
@@ -531,21 +532,105 @@ describe('withTransaction: the deadline', { timeout: HANG_TIMEOUT_MS }, () => {
   });
 });
 
+// Fails with the errors it is given, one a run, and then gives its result.
+function createRun(t, ...errors) {
+  const failures = [...errors];
+
+  return t.mock.fn(async () => {
+    if (failures.length) {
+      throw failures.shift();
+    }
+
+    return 'done';
+  });
+}
+
+describe('retryOnce', () => {
+  const MESSAGE = 'The work is run once more';
+  const RACE_CODE = 'ER_DUP_ENTRY';
+
+  // What a second run gets past: the unique key a first run has lost to another session.
+  function createRace() {
+    return new DbError('Duplicate entry', { kind: DB_ERROR_KIND.UNIQUE, code: RACE_CODE });
+  }
+
+  function isRace(error) {
+    return error?.code === RACE_CODE;
+  }
+
+  async function retryLogged(run, shouldRetry = isRace) {
+    const sink = createLogSink();
+    const context = createPlainContext({ level: 'trace', stream: sink.stream });
+    const [outcome] = await Promise.allSettled([runInContext(context, () => retryOnce(run, { shouldRetry, message: MESSAGE }))]);
+
+    return { outcome, lines: sink.lines.map(({ level, msg, err }) => [level, msg, err.code]) };
+  }
+
+  test('requires the work, a function that tells an error worth one more run, and the message of its warning', () => {
+    const run = () => 'done';
+    const signature = /^retryOnce\(run, \{ shouldRetry, message \}\) requires/;
+
+    [
+      [undefined, { shouldRetry: isRace, message: MESSAGE }],
+      [run, undefined],
+      [run, { message: MESSAGE }],
+      [run, { shouldRetry: true, message: MESSAGE }],
+      [run, { shouldRetry: isRace }],
+      [run, { shouldRetry: isRace, message: '' }],
+    ].forEach((args) => assert.throws(() => retryOnce(...args), { name: 'TypeError', message: signature }));
+  });
+
+  test('requires a context', async () => {
+    await assert.rejects(async () => retryOnce(() => 'done', { shouldRetry: isRace, message: MESSAGE }), /No active context/);
+  });
+
+  test('runs once when nothing fails and says nothing', async (t) => {
+    const run = createRun(t);
+
+    assert.deepEqual(await retryLogged(run), { outcome: { status: 'fulfilled', value: 'done' }, lines: [] });
+    assert.equal(run.mock.callCount(), 1);
+  });
+
+  test('runs once more after an error the check takes, with one warning of the error and the message it was given, and resolves with that result', async (t) => {
+    const race = createRace();
+    const run = createRun(t, race);
+    const shouldRetry = t.mock.fn(isRace);
+
+    assert.deepEqual(await retryLogged(run, shouldRetry), {
+      outcome: { status: 'fulfilled', value: 'done' },
+      lines: [[LOG_LEVEL.WARN, MESSAGE, RACE_CODE]],
+    });
+    assert.equal(run.mock.callCount(), 2);
+    assert.deepEqual(shouldRetry.mock.calls.map((call) => call.arguments[0]), [race]);
+  });
+
+  test('rejects with the second failure, one the check takes or not, and does not run a third time', async (t) => {
+    const errors = [createRace(), new Error('another failure')];
+
+    await Promise.all(errors.map(async (error) => {
+      const run = createRun(t, createRace(), error);
+      const { outcome, lines } = await retryLogged(run);
+
+      assert.equal(outcome.reason, error);
+      assert.equal(run.mock.callCount(), 2);
+      assert.equal(lines.length, 1);
+    }));
+  });
+
+  test('rejects at once with an error the check refuses: one run, no warning', async (t) => {
+    const errors = [new Error('plain'), createConflict(), new AppError(ERROR_CODE.VALIDATION_ERROR, { cause: createRace() })];
+
+    await Promise.all(errors.map(async (error) => {
+      const run = createRun(t, error);
+
+      assert.deepEqual(await retryLogged(run), { outcome: { status: 'rejected', reason: error }, lines: [] });
+      assert.equal(run.mock.callCount(), 1);
+    }));
+  });
+});
+
 describe('retryOnLockConflict', () => {
   const MESSAGE = 'The work is sent again';
-
-  // Fails with the errors it is given, one a run, and then gives its result.
-  function createRun(t, ...errors) {
-    const failures = [...errors];
-
-    return t.mock.fn(async () => {
-      if (failures.length) {
-        throw failures.shift();
-      }
-
-      return 'done';
-    });
-  }
 
   async function retryLogged(run) {
     const sink = createLogSink();

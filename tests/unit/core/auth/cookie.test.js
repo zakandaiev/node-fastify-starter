@@ -1,9 +1,15 @@
-import { clearAuthCookies, endAuthCookies, setAuthCookies } from '#core/auth/cookie.js';
+import {
+  clearAuthCookies,
+  endAuthCookies,
+  readCookieBase,
+  setAuthCookies,
+} from '#core/auth/cookie.js';
 import { issueTokens, readAccessToken, readRefreshToken } from '#core/auth/token.js';
 import { AppError } from '#core/error/index.js';
 import { ERROR_CODE } from '#enums/error-code.js';
 import { HEADER } from '#enums/header.js';
 import { buildTestApp, errorBody } from '#root/tests/helper/app.js';
+import { createTestConfig } from '#root/tests/helper/config.js';
 import { createDownEnv } from '#root/tests/helper/db.js';
 import { REDIS_DOWN_ENV } from '#root/tests/helper/redis.js';
 import { toDate, toTimestamp } from '#utils/date.js';
@@ -103,6 +109,32 @@ async function buildApp(t, { env = HTTP_ENV, ...sections } = {}) {
 function post(fastify, url, options) {
   return fastify.inject({ method: 'POST', url, ...options });
 }
+
+describe('readCookieBase', () => {
+  test('gives every cookie of the app Lax, and Secure when the app is served over https', () => {
+    assert.deepEqual(readCookieBase(createTestConfig({ env: HTTP_ENV }).app), { sameSite: 'lax', secure: false });
+    assert.deepEqual(readCookieBase(createTestConfig({ env: HTTPS_ENV }).app), { sameSite: 'lax', secure: true });
+  });
+
+  test('is what the cookies of the tokens and of their markers are set with', async (t) => {
+    const fastify = await buildApp(t, { env: HTTPS_ENV });
+    const base = readCookieBase(fastify.config.app);
+    const cookies = readCookies(await post(fastify, '/set'));
+
+    assert.deepEqual(
+      cookies.map((cookie) => ({ sameSite: cookie.sameSite.toLowerCase(), secure: cookie.secure })),
+      cookies.map(() => base),
+    );
+  });
+
+  test('requires the app section of the config: given the whole config, it would leave Secure out without a word', () => {
+    const config = createTestConfig({ env: HTTPS_ENV });
+
+    [undefined, null, {}, { protocol: '' }, config].forEach((value) => {
+      assert.throws(() => readCookieBase(value), { name: 'TypeError', message: /^readCookieBase\(appConfig\) requires config\.app/ });
+    });
+  });
+});
 
 describe('setAuthCookies', () => {
   test('sets the two tokens for the API alone, out of reach of scripts, and the two markers for the whole site, within their reach', async (t) => {

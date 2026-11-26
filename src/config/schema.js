@@ -11,4 +11,7 @@ export const SCHEMA_LIMITS = Object.freeze({
 
   // POST /log/error: the body of a report, and the raw length of each text of it that is cut afterwards.
   reportMaxLength: 64 * 1024,
+
+  // The code a sign-in provider sends back to its callback is opaque to us, and some issue one of about a kilobyte.
+  authorizationCodeMaxLength: 4096,
 });

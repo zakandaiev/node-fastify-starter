@@ -22,6 +22,9 @@ const SECRETS = Object.freeze({
 const PREVIOUS_ACCESS_SECRET = 'config-previous-access-secret-0123456789';
 const PREVIOUS_REFRESH_SECRET = 'config-previous-refresh-secret-0123456789';
 
+const COMBINING_ACUTE = String.fromCharCode(0x301);
+const PRECOMPOSED_E_ACUTE = String.fromCharCode(0xE9);
+
 const CURRENT = Object.freeze({
   accessSecret: SECRETS.APP_JWT_ACCESS_SECRET,
   refreshSecret: SECRETS.APP_JWT_REFRESH_SECRET,
@@ -83,12 +86,23 @@ describe('config.auth', () => {
     assert.ok(convertStringToMs(auth.readTimeout) > convertStringToMs(db.connectTimeout));
   });
 
-  test('is one flat frozen section: a test replaces a single value of it', () => {
+  test('has no admin email without APP_ADMIN_EMAILS', () => {
+    assert.deepEqual(createConfig(createTestEnv()).auth.adminEmails, []);
+  });
+
+  test('takes each address of APP_ADMIN_EMAILS as a stored email is written: trimmed, in lower case and NFC, without the blank items', () => {
+    const { auth } = createConfig(createTestEnv({ APP_ADMIN_EMAILS: ` Anna@Example.COM ,jose${COMBINING_ACUTE}@example.com,, ` }));
+
+    assert.deepEqual(auth.adminEmails, ['anna@example.com', `jos${PRECOMPOSED_E_ACUTE}@example.com`]);
+    assert.ok(Object.isFrozen(auth.adminEmails));
+  });
+
+  test('is one frozen section of values and of a list: a test replaces a single value of it', () => {
     const { auth } = createConfig(createTestEnv());
     const overridden = createTestConfig({ auth: { accessTtl: '1m' } });
 
     assert.ok(isDeepFrozen(auth));
-    assert.equal(Object.values(auth).every((value) => value === null || typeof value !== 'object'), true);
+    assert.equal(Object.values(auth).every((value) => value === null || typeof value !== 'object' || Array.isArray(value)), true);
     assert.deepEqual(overridden.auth, { ...createTestConfig().auth, accessTtl: '1m' });
   });
 });

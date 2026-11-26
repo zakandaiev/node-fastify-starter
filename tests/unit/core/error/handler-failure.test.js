@@ -3,7 +3,7 @@ import { AppError } from '#core/error/index.js';
 import { createLogger } from '#core/logger/index.js';
 import { ERROR_CODE } from '#enums/error-code.js';
 import { buildTestApp } from '#root/tests/helper/app.js';
-import { createLogSink } from '#root/tests/helper/log.js';
+import { createLogSink, forgetLines } from '#root/tests/helper/log.js';
 import { sendRawRequest } from '#root/tests/helper/socket.js';
 import { uuidVersion } from '#utils/id.js';
 import assert from 'node:assert/strict';
@@ -72,8 +72,12 @@ function isHandlerOrErrorLine({ msg, level }) {
   return msg === REQUEST_FAILED || level >= LOG_LEVEL_ERROR;
 }
 
-function buildLoggedApp(sink, overrides) {
-  return buildTestApp({ ...overrides, logger: { level: 'info', stream: sink.stream } });
+async function buildLoggedApp(sink, overrides) {
+  const fastify = await buildTestApp({ ...overrides, logger: { level: 'info', stream: sink.stream } });
+
+  forgetLines(sink);
+
+  return fastify;
 }
 
 function findFailures(sink) {

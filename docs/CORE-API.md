@@ -73,19 +73,51 @@
 
 - `async writeAudit(entry = {})`
 
+## #core/auth/account.js
+
+- `async linkProvider({ userId, providerId, profile, request } = {})`
+- `async signInWithEmail({ email, client, request } = {})`
+- `async signInWithProvider({ providerId, profile, client, request } = {})`
+
 ## #core/auth/authenticate.js
 
 - `async authenticateRequest(request)`
 
 ## #core/auth/client.js
 
+- `CLIENT_ADDRESS_HEADERS`
+- `isLoopbackOnlyRequest(request)`
 - `readClient(request)`
 
 ## #core/auth/cookie.js
 
 - `clearAuthCookies(reply)`
 - `endAuthCookies(request, reply)`
+- `readCookieBase(appConfig)`
 - `setAuthCookies(reply, issued)`
+
+## #core/auth/dev-login.js
+
+- `async signInForDev({ email, client, request } = {})`
+
+## #core/auth/oauth/flow.js
+
+- `isAllowedTarget(target, config)`
+- `readFlowCookies(request)`
+- `setFlowCookies(reply, { path, state, verifier, sid = null, target = null } = {})`
+- `takeFlowCookies(request, reply, { path } = {})`
+- `toFailureLocation(code, request)`
+- `toSuccessLocation(config, { target = null, linkedProviderId = null } = {})`
+
+## #core/auth/oauth/provider.js
+
+- `RESERVED_ROUTE_NAMES`
+- `assertOauthConfig(oauthConfig)`
+- `createAuthorization(provider, { redirectUri } = {})`
+- `async exchangeCode(provider, { code, verifier, redirectUri } = {})`
+- `findEnabledProvider(oauthConfig, id)`
+- `listEnabledProviders(oauthConfig)`
+- `readProviderProfile(provider, claims)`
 
 ## #core/auth/read.js
 
@@ -106,6 +138,7 @@
 
 ## #core/auth/session.js
 
+- `SESSION_TRANSACTION`
 - `async createSession({ userId, client, isDev = false } = {})`
 - `async listSessions(userId)`
 - `async revokeAllSessions(userId, { except = NO_SID } = {})`
@@ -287,6 +320,7 @@
 - `findTransaction(context, driver)`
 - `isInTransaction()`
 - `retryOnLockConflict(run, message)`
+- `retryOnce(run, { shouldRetry, message } = {})`
 - `async runInTransaction(scope, run)`
 - `async withTransaction(fn, { isolation, retry = false } = {})`
 
@@ -592,6 +626,7 @@
 - `isString(value)`
 - `isStringBoolean(value)`
 - `isStringValidJson(value)`
+- `parseJsonObject(value)`
 - `toNumber(value)`
 - `toString(value)`
 
@@ -599,15 +634,19 @@
 
 - `EMAIL_MAX_LENGTH`
 - `IP_MAX_LENGTH`
+- `REDIRECT_PATH_MAX_LENGTH`
 - `ipInCidr(address, cidr)`
 - `isCidr(value)`
 - `isEmail(value)`
 - `isLoopbackAddress(address)`
+- `isLoopbackHostname(hostname)`
 - `isPhone(value)`
 - `isPrivateAddress(address)`
 - `isSafeRedirectPath(value)`
 - `isWebUrl(value)`
+- `toHostAddress(hostname)`
 - `toIpAddress(value)`
+- `toValidEmail(value)`
 
 ## #utils/window.js
 

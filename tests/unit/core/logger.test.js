@@ -90,8 +90,14 @@ function createTestLogger(level = 'info') {
   return { ...sink, log: createLogger({ level, stream: sink.stream }) };
 }
 
-function buildLoggedApp(sink) {
-  return buildTestApp({ logger: { level: 'info', stream: sink.stream } });
+// The start warns of its own: no provider of the tests has credentials, nobody can sign in.
+async function buildLoggedApp(sink) {
+  const fastify = await buildTestApp({ logger: { level: 'info', stream: sink.stream } });
+
+  sink.lines.length = 0;
+  sink.texts.length = 0;
+
+  return fastify;
 }
 
 function hasText(texts, fragment) {
@@ -634,6 +640,27 @@ describe('createLogger: err serializer', () => {
     assert.equal(hasText(sink.texts, QUERY_SECRET), false);
   });
 
+  // Fastify writes this warning as a text of its own, with the raw URL in it and no error beside it.
+  test('writes no query of the warning Fastify gives for a reply sent after its head has gone', async (t) => {
+    const sink = createTextSink();
+    const fastify = await buildLoggedApp(sink);
+
+    t.after(() => fastify.close());
+    fastify.get('/callback', async (request, reply) => {
+      reply.raw.writeHead(200);
+      reply.send();
+
+      return reply;
+    });
+
+    await assert.rejects(fastify.inject(`/callback?code=${QUERY_SECRET}&state=${QUERY_SECRET}`), { code: 'LIGHT_ECONNRESET' });
+
+    const warnings = sink.lines.filter((line) => line.level === LEVEL.WARN);
+
+    assert.deepEqual(warnings.map((line) => line.msg), ['Reply was already sent, did you forget to "return reply" in the "/callback" (GET) route?']);
+    assert.equal(hasText(sink.texts, QUERY_SECRET), false);
+  });
+
   test('keeps the type, the message and the stack it built when the error has properties of the same names', () => {
     const { log, lines } = createTestLogger();
     const error = Object.assign(new TypeError('Real message'), { type: 'fake', stack: 'fake stack', message: 'Own message' });
@@ -871,6 +898,29 @@ describe('createLogger: msg serializer', () => {
     log.error({ err: new Error('Mail provider is down') });
 
     assert.deepEqual(lines.map((line) => line.msg), ['User 5 created', 'Mail provider is down']);
+  });
+
+  test('cuts the query and the fragment out of every address in a message, a path in quotes and an interpolated one included', () => {
+    const { log, lines, texts } = createTestLogger();
+
+    log.warn(`Reply was already sent, did you forget to "return reply" in the "/callback?code=${QUERY_SECRET}" (GET) route?`);
+    log.warn('Upstream refused https://api.example.com/v1/token?secret=%s#frag', QUERY_SECRET);
+    log.warn({ msg: `Redirected to '/next#${QUERY_SECRET}'` });
+
+    assert.deepEqual(lines.map((line) => line.msg), [
+      'Reply was already sent, did you forget to "return reply" in the "/callback" (GET) route?',
+      'Upstream refused https://api.example.com/v1/token',
+      "Redirected to '/next'",
+    ]);
+    assert.equal(hasText(texts, QUERY_SECRET), false);
+  });
+
+  test('leaves a question mark after a path in quotes as it is: it ends a sentence, not an address', () => {
+    const { log, lines } = createTestLogger();
+
+    log.info('Did you mean "/users"?');
+
+    assert.deepEqual(lines.map((line) => line.msg), ['Did you mean "/users"?']);
   });
 });
 

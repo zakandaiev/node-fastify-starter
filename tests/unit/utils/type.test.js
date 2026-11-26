@@ -15,6 +15,7 @@ import {
   isString,
   isStringBoolean,
   isStringValidJson,
+  parseJsonObject,
   toNumber,
   toString,
 } from '#utils/type.js';
@@ -339,6 +340,20 @@ describe('isStringValidJson', () => {
     ['', '{', '{id:1}', "{'id':1}", '[1,]', 'undefined', {}, [], null, undefined, 1].forEach((value) => {
       assert.equal(isStringValidJson(value), false);
     });
+  });
+});
+
+describe('parseJsonObject', () => {
+  test('gives the object a JSON text holds', () => {
+    assert.deepEqual(parseJsonObject('{"id":1,"list":[true,null]}'), { id: 1, list: [true, null] });
+    assert.deepEqual(parseJsonObject(' {} '), {});
+  });
+
+  test('gives null for a text of another value, a broken one and what is no text, and never throws', () => {
+    ['[]', '[{}]', '1', '"text"', 'null', 'true', '', '{', '{id:1}', 'undefined'].forEach((value) => {
+      assert.equal(parseJsonObject(value), null, value);
+    });
+    [null, undefined, 1, {}, []].forEach((value) => assert.equal(parseJsonObject(value), null));
   });
 });
 

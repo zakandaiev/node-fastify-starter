@@ -1,5 +1,5 @@
-import { normalizeEmail, normalizePhone } from '#utils/string.js';
-import { isString } from '#utils/type.js';
+import { cutAddressTail, normalizeEmail, normalizePhone } from '#utils/string.js';
+import { isString, toString } from '#utils/type.js';
 import { BlockList, isIP } from 'node:net';
 
 export const EMAIL_MAX_LENGTH = 254;
@@ -8,10 +8,17 @@ const EMAIL_REGEXP = /^[^\s@\p{Cc}]+@[^\s@.\p{Cc}]+(?:\.[^\s@.\p{Cc}]+)+$/v;
 
 const WEB_PROTOCOLS = Object.freeze(['http:', 'https:']);
 
-const REDIRECT_PATH_MAX_LENGTH = 512;
+export const REDIRECT_PATH_MAX_LENGTH = 512;
 // Browsers read "/\evil.com" as "//evil.com" and drop tabs and line breaks before that,
 // and a Location header takes printable ASCII only: Node throws ERR_INVALID_CHAR on the rest.
 const REDIRECT_PATH_REGEXP = /^\/(?!\/)[\x21-\x5b\x5d-\x7e]*$/;
+// One or two dots, each "." or "%2e" in any case: URL parsing removes such a segment, and "/.//evil.com" becomes the
+// pathname "//evil.com", which a page that redirects to its pathname sends to another host.
+const DOT_SEGMENT_REGEXP = /^(?:\.|%2e){1,2}$/i;
+const PATH_SEPARATOR = '/';
+
+const LOCALHOST = 'localhost';
+const IPV6_HOSTNAME_REGEXP = /^\[(.*)\]$/;
 
 const IPV4 = 'ipv4';
 const IPV6 = 'ipv6';
@@ -152,6 +159,13 @@ export function isEmail(value) {
   return email.length <= EMAIL_MAX_LENGTH && EMAIL_REGEXP.test(email);
 }
 
+// The form an email is stored and searched in, or null for what is no email.
+export function toValidEmail(value) {
+  return isEmail(value)
+    ? normalizeEmail(value)
+    : null;
+}
+
 export function isPhone(value) {
   return isString(value) && normalizePhone(value) !== null;
 }
@@ -187,6 +201,18 @@ export function isLoopbackAddress(address) {
   return isListed(loopbackAddresses, address);
 }
 
+// The hostname of a URL writes an IPv6 address in brackets, which no check of an address takes.
+export function toHostAddress(hostname) {
+  const [, address] = IPV6_HOSTNAME_REGEXP.exec(toString(hostname)) ?? [];
+
+  return address ?? toString(hostname);
+}
+
+// A hostname of this machine for any resolver: "localhost" or a loopback address.
+export function isLoopbackHostname(hostname) {
+  return hostname === LOCALHOST || isLoopbackAddress(toHostAddress(hostname));
+}
+
 export function isPrivateAddress(address) {
   return isListed(privateAddresses, address);
 }
@@ -202,6 +228,13 @@ export function isWebUrl(value) {
   return WEB_PROTOCOLS.includes(url.protocol) && !url.username && !url.password;
 }
 
+function hasDotSegment(path) {
+  return cutAddressTail(path).split(PATH_SEPARATOR).some((segment) => DOT_SEGMENT_REGEXP.test(segment));
+}
+
 export function isSafeRedirectPath(value) {
-  return isString(value) && value.length <= REDIRECT_PATH_MAX_LENGTH && REDIRECT_PATH_REGEXP.test(value);
+  return isString(value)
+    && value.length <= REDIRECT_PATH_MAX_LENGTH
+    && REDIRECT_PATH_REGEXP.test(value)
+    && !hasDotSegment(value);
 }

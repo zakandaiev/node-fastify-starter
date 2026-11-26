@@ -11,7 +11,12 @@ import {
 import { buildTestApp, errorBody, readRequestId } from '#root/tests/helper/app.js';
 import { waitFor } from '#root/tests/helper/async.js';
 import { createDownEnv } from '#root/tests/helper/db.js';
-import { createLogSink, findLogLines, LOG_LEVEL } from '#root/tests/helper/log.js';
+import {
+  createLogSink,
+  findLogLines,
+  forgetLines,
+  LOG_LEVEL,
+} from '#root/tests/helper/log.js';
 import { REDIS_DOWN_ENV } from '#root/tests/helper/redis.js';
 import { sendRawRequest } from '#root/tests/helper/socket.js';
 import { omit, pick } from '#utils/object.js';
@@ -283,6 +288,7 @@ async function startApp(t, breakAnswers, { mode = MODE.PROD, env = {}, ...sectio
     logger: { level: 'warn', stream: sink.stream },
   });
 
+  forgetLines(sink);
   t.after(() => fastify.close());
   breakAnswers(fastify);
   fastify.addHook('onError', (request, reply, error, done) => {
