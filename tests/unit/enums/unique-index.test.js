@@ -10,6 +10,7 @@ describe('UNIQUE_INDEX', () => {
     assert.deepEqual(UNIQUE_INDEX, {
       USERS_EMAIL: 'uq_users_email',
       USER_IDENTITIES_PROVIDER_USER: 'uq_user_identities_provider_user',
+      GROUPS_SLUG: 'uq_groups_slug',
     });
     assert.ok(Object.isFrozen(UNIQUE_INDEX));
   });

@@ -74,6 +74,7 @@ const INSERT_IDENTITY_SQL = 'INSERT INTO user_identities (user_id, provider, pro
 const SESSIONS_SQL = 'SELECT id, user_agent, ip, is_dev FROM sessions WHERE user_id = :userId ORDER BY id';
 const AUDIT_SQL = 'SELECT actor_id, action, entity_type, entity_id, meta FROM audit_logs WHERE entity_id = :userId ORDER BY created_at, id';
 const MEMBERSHIPS_SQL = 'SELECT g.slug FROM user_groups ug JOIN groups g ON g.id = ug.group_id WHERE ug.user_id = :userId';
+const SLUG_SQL = 'SELECT id FROM groups WHERE slug = :slug';
 const COUNT_SQL = `
   SELECT
     (SELECT COUNT(*) FROM users) AS users,
@@ -352,11 +353,12 @@ describe('sign-in through a provider over HTTP', { skip: testRedis.skip || testD
     assert.equal((await readIdentitiesOf(userId)).length, 1);
   });
 
-  test('a verified email of APP_ADMIN_EMAILS joins the group admin with a record of the audit, and its token carries full access', async (t) => {
+  test('a verified email of APP_ADMIN_EMAILS joins the group admin with a record of the audit that names the group by its slug and its id, and its token carries full access', async (t) => {
     const { fastify, mock } = await openApp(t);
     const walk = await signInThroughProvider(fastify, mock, { claims: { email: ADMIN_EMAIL, email_verified: true } });
     const { userId } = readSignedIn(walk.callback);
     const me = await getMe(fastify, walk.callback);
+    const [{ id: groupId }] = await readRows(SLUG_SQL, { slug: GROUP_SLUG.ADMIN });
 
     assert.deepEqual(await readMemberships(userId), [{ slug: GROUP_SLUG.ADMIN }]);
     assert.deepEqual(await readAudits(userId), [{
@@ -364,7 +366,7 @@ describe('sign-in through a provider over HTTP', { skip: testRedis.skip || testD
       action: AUDIT_ACTION.USER_GROUP_GRANT,
       entity_type: TABLE.USERS,
       entity_id: userId,
-      meta: { group: GROUP_SLUG.ADMIN },
+      meta: { group: GROUP_SLUG.ADMIN, groupId },
     }]);
     assert.deepEqual(me.json(), successBody(me, { id: userId, scopes: [SCOPE_ALL] }));
   });

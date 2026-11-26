@@ -81,6 +81,7 @@
 
 ## #core/auth/authenticate.js
 
+- `async authenticate(request, reply)`
 - `async authenticateRequest(request)`
 
 ## #core/auth/client.js
@@ -159,6 +160,20 @@
 - `readRefreshToken(request)`
 - `verifyAccessToken(token)`
 - `verifyRefreshToken(token)`
+
+## #core/authz/match.js
+
+- `assertScopeRequirement(requirement, signature = 'assertScopeRequirement(requirement)')`
+- `isEveryScopeGranted(scopes, wanted)`
+- `isGrantableScope(scope)`
+- `isRequirementMet(scopes, requirement)`
+- `readGroupGrants({ isSuperadmin, scopes } = {})`
+- `readScopeTerms(requirement, signature = 'readScopeTerms(requirement)')`
+
+## #core/authz/membership.js
+
+- `async grantMembership({ userId, group, actorId = null, request } = {})`
+- `async revokeMembership({ userId, group, actorId = null, request } = {})`
 
 ## #core/authz/scope.js
 
@@ -396,6 +411,7 @@
 
 ## #core/schema/create-schema.js
 
+- `addErrorResponses(response, statusCodes)`
 - `createSchema(...sources)`
 
 ## #core/schema/docs.js
@@ -419,6 +435,7 @@
 ## #core/schema/route.js
 
 - `AUTH_DECORATOR`
+- `SCOPES_DECORATOR`
 - `assertRouteContract(routeOptions)`
 - `createRouteHook({ apiPrefix, healthPrefix } = {})`
 
@@ -524,6 +541,7 @@
 
 - `UUID_LENGTH`
 - `UUID_REGEXP`
+- `assertUuid(value, signature, what)`
 - `isUuid(value)`
 - `uuidTimestamp(value)`
 - `uuidVersion(value)`

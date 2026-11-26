@@ -1,5 +1,8 @@
+import { readScopeTerms } from '#core/authz/match.js';
+import { addErrorResponses } from '#core/schema/create-schema.js';
 import { dropSchemaMarkers, readDocumentedSchema } from '#core/schema/docs.js';
 import { COOKIE } from '#enums/cookie.js';
+import { HTTP_STATUS } from '#enums/http-status.js';
 import { isObject } from '#utils/type.js';
 import fastifySwagger from '@fastify/swagger';
 import fastifySwaggerUi from '@fastify/swagger-ui';
@@ -11,11 +14,16 @@ const INDEX_PATH = '/';
 const BOTH_SLASHES = 'both';
 
 // The same access token rides in either: the cookie in a browser, the header for curl, tests and the Authorize
-// button. Which operation takes them is the guard's to write.
+// button. Which operation takes them the security of its route tells.
 const SECURITY_SCHEMES = Object.freeze({
   cookieAuth: { type: 'apiKey', in: 'cookie', name: COOKIE.ACCESS_TOKEN },
   bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' },
 });
+
+const SECURITY_SCHEME_NAMES = Object.freeze(Object.keys(SECURITY_SCHEMES));
+
+// What @fastify/swagger documents for a route without a response schema: a map of refusals alone would replace it.
+const DEFAULT_RESPONSE = Object.freeze({ [HTTP_STATUS.OK]: { type: 'null', description: 'Default Response' } });
 
 // The "/" of a plugin with a prefix is served with the slash and without it, and the docs are given the former.
 function readDocumentedUrl(url, { prefix, routePath, prefixTrailingSlash = BOTH_SLASHES }) {
@@ -24,9 +32,35 @@ function readDocumentedUrl(url, { prefix, routePath, prefixTrailingSlash = BOTH_
     : url;
 }
 
+// OpenAPI 3.1 lets a requirement of an apiKey or an http scheme name roles: each term of the scopes is one, for
+// either way the token rides in.
+function toSecurityRequirements(scopes) {
+  const terms = scopes === undefined
+    ? [[]]
+    : readScopeTerms(scopes);
+
+  return terms.flatMap((term) => SECURITY_SCHEME_NAMES.map((name) => ({ [name]: term })));
+}
+
+function documentSecurity(schema, security) {
+  if (security?.auth !== true) {
+    return schema;
+  }
+
+  const refusals = security.scopes === undefined
+    ? [HTTP_STATUS.UNAUTHORIZED]
+    : [HTTP_STATUS.UNAUTHORIZED, HTTP_STATUS.FORBIDDEN];
+
+  return {
+    ...schema,
+    security: toSecurityRequirements(security.scopes),
+    response: addErrorResponses(schema?.response ?? DEFAULT_RESPONSE, refusals),
+  };
+}
+
 function documentRoute({ schema, url, route }) {
   return {
-    schema: schema && readDocumentedSchema(schema),
+    schema: documentSecurity(schema && readDocumentedSchema(schema), route.security),
     url: readDocumentedUrl(url, route),
   };
 }

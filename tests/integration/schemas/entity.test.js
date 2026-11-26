@@ -25,6 +25,9 @@ const QUOTED_VALUE_REGEXP = /'([^']*)'/g;
 const SESSION_COMPUTED_FIELDS = Object.freeze(['isCurrent']);
 const SESSION_UNTOLD_COLUMNS = Object.freeze(['user_id', 'refresh_token_hash', 'revoked_at', 'created_at', 'updated_at']);
 
+// The rows of group_scopes, gathered by the repository: no column of groups holds them.
+const GROUP_COMPUTED_FIELDS = Object.freeze(['scopes']);
+
 // What a type of a column says of its property, in the words of JSON Schema.
 const TYPES = Object.freeze({
   uuid: { type: 'string', pattern: UUID_REGEXP.source },
@@ -114,8 +117,17 @@ describe('the entity schemas', { skip: testDb.skip }, () => {
     assertDescribes(userProperties, tables.users);
   });
 
-  test('describe a group as the table groups holds one', () => {
-    assertDescribes(groupProperties, tables.groups);
+  test('describe a group as the table groups holds one, but for its scopes, which no column of it holds', () => {
+    assertDescribes(omit(groupProperties, GROUP_COMPUTED_FIELDS), tables.groups);
+  });
+
+  test('describe a scope of a group as the column scope of group_scopes holds one: a text that is never NULL, each code of the catalog within its length', () => {
+    const { group_scopes: groupScopes } = tables;
+    const column = describeColumn(groupScopes.columns.scope, groupScopes.checks.scope);
+    const { items } = groupProperties.scopes;
+
+    assert.deepEqual(pick(items, ['type']), pick(column, ['type']));
+    assert.deepEqual(items.enum.filter((code) => code.length > column.maxLength), []);
   });
 
   test('describe a session by the columns of the table sessions the API tells of: all but the user, the hash of the refresh token, the end and the timestamps', () => {

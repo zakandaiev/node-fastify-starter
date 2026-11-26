@@ -197,6 +197,16 @@ describe('cache: arguments', () => {
     });
   });
 
+  test('invalidateCacheTables refuses what is not a list of table names by the message of the checker under its own name, before it looks for the tables a foreign key reaches', async (t) => {
+    const { run } = openCache(t, { isRedis: false });
+    const wrongTables = [undefined, 'users', { users: ['sessions'] }, new Set(['users']), [], ['users', 1], ['users', '']];
+
+    await Promise.all(wrongTables.map((tables) => assert.rejects(run(() => invalidateCacheTables(tables)), {
+      name: 'TypeError',
+      message: 'invalidateCacheTables(tables) requires tables to be a non-empty array of table names',
+    }, String(tables))));
+  });
+
   test('refuses a value it cannot give back the same, whether there is a Redis or not', async (t) => {
     const withoutRedis = openCache(t, { isRedis: false });
     const withDownRedis = openCache(t);

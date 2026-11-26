@@ -59,7 +59,9 @@ export async function writeAudit(entry = {}) {
 
   await insertReturning(TABLE.AUDIT_LOGS, {
     id,
-    actorId: entry.actorId ?? request?.user?.id ?? null,
+    actorId: entry.actorId === undefined
+      ? request?.user?.id ?? null
+      : entry.actorId,
     action: entry.action,
     entityType: entry.entityType ?? null,
     entityId: entry.entityId ?? null,

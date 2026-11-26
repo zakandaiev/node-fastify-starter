@@ -1,4 +1,5 @@
 import {
+  assertUuid,
   UUID_LENGTH,
   UUID_REGEXP,
   isUuid,
@@ -345,6 +346,31 @@ describe('isUuid', () => {
     assert.equal(isUuid(`${RFC_V7}${'-0'.repeat(500000)}`), false);
     assert.equal(isUuid(`${'0'.repeat(1000000)}${RFC_V7}`), false);
     assert.ok(performance.now() - startedAt < 1000);
+  });
+});
+
+describe('assertUuid', () => {
+  test('passes a UUID and gives true', () => {
+    assert.equal(assertUuid(RFC_V7, 'readUser(userId)', 'a user'), true);
+    assert.equal(assertUuid(uuidv7(), 'readUser(userId)', 'a user'), true);
+  });
+
+  test('refuses what isUuid refuses with a TypeError that names the caller and the row', () => {
+    ['', RFC_V7.toUpperCase(), `{${RFC_V7}}`, ...NOT_STRINGS].forEach((value) => {
+      assert.throws(() => assertUuid(value, 'readUser(userId)', 'a user'), {
+        name: 'TypeError',
+        message: 'readUser(userId) requires the UUID of a user',
+      }, String(value));
+    });
+  });
+
+  test('refuses a call without the signature of the caller or the name of the row before it looks at the value', () => {
+    [[undefined, 'a user'], ['readUser(userId)', undefined], [42, 'a user'], ['readUser(userId)', null]].forEach(([signature, what]) => {
+      assert.throws(() => assertUuid(RFC_V7, signature, what), {
+        name: 'TypeError',
+        message: 'assertUuid(value, signature, what) requires the signature of the caller and the name of the row',
+      });
+    });
   });
 });
 

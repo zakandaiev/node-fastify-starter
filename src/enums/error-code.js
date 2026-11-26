@@ -13,6 +13,7 @@ export const ERROR_CODE = Object.freeze({
   NO_CHANGES: 'NO_CHANGES',
   CONTACT_TAKEN: 'CONTACT_TAKEN',
   IDENTITY_TAKEN: 'IDENTITY_TAKEN',
+  GROUP_PROTECTED: 'GROUP_PROTECTED',
   PAYLOAD_TOO_LARGE_ERROR: 'PAYLOAD_TOO_LARGE_ERROR',
   UNSUPPORTED_MEDIA_TYPE_ERROR: 'UNSUPPORTED_MEDIA_TYPE_ERROR',
   VALIDATION_ERROR: 'VALIDATION_ERROR',
@@ -51,6 +52,7 @@ export const ERROR_CATALOG = Object.freeze({
   // Neither tells which contact or which account it met: the answer must not reveal who has signed up.
   [ERROR_CODE.CONTACT_TAKEN]: defineClientError(HTTP_STATUS.CONFLICT, 'Contact belongs to another account'),
   [ERROR_CODE.IDENTITY_TAKEN]: defineClientError(HTTP_STATUS.CONFLICT, 'Identity is linked to another account'),
+  [ERROR_CODE.GROUP_PROTECTED]: defineClientError(HTTP_STATUS.CONFLICT, 'Group is protected'),
   [ERROR_CODE.PAYLOAD_TOO_LARGE_ERROR]: defineClientError(HTTP_STATUS.PAYLOAD_TOO_LARGE, 'Payload too large'),
   [ERROR_CODE.UNSUPPORTED_MEDIA_TYPE_ERROR]: defineClientError(HTTP_STATUS.UNSUPPORTED_MEDIA_TYPE, 'Unsupported media type'),
   [ERROR_CODE.VALIDATION_ERROR]: defineClientError(HTTP_STATUS.UNPROCESSABLE_ENTITY, 'Validation error'),

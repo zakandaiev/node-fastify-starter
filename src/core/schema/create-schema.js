@@ -329,15 +329,33 @@ function buildBody(keys, { properties, example }, { required = [], isPatch = fal
   return withExample(body, pickExample(example, keys));
 }
 
-// The codes of the catalog are what an error answers with: a status none of them has is never sent.
-function buildErrorResponse(statusCode, description) {
-  const codes = Object.keys(ERROR_CATALOG).filter((code) => ERROR_CATALOG[code].statusCode === statusCode);
-
-  if (!codes.length) {
-    throw new TypeError(`${SIGNATURE}.response(${statusCode}): no code of src/enums/error-code.js answers with this status`);
+function readListedCodes(codes, statusCodes, signature) {
+  if (codes === undefined) {
+    return statusCodes;
   }
 
-  const [code] = codes;
+  const isListed = isNonEmptyArray(codes)
+    && new Set(codes).size === codes.length
+    && Array.from(codes).every((code) => statusCodes.includes(code));
+
+  if (!isListed) {
+    throw new TypeError(`${signature} takes "codes" as distinct codes of src/enums/error-code.js that answer with this status: ${statusCodes.join(', ')}`);
+  }
+
+  return codes;
+}
+
+// The codes of the catalog are what an error answers with: a status none of them has is never sent.
+function buildErrorResponse(statusCode, signature, { description, codes } = {}) {
+  const statusCodes = Object.keys(ERROR_CATALOG).filter((code) => ERROR_CATALOG[code].statusCode === statusCode);
+
+  if (!statusCodes.length) {
+    throw new TypeError(`${signature}: no code of src/enums/error-code.js answers with this status`);
+  }
+
+  const listed = readListedCodes(codes, statusCodes, signature);
+
+  const [code] = listed;
   const example = {
     status: RESPONSE_STATUS.ERROR,
     code,
@@ -347,8 +365,25 @@ function buildErrorResponse(statusCode, description) {
 
   return {
     ...errorEnvelope,
-    description: description ?? `${STATUS_CODES[statusCode]}: ${codes.join(', ')}`,
+    description: description ?? `${STATUS_CODES[statusCode]}: ${listed.join(', ')}`,
     examples: [example],
+  };
+}
+
+// The refusals a response map lacks, each with every code of its status: what .defaultResponses() adds, and what the
+// docs add to a guarded route.
+export function addErrorResponses(response, statusCodes) {
+  const signature = 'addErrorResponses(response, statusCodes)';
+
+  if (!isObject(response) || !isNonEmptyArray(statusCodes) || !Array.from(statusCodes).every((statusCode) => Number.isInteger(statusCode))) {
+    throw new TypeError(`${signature} requires the response map of a route and a list of HTTP statuses`);
+  }
+
+  const missing = statusCodes.filter((statusCode) => !Object.hasOwn(response, statusCode));
+
+  return {
+    ...response,
+    ...Object.fromEntries(missing.map((statusCode) => [statusCode, buildErrorResponse(statusCode, `${signature} for ${statusCode}`)])),
   };
 }
 
@@ -378,7 +413,16 @@ function buildData(keys, format, { properties, example }) {
 
 // One list of keys gives both the schema of "data" and its example. "array" is a list with its pagination,
 // sort and filters: the result of query.getAll() that reply.list() sends.
-function buildSuccessResponse(statusCode, sources, { data, format = OBJECT_FORMAT, description } = {}) {
+function buildSuccessResponse(statusCode, sources, {
+  data,
+  format = OBJECT_FORMAT,
+  description,
+  codes,
+} = {}) {
+  if (codes !== undefined) {
+    throw new TypeError(`${SIGNATURE}.response(${statusCode}) is no error: it takes no "codes"`);
+  }
+
   if (![OBJECT_FORMAT, ARRAY_FORMAT].includes(format)) {
     throw new TypeError(`${SIGNATURE}.response(code, { format }) requires the format "${OBJECT_FORMAT}" or "${ARRAY_FORMAT}"`);
   }
@@ -401,6 +445,10 @@ function buildSuccessResponse(statusCode, sources, { data, format = OBJECT_FORMA
 function buildEmptyResponse(statusCode, options = {}) {
   if (options.data !== undefined || options.format !== undefined) {
     throw new TypeError(`${SIGNATURE}.response(${statusCode}) has no body: it takes no "data" or "format"`);
+  }
+
+  if (options.codes !== undefined) {
+    throw new TypeError(`${SIGNATURE}.response(${statusCode}) is no error: it takes no "codes"`);
   }
 
   return { type: NULL_TYPE, description: options.description ?? STATUS_CODES[statusCode] };
@@ -431,7 +479,7 @@ function buildResponse(statusCode, options, sources) {
     throw new TypeError(`${SIGNATURE}.response(${statusCode}) is an error: its body is the error envelope, without "data"`);
   }
 
-  return buildErrorResponse(statusCode, options?.description);
+  return buildErrorResponse(statusCode, `${SIGNATURE}.response(${statusCode})`, options);
 }
 
 function assertMeta(fields) {
@@ -457,14 +505,9 @@ function takeStep(state, step) {
 }
 
 function buildResponses({ steps, responses }) {
-  const defaults = steps.has(DEFAULT_RESPONSES_STEP)
-    ? DEFAULT_ERROR_STATUSES.filter((statusCode) => !Object.hasOwn(responses, statusCode))
-    : [];
-
-  return {
-    ...responses,
-    ...Object.fromEntries(defaults.map((statusCode) => [statusCode, buildErrorResponse(statusCode)])),
-  };
+  return steps.has(DEFAULT_RESPONSES_STEP)
+    ? addErrorResponses(responses, DEFAULT_ERROR_STATUSES)
+    : { ...responses };
 }
 
 // A copy is frozen: freezing in place would reach the arrays and objects the caller passed in.

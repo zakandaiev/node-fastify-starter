@@ -21,6 +21,7 @@ import { CACHE_CONTROL } from '#enums/cache-control.js';
 import { ERROR_CODE } from '#enums/error-code.js';
 import { HEADER } from '#enums/header.js';
 import { HTTP_STATUS } from '#enums/http-status.js';
+import { SCOPE } from '#enums/scope.js';
 import { email, text, uuid } from '#schemas/common/field.js';
 import { timingSafeEqual } from '#utils/hash.js';
 import { freezeDeep, pick } from '#utils/object.js';
@@ -36,11 +37,11 @@ const DEV_SIGN_IN_KEYS = Object.freeze([...STATE_KEYS, 'accessToken']);
 const authState = freezeDeep({
   properties: {
     id: uuid('User id'),
-    scopes: { type: 'array', items: text('Scope'), description: 'What the user may do; * is everything' },
+    scopes: { type: 'array', items: text('Scope'), description: 'What the user may do: codes of the scope catalog; * is everything, <resource>:* every action of its resource' },
   },
   example: {
     id: '019a1b2c-3d4e-7f50-8a6b-7c8d9e0f1a2b',
-    scopes: ['users:read', 'users:write'],
+    scopes: [SCOPE.GROUPS_READ, SCOPE.USERS_READ],
   },
 });
 

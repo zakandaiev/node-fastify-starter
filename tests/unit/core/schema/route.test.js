@@ -4,7 +4,13 @@ import {
   readDocumentedSchema,
   rememberSourceSchema,
 } from '#core/schema/docs.js';
-import { assertRouteContract, AUTH_DECORATOR, createRouteHook } from '#core/schema/route.js';
+import {
+  assertRouteContract,
+  AUTH_DECORATOR,
+  createRouteHook,
+  SCOPES_DECORATOR,
+} from '#core/schema/route.js';
+import { SCOPE, SCOPE_ALL } from '#enums/scope.js';
 import { pingSchema } from '#root/src/routes/v1/system/controller.js';
 import { buildTestApp } from '#root/tests/helper/app.js';
 import { errorEnvelope, listEnvelope, successEnvelope } from '#schemas/common/envelope.js';
@@ -15,6 +21,7 @@ import fp from 'fastify-plugin';
 import symbols from 'fastify/lib/symbols.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
+import { inspect } from 'node:util';
 
 const PREFIXES = Object.freeze({ apiPrefix: '/api', healthPrefix: '/health' });
 const PUBLIC = Object.freeze({ auth: false });
@@ -24,6 +31,44 @@ const NO_SECURITY = /GET \/api\/v1\/items\b.*security/;
 const NO_RESPONSE = /GET \/api\/v1\/items\b.*response/;
 const NO_TYPED_DATA = /GET \/api\/v1\/items\b.*data/;
 const OUT_OF_REACH = 'has security: { auth: true } and is out of reach of the auth plugin, which guards what is declared after it, in scopes opened after it';
+
+const {
+  GROUPS_ALL,
+  GROUPS_MANAGE,
+  GROUPS_READ,
+  USERS_ALL,
+  USERS_READ,
+} = SCOPE;
+
+const SCOPED = Object.freeze({ auth: true, scopes: [GROUPS_READ] });
+const SCOPES_OUT_OF_REACH = 'has security.scopes and is out of reach of the guard plugin, which guards what is declared after it, in scopes opened after it';
+const SCOPES_WITHOUT_AUTH = 'has security.scopes without auth: true: scopes are those of a signed-in user';
+const REQUIREMENT_LIST_MESSAGE = "security.scopes requires a non-empty list of scopes: ['a', 'b'] for one of them, [['a', 'b']] for both";
+const SECURITY_FORM_MESSAGE = 'requires security: { auth: true } or, for a public route, security: { auth: false }';
+
+const PREFIXED_AND_FREE_URLS = Object.freeze(['/api/v1/items', '/health/items', '/items']);
+
+// The auth plugin guards auth: true alone: a route with any of these would start open to anyone.
+const MALFORMED_SECURITIES = Object.freeze([
+  true,
+  false,
+  null,
+  0,
+  'auth',
+  [],
+  [{ auth: true }],
+  {},
+  { auth: 'true' },
+  { auth: 1 },
+  { auth: 0 },
+  { auth: null },
+  { auth: undefined },
+  { Auth: true },
+  { scopes: [GROUPS_READ] },
+  { auth: 'true', scopes: [GROUPS_READ] },
+  { auth: 1, scopes: [[GROUPS_READ, USERS_READ]] },
+  { auth: 'false', roles: ['admin'] },
+]);
 
 // The nested object matters: a schema the serializer merges wrongly filters the row itself and writes what is under it whole.
 const ROW = Object.freeze({
@@ -121,6 +166,23 @@ function createAppWithoutPlugins(t) {
   fastify.addHook('onRoute', createRouteHook(PREFIXES));
 
   return fastify;
+}
+
+function createAppBehindGuards(t) {
+  const fastify = createAppWithoutPlugins(t);
+
+  fastify.decorateRequest(AUTH_DECORATOR, null);
+  fastify.decorateRequest(SCOPES_DECORATOR, null);
+
+  return fastify;
+}
+
+function unknownScopeMessage(code) {
+  return `security.scopes names "${code}", which is no action of the scope catalog in src/enums/scope.js: a typo would leave the route to full access alone`;
+}
+
+function unreadKeyMessage(key) {
+  return `names security.${key}, which no guard reads: security takes auth and scopes`;
 }
 
 function readRow(request, reply) {
@@ -269,6 +331,280 @@ describe('createRouteHook', () => {
 
     assert.doesNotThrow(() => checkRoute(createRoute({ security: GUARDED })));
     assert.throws(() => checkRoute(createRoute({ security: GUARDED, schema: undefined })), NO_RESPONSE);
+  });
+
+  test('the hook refuses security.scopes without auth: true, under a prefix or not, and names the route: beside auth: false before the requirement and the contract, beside an auth that is no boolean by the form of security', () => {
+    const checkRoute = createRouteHook(PREFIXES);
+    const publicSecurities = [
+      { auth: false, scopes: [GROUPS_READ] },
+      { auth: false, scopes: [[GROUPS_READ, USERS_READ]] },
+      { auth: false, scopes: ['groups:write'] },
+      { auth: false, scopes: [] },
+      { auth: false, scopes: null },
+    ];
+    const formless = [
+      { scopes: [GROUPS_READ] },
+      { auth: 'true', scopes: [GROUPS_READ] },
+      { auth: 1, scopes: [[GROUPS_READ, USERS_READ]] },
+    ];
+
+    ['/api/v1/items', '/items'].forEach((url) => {
+      publicSecurities.forEach((security) => {
+        assert.throws(
+          () => checkRoute(createRoute({ url, security, schema: undefined })),
+          { name: 'Error', message: `Route GET ${url} ${SCOPES_WITHOUT_AUTH}` },
+          `${url} ${JSON.stringify(security)}`,
+        );
+      });
+      formless.forEach((security) => {
+        assert.throws(
+          () => checkRoute(createRoute({ url, security, schema: undefined })),
+          { name: 'Error', message: `Route GET ${url} ${SECURITY_FORM_MESSAGE}` },
+          `${url} ${JSON.stringify(security)}`,
+        );
+      });
+    });
+  });
+
+  test('the hook refuses a requirement of security.scopes that is not one, under a prefix or not, names the route and keeps what was wrong as the cause', () => {
+    const checkRoute = createRouteHook(PREFIXES);
+    const malformed = {
+      'an empty list': [],
+      'an empty term': [GROUPS_READ, []],
+      'a term nested deeper': [[[GROUPS_READ]]],
+      'a term with a list in it': [[GROUPS_READ, [USERS_READ]]],
+      'a code that is a number': [42],
+      'a code that is null': [GROUPS_READ, null],
+      'a string, not a list': GROUPS_READ,
+      'an object': { anyOf: [GROUPS_READ] },
+      null: null,
+      'a number': 1,
+      true: true,
+    };
+    const unknown = [
+      ['an unknown code', ['groups:write'], 'groups:write'],
+      ['a code in another case', ['Groups:Read'], 'Groups:Read'],
+      ['a code with a space', [`${GROUPS_READ} `], `${GROUPS_READ} `],
+      ['an empty code', [''], ''],
+      ['a wildcard', [GROUPS_ALL], GROUPS_ALL],
+      ['"*"', [SCOPE_ALL], SCOPE_ALL],
+      ['an unknown code after a known one', [GROUPS_READ, 'users:write'], 'users:write'],
+      ['an unknown code in a term', [[GROUPS_READ, 'users:delete']], 'users:delete'],
+      ['a wildcard in a term', [GROUPS_MANAGE, [GROUPS_READ, USERS_ALL]], USERS_ALL],
+    ];
+    const cases = [
+      ...Object.entries(malformed).map(([name, scopes]) => [name, scopes, REQUIREMENT_LIST_MESSAGE]),
+      ...unknown.map(([name, scopes, code]) => [name, scopes, unknownScopeMessage(code)]),
+    ];
+
+    ['/api/v1/items', '/items'].forEach((url) => {
+      cases.forEach(([name, scopes, message]) => {
+        assert.throws(() => checkRoute(createRoute({ url, security: { auth: true, scopes } })), (error) => {
+          assert.equal(error.name, 'Error', name);
+          assert.equal(error.message, `Route GET ${url}: ${message}`, name);
+          assert.equal(error.cause.name, 'TypeError', name);
+
+          return true;
+        }, `${url} ${name}`);
+      });
+    });
+  });
+
+  test('the hook takes each form of a requirement of catalog actions behind both plugins, under a prefix or not, with its HEAD twin', (t) => {
+    const fastify = createAppBehindGuards(t);
+    const { schema } = createRoute();
+    const requirements = [
+      [GROUPS_READ],
+      [GROUPS_READ, GROUPS_MANAGE],
+      [[GROUPS_READ, USERS_READ]],
+      [[GROUPS_READ, USERS_READ], [GROUPS_MANAGE, USERS_READ]],
+      [GROUPS_MANAGE, [GROUPS_READ, USERS_READ]],
+      [[USERS_READ]],
+    ];
+    const urls = requirements.flatMap((scopes, index) => {
+      fastify.get(`/api/v1/items/${index}`, { schema, security: { auth: true, scopes } }, readRow);
+      fastify.get(`/items/${index}`, { security: { auth: true, scopes } }, readRow);
+
+      return [`/api/v1/items/${index}`, `/items/${index}`];
+    });
+
+    assert.deepEqual(urls.filter((url) => ['GET', 'HEAD'].every((method) => fastify.hasRoute({ method, url }))), urls);
+  });
+
+  test('the hook refuses a route with security.scopes on an instance the guard plugin has not reached, also behind the auth plugin, under a prefix or not, and names it with every method', (t) => {
+    const fastify = createAppWithoutPlugins(t);
+    const { schema } = createRoute();
+
+    fastify.decorateRequest(AUTH_DECORATOR, null);
+
+    assert.throws(
+      () => fastify.get('/api/v1/items', { schema, security: SCOPED }, readRow),
+      { name: 'Error', message: `Route GET /api/v1/items ${SCOPES_OUT_OF_REACH}` },
+    );
+    assert.throws(
+      () => fastify.get('/items', { security: { auth: true, scopes: [[GROUPS_READ, USERS_READ]] } }, readRow),
+      { name: 'Error', message: `Route GET /items ${SCOPES_OUT_OF_REACH}` },
+    );
+    assert.throws(
+      () => fastify.route({
+        method: ['PUT', 'PATCH'], url: '/items/:id', security: SCOPED, handler: readRow,
+      }),
+      { name: 'Error', message: `Route PUT,PATCH /items/:id ${SCOPES_OUT_OF_REACH}` },
+    );
+    fastify.get('/guarded', { security: GUARDED }, readRow);
+
+    assert.deepEqual(
+      ['/api/v1/items', '/items', '/items/:id', '/guarded'].map((url) => ['GET', 'PUT'].some((method) => fastify.hasRoute({ method, url }))),
+      [false, false, false, true],
+    );
+  });
+
+  test('the hook refuses one in a scope opened before the guard plugin however late it is declared, and one beside a plugin that has the name of the guard plugin and decorates as it does', async (t) => {
+    const fastify = createAppWithoutPlugins(t);
+    let early;
+
+    fastify.decorateRequest(AUTH_DECORATOR, null);
+    await fastify.register(async (scope) => {
+      early = scope;
+    }, { prefix: '/early' });
+    await fastify.register(fp(async (instance) => {
+      instance.decorate('guard', Object.freeze({}));
+      instance.decorateRequest('scopes', null);
+    }, { name: 'guard' }));
+
+    assert.throws(() => fastify.get('/items', { security: SCOPED }, readRow), { message: `Route GET /items ${SCOPES_OUT_OF_REACH}` });
+
+    fastify.decorateRequest(SCOPES_DECORATOR, null);
+    fastify.get('/items', { security: SCOPED }, readRow);
+
+    assert.throws(() => early.get('/items', { security: SCOPED }, readRow), { message: `Route GET /early/items ${SCOPES_OUT_OF_REACH}` });
+    early.get('/guarded', { security: GUARDED }, readRow);
+    assert.deepEqual(['/items', '/early/items', '/early/guarded'].map((url) => fastify.hasRoute({ method: 'GET', url })), [true, false, true]);
+  });
+
+  test('the hook called without an instance looks for no guard plugin either: it still checks the requirement', () => {
+    const checkRoute = createRouteHook(PREFIXES);
+
+    assert.doesNotThrow(() => checkRoute(createRoute({ security: SCOPED })));
+    assert.doesNotThrow(() => checkRoute(createRoute({ url: '/items', security: SCOPED, schema: undefined })));
+    assert.throws(() => checkRoute(createRoute({ security: { auth: true, scopes: ['groups:write'] } })), { message: `Route GET /api/v1/items: ${unknownScopeMessage('groups:write')}` });
+  });
+
+  test('the hook refuses a key of security that no guard reads, a misspelt one or one of a later stage, under a prefix or not, right after the form of security and before the rest it checks, and names the route and the key', () => {
+    const checkRoute = createRouteHook(PREFIXES);
+    const securities = [
+      [{ auth: true, scope: [GROUPS_READ] }, 'scope'],
+      [{ auth: true, Scopes: [GROUPS_READ] }, 'Scopes'],
+      [{ auth: true, roles: ['admin'] }, 'roles'],
+      [{ auth: false, rateLimit: { max: 5 } }, 'rateLimit'],
+      [{ auth: true, scope: undefined }, 'scope'],
+      [{ auth: true, scopes: [GROUPS_READ], scope: [GROUPS_MANAGE] }, 'scope'],
+      [{ auth: false, scopes: [GROUPS_READ], rateLimit: { max: 5 } }, 'rateLimit'],
+      [{ auth: true, scopes: ['groups:write'], roles: ['admin'] }, 'roles'],
+      [{ auth: false, Auth: true }, 'Auth'],
+    ];
+
+    ['/api/v1/items', '/items'].forEach((url) => {
+      securities.forEach(([security, key]) => {
+        assert.throws(
+          () => checkRoute(createRoute({ url, security, schema: undefined })),
+          { name: 'Error', message: `Route GET ${url} ${unreadKeyMessage(key)}` },
+          `${url} ${key}`,
+        );
+      });
+    });
+  });
+
+  test('the hook names a key of security that no guard reads before it looks for the plugins, and with every method of the route', (t) => {
+    const fastify = createAppWithoutPlugins(t);
+
+    assert.throws(
+      () => fastify.get('/items', { security: { auth: true, scope: [GROUPS_READ] } }, readRow),
+      { name: 'Error', message: `Route GET /items ${unreadKeyMessage('scope')}` },
+    );
+    assert.throws(
+      () => fastify.route({
+        method: ['PUT', 'PATCH'], url: '/items/:id', security: { auth: true, Scopes: [GROUPS_MANAGE] }, handler: readRow,
+      }),
+      { name: 'Error', message: `Route PUT,PATCH /items/:id ${unreadKeyMessage('Scopes')}` },
+    );
+    assert.deepEqual(['/items', '/items/:id'].map((url) => ['GET', 'PUT'].some((method) => fastify.hasRoute({ method, url }))), [false, false]);
+  });
+
+  test('the hook refuses security that is not an object with a boolean auth, under a prefix or not, before anything else it checks, and names the route', () => {
+    const checkRoute = createRouteHook(PREFIXES);
+
+    PREFIXED_AND_FREE_URLS.forEach((url) => {
+      MALFORMED_SECURITIES.forEach((security) => {
+        assert.throws(
+          () => checkRoute({
+            method: 'POST', url, security, schema: { body: createUngatedBody() },
+          }),
+          { name: 'Error', message: `Route POST ${url} ${SECURITY_FORM_MESSAGE}` },
+          `${url} ${inspect(security)}`,
+        );
+      });
+    });
+  });
+
+  test('the hook takes a route outside the prefixes that has no security or security: undefined, and still requires security under them', () => {
+    const checkRoute = createRouteHook(PREFIXES);
+    const { schema } = createRoute();
+
+    ['/items', '/apiary/items', '/healthz'].forEach((url) => {
+      assert.doesNotThrow(() => checkRoute({ method: 'GET', url }), url);
+      assert.doesNotThrow(() => checkRoute({ method: 'GET', url, security: undefined }), url);
+    });
+    ['/api/v1/items', '/health/items'].forEach((url) => {
+      assert.throws(() => checkRoute({
+        method: 'GET', url, schema, security: undefined,
+      }), { name: 'Error', message: `Route GET ${url} ${SECURITY_FORM_MESSAGE}` }, url);
+    });
+  });
+
+  test('the hook names security that is not an object with a boolean auth before it looks for the plugins, with every method of the route, and registers neither the route nor its HEAD twin', (t) => {
+    const fastify = createAppWithoutPlugins(t);
+    const { schema } = createRoute();
+    const securities = [true, {}, { auth: 'true' }, { auth: 1 }];
+    const urls = securities.flatMap((security, index) => {
+      assert.throws(
+        () => fastify.get(`/api/v1/items/${index}`, { schema, security }, readRow),
+        { name: 'Error', message: `Route GET /api/v1/items/${index} ${SECURITY_FORM_MESSAGE}` },
+        inspect(security),
+      );
+      assert.throws(
+        () => fastify.get(`/items/${index}`, { security }, readRow),
+        { name: 'Error', message: `Route GET /items/${index} ${SECURITY_FORM_MESSAGE}` },
+        inspect(security),
+      );
+
+      return [`/api/v1/items/${index}`, `/items/${index}`];
+    });
+
+    assert.throws(
+      () => fastify.route({
+        method: ['PUT', 'PATCH'], url: '/items/:id', security: { auth: 'true', scopes: [GROUPS_MANAGE] }, handler: readRow,
+      }),
+      { name: 'Error', message: `Route PUT,PATCH /items/:id ${SECURITY_FORM_MESSAGE}` },
+    );
+    fastify.get('/plain', readRow);
+
+    assert.deepEqual([...urls, '/items/:id'].filter((url) => ['GET', 'HEAD', 'PUT', 'PATCH'].some((method) => fastify.hasRoute({ method, url }))), []);
+    assert.deepEqual(['GET', 'HEAD'].map((method) => fastify.hasRoute({ method, url: '/plain' })), [true, true]);
+  });
+
+  test('the hook takes security of auth alone and of auth with scopes, frozen or not, under a prefix or not, behind both plugins', (t) => {
+    const fastify = createAppBehindGuards(t);
+    const { schema } = createRoute();
+    const securities = [PUBLIC, GUARDED, SCOPED, { auth: false }, { auth: true, scopes: [[GROUPS_READ, USERS_READ]] }];
+    const urls = securities.flatMap((security, index) => {
+      fastify.get(`/api/v1/items/${index}`, { schema, security }, readRow);
+      fastify.get(`/items/${index}`, { security }, readRow);
+
+      return [`/api/v1/items/${index}`, `/items/${index}`];
+    });
+
+    assert.deepEqual(urls.filter((url) => fastify.hasRoute({ method: 'GET', url })), urls);
   });
 
   test('the hook gates the expensive keywords of a request and guards the gated copy', () => {
@@ -1145,6 +1481,103 @@ describe('route contract in the app', () => {
       () => fastify.route({ method: ['GET', 'POST'], url: '/api/v1/items', handler: readRow }),
       /GET\W+POST \/api\/v1\/items\b.*security/,
     );
+  });
+
+  test('a root route under /api whose security.scopes the catalog does not know makes fastify.get() throw and is not registered, and a valid one is guarded', async (t) => {
+    const fastify = await createApp(t);
+    const schema = { response: { 200: successEnvelope(createItem()) } };
+
+    assert.throws(
+      () => fastify.get('/api/v1/items', { schema, security: { auth: true, scopes: ['groups:write'] } }, readRow),
+      { message: `Route GET /api/v1/items: ${unknownScopeMessage('groups:write')}` },
+    );
+    assert.throws(
+      () => fastify.get('/api/v1/items', { schema, security: { auth: false, scopes: [GROUPS_READ] } }, readRow),
+      { message: `Route GET /api/v1/items ${SCOPES_WITHOUT_AUTH}` },
+    );
+    assert.equal(fastify.hasRoute({ method: 'GET', url: '/api/v1/items' }), false);
+
+    fastify.get('/api/v1/items/scoped', { schema, security: SCOPED }, readRow);
+
+    const [missing, guarded] = await Promise.all(['/api/v1/items', '/api/v1/items/scoped'].map((url) => fastify.inject(url)));
+
+    assert.deepEqual([missing.statusCode, missing.json().code], [404, 'NOT_FOUND_ERROR']);
+    assert.deepEqual([guarded.statusCode, guarded.json().code], [401, 'AUTHENTICATION_ERROR']);
+  });
+
+  test('a route with a key of security that no guard reads makes fastify.get() throw and is not registered, under /api and outside it', async (t) => {
+    const fastify = await createApp(t);
+    const schema = { response: { 200: successEnvelope(createItem()) } };
+
+    assert.throws(
+      () => fastify.get('/api/v1/items', { schema, security: { auth: true, scope: [GROUPS_READ] } }, readRow),
+      { name: 'Error', message: `Route GET /api/v1/items ${unreadKeyMessage('scope')}` },
+    );
+    assert.throws(
+      () => fastify.get('/items', { security: { auth: false, rateLimit: { max: 5 } } }, readRow),
+      { name: 'Error', message: `Route GET /items ${unreadKeyMessage('rateLimit')}` },
+    );
+    assert.deepEqual(['/api/v1/items', '/items'].map((url) => fastify.hasRoute({ method: 'GET', url })), [false, false]);
+
+    const responses = await Promise.all(['/api/v1/items', '/items'].map((url) => fastify.inject(url)));
+
+    assert.deepEqual(responses.map((response) => [response.statusCode, response.json().code]), [[404, 'NOT_FOUND_ERROR'], [404, 'NOT_FOUND_ERROR']]);
+  });
+
+  test('a route with a key of security that no guard reads inside an async plugin makes ready() reject with the route and the key in the message', async (t) => {
+    const fastify = await createApp(t);
+
+    fastify.register(async (instance) => {
+      instance.get('/items', { schema: { response: { 200: successEnvelope(createItem()) } }, security: { auth: true, roles: ['admin'] } }, readRow);
+    }, { prefix: '/api/v2' });
+
+    await assert.rejects(fastify.ready(), { message: `Route GET /api/v2/items ${unreadKeyMessage('roles')}` });
+  });
+
+  test('a route with security that is not an object with a boolean auth makes fastify.get() throw and is not registered, under /api and outside it, and one without security outside the prefixes still starts', async (t) => {
+    const fastify = await createApp(t);
+    const schema = { response: { 200: successEnvelope(createItem()) } };
+
+    [true, {}, { auth: 'true' }, { auth: 1 }].forEach((security) => {
+      assert.throws(
+        () => fastify.get('/api/v1/items', { schema, security }, readRow),
+        { name: 'Error', message: `Route GET /api/v1/items ${SECURITY_FORM_MESSAGE}` },
+        inspect(security),
+      );
+      assert.throws(
+        () => fastify.get('/items', { schema, security }, readRow),
+        { name: 'Error', message: `Route GET /items ${SECURITY_FORM_MESSAGE}` },
+        inspect(security),
+      );
+    });
+    fastify.get('/plain', () => ({ isStarted: true }));
+    await fastify.ready();
+
+    const responses = await Promise.all(['/api/v1/items', '/items', '/plain'].map((url) => fastify.inject(url)));
+
+    assert.deepEqual(responses.map((response) => response.statusCode), [404, 404, 200]);
+    assert.deepEqual(responses.slice(0, 2).map((response) => response.json().code), ['NOT_FOUND_ERROR', 'NOT_FOUND_ERROR']);
+    assert.deepEqual(responses[2].json(), { isStarted: true });
+  });
+
+  test('a route outside the prefixes with security that is not an object with a boolean auth inside an async plugin makes ready() reject with the route in the message', async (t) => {
+    const fastify = await createApp(t);
+
+    fastify.register(async (instance) => {
+      instance.get('/items', { security: { auth: 'true' } }, readRow);
+    }, { prefix: '/outside' });
+
+    await assert.rejects(fastify.ready(), { message: `Route GET /outside/items ${SECURITY_FORM_MESSAGE}` });
+  });
+
+  test('a route with an invalid requirement inside an async plugin under /api makes ready() reject with the route in the message', async (t) => {
+    const fastify = await createApp(t);
+
+    fastify.register(async (instance) => {
+      instance.get('/items', { schema: { response: { 200: successEnvelope(createItem()) } }, security: { auth: true, scopes: [] } }, readRow);
+    }, { prefix: '/api/v2' });
+
+    await assert.rejects(fastify.ready(), { message: `Route GET /api/v2/items: ${REQUIREMENT_LIST_MESSAGE}` });
   });
 
   test('the same route inside an async plugin under /api makes ready() reject with the route in the message', async (t) => {

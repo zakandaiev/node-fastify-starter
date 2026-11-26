@@ -1,15 +1,5 @@
-import { issueTokens } from '#core/auth/token.js';
-import { createContext, getContext } from '#core/context/index.js';
+import { getContext } from '#core/context/index.js';
 import { AppError } from '#core/error/index.js';
-import { createLogger } from '#core/logger/index.js';
-import { createRouteHook } from '#core/schema/route.js';
-import { COOKIE } from '#enums/cookie.js';
-import useErrorHandler from '#root/src/plugins/000.error-handler.js';
-import useContext from '#root/src/plugins/010.context.js';
-import useRedis from '#root/src/plugins/020.redis.js';
-import useDb from '#root/src/plugins/030.db.js';
-import useCookie from '#root/src/plugins/090.cookie.js';
-import useJwt from '#root/src/plugins/100.jwt.js';
 import useAuth from '#root/src/plugins/130.auth.js';
 import {
   accept,
@@ -19,26 +9,32 @@ import {
   readTitles,
   readUrls,
 } from '#root/tests/helper/alert.js';
-import { describeAnswer, errorBody } from '#root/tests/helper/app.js';
 import { rejectionOf, waitFor } from '#root/tests/helper/async.js';
-import { createTestConfig } from '#root/tests/helper/config.js';
-import { createDownEnv } from '#root/tests/helper/db.js';
+import {
+  assertRefused,
+  BEARER,
+  buildOpenApp,
+  buildPluginApp,
+  countCalls,
+  describeHeaders,
+  DONE_SCHEMA,
+  issueFor,
+  leaveName,
+  NO_STORE,
+  readState,
+  REVOKED,
+  REVOKED_MARK,
+  UNAUTHENTICATED,
+  UNAVAILABLE,
+  withoutUser,
+} from '#root/tests/helper/guard.js';
 import { createLogSink, findLogLines, LOG_LEVEL } from '#root/tests/helper/log.js';
 import { isDeepFrozen } from '#root/tests/helper/object.js';
-import {
-  buildDownApp,
-  connectAppRedis,
-  createMarkedRedisEnv,
-  runInApp,
-  toBearer,
-} from '#root/tests/helper/session.js';
-import { successEnvelope } from '#schemas/common/envelope.js';
+import { buildDownApp } from '#root/tests/helper/session.js';
 import { idParam } from '#schemas/common/request.js';
 import { mapSeries } from '#utils/async.js';
-import { nowUtc } from '#utils/date.js';
 import { uuidv7 } from '#utils/id.js';
 import { pick } from '#utils/object.js';
-import Fastify from 'fastify';
 import fp from 'fastify-plugin';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
@@ -48,7 +44,6 @@ const GUARDED = Object.freeze({ auth: true });
 const PUBLIC = Object.freeze({ auth: false });
 const SCOPES = Object.freeze(['users:read', 'users:write']);
 
-const REVOKED_MARK = '0';
 const NO_MARK = null;
 
 const BASIC = 'Basic dXNlcjpwYXNzd29yZA==';
@@ -56,37 +51,13 @@ const LONG_REPEATS = 1000;
 
 const ITEMS_URL = '/api/v1/items';
 const EARLY_URL = '/api/v1/early';
-const DONE_SCHEMA = Object.freeze({
-  response: { 200: successEnvelope({ type: 'object', properties: { isDone: { type: 'boolean' } } }) },
-});
 const ITEM_BODY = Object.freeze({
   type: 'object',
   required: ['name'],
   properties: { name: { type: 'string', maxLength: 20 } },
 });
 
-const NO_STORE = 'no-store';
 const OWN_POLICY = 'private, max-age=60';
-const BEARER = 'Bearer';
-
-const UNAUTHENTICATED = Object.freeze({
-  statusCode: 401,
-  code: 'AUTHENTICATION_ERROR',
-  message: 'Authentication error',
-  challenge: BEARER,
-});
-const REVOKED = Object.freeze({
-  statusCode: 401,
-  code: 'SESSION_REVOKED',
-  message: 'Session revoked',
-  challenge: BEARER,
-});
-const UNAVAILABLE = Object.freeze({
-  statusCode: 503,
-  code: 'SERVICE_UNAVAILABLE_ERROR',
-  message: 'Service unavailable',
-  retryAfter: '60',
-});
 
 const REQUEST_FAILED_MESSAGE = 'Request failed';
 const OUT_OF_REACH = 'has security: { auth: true } and is out of reach of the auth plugin, which guards what is declared after it, in scopes opened after it';
@@ -96,96 +67,12 @@ const REFUSED_CODE = 'ECONNREFUSED';
 // Long enough for a second alert to reach the receiver: what is not there by then was never sent.
 const SETTLE_MS = 300;
 
-async function buildOpenApp(t, { marks, env = {}, ...sections } = {}) {
-  const fastify = await buildDownApp(t, { ...sections, env: { ...(await createMarkedRedisEnv(t, marks)), ...env } });
-
-  await connectAppRedis(fastify);
-
-  return fastify;
-}
-
-// Not the app of the tests: what is added to it comes behind the guard.
-async function buildGuardAfter(t, useEarlier) {
-  const config = createTestConfig({ env: { ...(await createMarkedRedisEnv(t)), ...(await createDownEnv()) } });
-  const fastify = Fastify({ loggerInstance: createLogger(config.logger), genReqId: () => uuidv7() });
-
-  t.after(() => fastify.close());
-  fastify.decorate('config', config);
-  fastify.decorate('context', createContext({ config, log: fastify.log }));
-  fastify.addHook('onRoute', createRouteHook(config.app));
-  await mapSeries([useErrorHandler, useContext, useRedis, useDb, useCookie, useJwt, fp(useEarlier), useAuth], (plugin) => fastify.register(plugin));
-  await connectAppRedis(fastify);
-
-  return fastify;
+function buildGuardAfter(t, useEarlier) {
+  return buildPluginApp(t, [fp(useEarlier), useAuth]);
 }
 
 function declareGuarded(fastify, url) {
   fastify.get(url, { schema: DONE_SCHEMA, security: GUARDED }, () => ({ isDone: true }));
-}
-
-function issueFor(fastify, { userId = uuidv7(), sid = uuidv7(), scopes = SCOPES } = {}) {
-  const { issued } = runInApp(fastify, () => issueTokens({
-    userId,
-    sid,
-    scopes,
-    startedAt: nowUtc(),
-  }));
-
-  return {
-    ...issued,
-    cookies: { [COOKIE.ACCESS_TOKEN]: issued.accessToken },
-    headers: toBearer(issued.accessToken),
-  };
-}
-
-function countCalls() {
-  const calls = { count: 0 };
-
-  function handler() {
-    calls.count += 1;
-
-    return { isDone: true };
-  }
-
-  return { calls, handler };
-}
-
-function readState(request) {
-  return { user: request.user, session: request.session };
-}
-
-function leaveName(events, name) {
-  async function onRequest(request) {
-    events.push([name, request.user]);
-  }
-
-  return onRequest;
-}
-
-function withoutUser(names) {
-  return names.map((name) => [name, null]);
-}
-
-function describeRefusal(response, refusal) {
-  return {
-    statusCode: refusal.statusCode,
-    body: errorBody(response, refusal.code, refusal.message),
-    retryAfter: refusal.retryAfter,
-    challenge: refusal.challenge,
-    cacheControl: NO_STORE,
-    cookies: undefined,
-  };
-}
-
-function assertRefused(responses, refusal, names = responses.map((response, index) => index)) {
-  assert.deepEqual(
-    responses.map((response, index) => [names[index], describeAnswer(response)]),
-    responses.map((response, index) => [names[index], describeRefusal(response, refusal)]),
-  );
-}
-
-function describeHeaders(response) {
-  return [response.statusCode, response.headers['cache-control'], response.headers['www-authenticate']];
 }
 
 function listUnusableBearers({ accessToken, refreshToken }) {
@@ -410,7 +297,7 @@ describe('auth plugin: the order of the hooks', () => {
     });
 
     const userId = uuidv7();
-    const { cookies } = issueFor(fastify, { userId });
+    const { cookies } = issueFor(fastify, SCOPES, { userId });
     const before = withoutUser(['folder', 'route', 'earlier plugin']);
 
     assertRefused([await fastify.inject('/guarded')], UNAUTHENTICATED);
@@ -567,7 +454,7 @@ describe('auth plugin: who the request is from', () => {
 
     const userId = uuidv7();
     const sid = uuidv7();
-    const { accessToken, cookies, headers } = issueFor(fastify, { userId, sid });
+    const { accessToken, cookies, headers } = issueFor(fastify, SCOPES, { userId, sid });
     const responses = await Promise.all([
       fastify.inject({ url: '/guarded', cookies }),
       fastify.inject({ url: '/guarded', headers }),
@@ -587,7 +474,7 @@ describe('auth plugin: who the request is from', () => {
 
     fastify.get('/guarded', { security: GUARDED }, readState);
 
-    const devices = [['users:read'], ['*'], []].map((scopes) => issueFor(fastify, { scopes }));
+    const devices = [['users:read'], ['*'], []].map((scopes) => issueFor(fastify, scopes));
     const responses = await Promise.all(devices.map(({ headers }) => fastify.inject({ url: '/guarded', headers })));
 
     assert.deepEqual(responses.map((response) => response.json()), devices.map(({ userId, sid, scopes }) => ({
@@ -667,7 +554,7 @@ describe('auth plugin: a session that is over', () => {
 
     fastify.get('/guarded', { security: GUARDED }, handler);
 
-    const ended = issueFor(fastify, { sid: endedSid });
+    const ended = issueFor(fastify, [], { sid: endedSid });
     const alive = issueFor(fastify);
     const refused = await Promise.all([
       fastify.inject({ url: '/guarded', cookies: ended.cookies }),
@@ -726,7 +613,7 @@ describe('auth plugin: with the database down', () => {
 
     fastify.get('/guarded', { security: GUARDED }, readState);
 
-    const unknown = issueFor(fastify, { sid: unknownSid });
+    const unknown = issueFor(fastify, [], { sid: unknownSid });
     const known = issueFor(fastify);
     const [refused, allowed] = await Promise.all([unknown, known].map(({ cookies }) => fastify.inject({ url: '/guarded', cookies })));
 

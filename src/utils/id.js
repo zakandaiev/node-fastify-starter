@@ -77,6 +77,19 @@ export function isUuid(value) {
   return isString(value) && UUID_REGEXP.test(value);
 }
 
+// "what" names the row: assertUuid(userId, 'getUser(userId)', 'a user') -> getUser(userId) requires the UUID of a user.
+export function assertUuid(value, signature, what) {
+  if (!isString(signature) || !isString(what)) {
+    throw new TypeError('assertUuid(value, signature, what) requires the signature of the caller and the name of the row');
+  }
+
+  if (!isUuid(value)) {
+    throw new TypeError(`${signature} requires the UUID of ${what}`);
+  }
+
+  return true;
+}
+
 export function uuidVersion(value) {
   return isUuid(value)
     ? Number.parseInt(value[TEXT_VERSION_INDEX], HEX_RADIX)

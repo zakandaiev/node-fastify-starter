@@ -168,6 +168,19 @@ describe('writeAudit', { skip: testDb.skip }, () => {
     assert.match(JSON.stringify((await readRecord(id)).meta), /^\{"requested":\[+"\[depth limit\]"\]+\}$/);
   });
 
+  test('takes an actorId of null for the system, also when the request has a user', async () => {
+    const requestUserId = await insertUser();
+    const id = await record({
+      action: 'user.group_grant',
+      entityType: TABLE.USERS,
+      entityId: uuidv7(),
+      actorId: null,
+      request: { ip: '::1', id: uuidv7(), user: { id: requestUserId } },
+    });
+
+    assert.equal((await readRecord(id)).actor_id, null);
+  });
+
   test('takes an actorId it is given over the user of the request', async () => {
     const [requestUserId, actorId] = await Promise.all([insertUser(), insertUser()]);
     const id = await record({

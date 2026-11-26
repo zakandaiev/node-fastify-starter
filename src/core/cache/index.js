@@ -1,6 +1,7 @@
 import { getContext } from '#core/context/index.js';
 import { afterCommit } from '#core/db/transaction.js';
 import { REDIS_FAILURE, runRedisSafely } from '#core/redis/index.js';
+import { TABLE_DEPENDENTS } from '#enums/table.js';
 import { unique } from '#utils/array.js';
 import { singleFlight } from '#utils/async.js';
 import { convertStringToMs, nowUtc } from '#utils/date.js';
@@ -289,8 +290,24 @@ async function bumpVersions(redis, state, tables) {
   return results.every(Boolean);
 }
 
+// Whichever statement it is: a write may delete rows, and the server changes with them those its foreign keys reach.
+function addDependents(tables, reached = new Set()) {
+  tables
+    .filter((table) => !reached.has(table))
+    .forEach((table) => {
+      reached.add(table);
+      addDependents(Object.hasOwn(TABLE_DEPENDENTS, table) ? TABLE_DEPENDENTS[table] : [], reached);
+    });
+
+  return [...reached];
+}
+
 export async function invalidateCacheTables(tables) {
-  const names = readTables(tables, 'invalidateCacheTables(tables)');
+  const signature = 'invalidateCacheTables(tables)';
+
+  assertCacheTables(tables, signature);
+
+  const names = addDependents(tables).sort();
   const context = getContext();
   const redis = context.cacheRedis;
 

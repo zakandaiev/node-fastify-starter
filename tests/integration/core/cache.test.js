@@ -7,9 +7,13 @@ import {
 } from '#core/cache/index.js';
 import { createContext, runInContext } from '#core/context/index.js';
 import { withTransaction } from '#core/db/transaction.js';
+import { AUDIT_ACTION } from '#enums/audit-action.js';
+import { SCOPE } from '#enums/scope.js';
+import { TABLE } from '#enums/table.js';
 import { timeIt, waitFor } from '#root/tests/helper/async.js';
 import { createTestDb } from '#root/tests/helper/db.js';
 import { createLogSink, findLogLines } from '#root/tests/helper/log.js';
+import { bindMigrator } from '#root/tests/helper/migration.js';
 import {
   createAclUser,
   createTcpProxy,
@@ -18,6 +22,7 @@ import {
   waitUntilReady,
 } from '#root/tests/helper/redis.js';
 import { getServiceAddress } from '#root/tests/helper/service.js';
+import { mapSeries } from '#utils/async.js';
 import { convertStringToMs } from '#utils/date.js';
 import { uuidv7 } from '#utils/id.js';
 import { SERIALIZED_FORMAT } from '#utils/serialize.js';
@@ -27,6 +32,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 
 const testRedis = await createTestRedis();
 const testDb = await createTestDb();
+const { up } = bindMigrator(testDb);
 
 const PARALLEL_MISSES = 50;
 const COMMAND_TIMEOUT_MS = 300;
@@ -47,6 +53,32 @@ const RECONNECT_DEADLINES = Object.freeze({ ...FAST_RECONNECT, commandTimeout: '
 const CORRUPT_MESSAGE = 'Cache entry cannot be read: it is taken for a miss and written again';
 const BUMP_FAILED_MESSAGE = 'Cache could not bump the version of a table: it tries again, and reads of the table go to the database meanwhile';
 const TAG = String.fromCharCode(0);
+
+// Every version a bump could move: the tables of TABLE, a name it does not know, and names an object finds on
+// Object.prototype, which must never stand for a list of tables a foreign key reaches.
+const UNKNOWN_TABLE = 'members';
+const PROTOTYPE_NAMES = Object.freeze(['constructor', '__proto__', 'toString']);
+const WATCHED_TABLES = Object.freeze([...Object.values(TABLE), UNKNOWN_TABLE, ...PROTOTYPE_NAMES]);
+const USERS_REACH = Object.freeze({
+  [TABLE.USERS]: 1,
+  [TABLE.USER_IDENTITIES]: 1,
+  [TABLE.USER_GROUPS]: 1,
+  [TABLE.AUDIT_LOGS]: 1,
+  [TABLE.SESSIONS]: 1,
+});
+const GROUPS_REACH = Object.freeze({ [TABLE.GROUPS]: 1, [TABLE.GROUP_SCOPES]: 1, [TABLE.USER_GROUPS]: 1 });
+const EVERY_REACH = Object.freeze({ ...USERS_REACH, ...GROUPS_REACH });
+
+const INSERT_USER_SQL = 'INSERT INTO users (id) VALUES (:id)';
+const INSERT_GROUP_SQL = 'INSERT INTO groups (id, slug, name) VALUES (:id, :slug, :name)';
+const INSERT_SCOPE_SQL = 'INSERT INTO group_scopes (group_id, scope) VALUES (:groupId, :scope)';
+const INSERT_MEMBER_SQL = 'INSERT INTO user_groups (user_id, group_id, granted_by) VALUES (:userId, :groupId, :grantedBy)';
+const INSERT_AUDIT_SQL = 'INSERT INTO audit_logs (id, actor_id, action) VALUES (:id, :actorId, :action)';
+const SCOPES_SQL = 'SELECT scope FROM group_scopes WHERE group_id = :groupId ORDER BY scope';
+const MEMBERS_SQL = 'SELECT user_id, granted_by FROM user_groups WHERE group_id = :groupId ORDER BY user_id';
+const ACTOR_SQL = 'SELECT actor_id FROM audit_logs WHERE id = :id';
+const DELETE_GROUP_SQL = 'DELETE FROM groups WHERE id = :id';
+const DELETE_USER_SQL = 'DELETE FROM users WHERE id = :id';
 
 let nameCount = 0;
 
@@ -90,6 +122,23 @@ function createHeld(value) {
 
 function readVersion(table) {
   return testRedis.admin.get(`${testRedis.keyPrefix}table-version:${table}`);
+}
+
+async function readVersions(tables) {
+  const versions = await Promise.all(tables.map((table) => readVersion(table)));
+
+  return Object.fromEntries(tables.map((table, index) => [table, Number(versions[index])]));
+}
+
+// Only the names of WATCHED_TABLES whose version fn has moved, each with how far: the others stayed as they were.
+async function listBumped(fn) {
+  const start = await readVersions(WATCHED_TABLES);
+
+  await fn();
+
+  const end = await readVersions(WATCHED_TABLES);
+
+  return Object.fromEntries(WATCHED_TABLES.map((table) => [table, end[table] - start[table]]).filter(([, count]) => count !== 0));
 }
 
 function toEntryKey(config, key) {
@@ -401,6 +450,84 @@ describe('cache on a Redis', { skip: testRedis.skip }, () => {
   });
 });
 
+describe('invalidateCacheTables and the tables the foreign keys of a table reach', { skip: testRedis.skip }, () => {
+  // Every version is there before a test counts how far it moves: the first bump of a table also starts it.
+  async function openStarted() {
+    const opened = await openCache();
+
+    await opened.run(() => invalidateCacheTables(WATCHED_TABLES));
+
+    return opened;
+  }
+
+  test('a bump of users moves the versions of user_identities, user_groups, audit_logs and sessions with its own, and one of groups those of group_scopes and user_groups, each by one', async () => {
+    const { run } = await openStarted();
+    const results = [];
+    const users = await listBumped(async () => {
+      results.push(await run(() => invalidateCacheTables([TABLE.USERS])));
+    });
+    const groups = await listBumped(async () => {
+      results.push(await run(() => invalidateCacheTables([TABLE.GROUPS])));
+    });
+
+    assert.deepEqual(results, [true, true]);
+    assert.deepEqual([users, groups], [USERS_REACH, GROUPS_REACH]);
+  });
+
+  test('a list that names users and groups, or a table beside one that reaches it, moves each version once', async () => {
+    const { run } = await openStarted();
+    const both = await listBumped(() => run(() => invalidateCacheTables([TABLE.GROUPS, TABLE.USERS])));
+    const beside = await listBumped(() => run(() => invalidateCacheTables([TABLE.USER_GROUPS, TABLE.GROUPS, TABLE.SESSIONS, TABLE.USERS, TABLE.USERS])));
+
+    assert.deepEqual([both, beside], [EVERY_REACH, EVERY_REACH]);
+  });
+
+  test('a bump of a table no foreign key reaches out of, or of a name TABLE does not know, moves that version alone', async () => {
+    const { run } = await openStarted();
+    const tables = [TABLE.USER_IDENTITIES, TABLE.GROUP_SCOPES, TABLE.USER_GROUPS, TABLE.AUDIT_LOGS, TABLE.SESSIONS, UNKNOWN_TABLE];
+    const bumps = await mapSeries(tables, (table) => listBumped(() => run(() => invalidateCacheTables([table]))));
+
+    assert.deepEqual(bumps, tables.map((table) => ({ [table]: 1 })));
+  });
+
+  test('constructor, __proto__ and toString are table names like any other: each moves its own version alone, and nothing on Object.prototype is taken for tables they reach', async () => {
+    const { run } = await openStarted();
+    const results = [];
+    const bumps = await mapSeries(PROTOTYPE_NAMES, (table) => listBumped(async () => {
+      results.push(await run(() => invalidateCacheTables([table])));
+    }));
+
+    assert.deepEqual(results, PROTOTYPE_NAMES.map(() => true));
+    assert.deepEqual(bumps, PROTOTYPE_NAMES.map((table) => ({ [table]: 1 })));
+  });
+
+  test('a reached table whose version refuses its bump fails the call as a table of the list would: its reads go to the database, and those of the tables bumped with it are cached again', async (t) => {
+    const { run } = await openStarted();
+    const poisonedKey = `${testRedis.keyPrefix}table-version:${TABLE.SESSIONS}`;
+    const sessionsKey = nextName('reached');
+    const identitiesKey = nextName('reached');
+    const sessions = countCalls();
+    const identities = countCalls();
+
+    function readTwice(key, fn, table) {
+      return mapSeries([key, key], (sameKey) => run(() => wrapCache(sameKey, fn, { tables: [table] })));
+    }
+
+    t.after(() => testRedis.admin.del(poisonedKey));
+    await testRedis.admin.set(poisonedKey, 'not a number');
+
+    const identitiesBefore = Number(await readVersion(TABLE.USER_IDENTITIES));
+
+    assert.equal(await run(() => invalidateCacheTables([TABLE.USERS])), false);
+    assert.equal(Number(await readVersion(TABLE.USER_IDENTITIES)), identitiesBefore + 1);
+
+    await readTwice(sessionsKey, sessions.fn, TABLE.SESSIONS);
+    await readTwice(identitiesKey, identities.fn, TABLE.USER_IDENTITIES);
+
+    assert.deepEqual([sessions.calls.count, identities.calls.count], [2, 1]);
+  });
+});
+
 describe('cache on a Redis that fails', { skip: testRedis.skip }, () => {
   test('a Redis that hangs: every operation gives up within one commandTimeout, and wrapCache gives what fn gives', async (t) => {
     const { run, proxy } = await openProxiedCache(t, HANG_DEADLINES);
@@ -646,6 +773,32 @@ describe('cache inside a transaction', { skip: testRedis.skip || testDb.skip }, 
     assert.equal(await readVersion(savepoint), savepointBefore);
   });
 
+  test('bumps the tables a table reaches only after the commit, with that table, and drops every one of them with a rollback of the transaction or of its savepoint', async () => {
+    const { run } = await openWithDatabase();
+    let inside = null;
+
+    await run(() => invalidateCacheTables(WATCHED_TABLES));
+
+    const start = await readVersions(WATCHED_TABLES);
+    const committed = await listBumped(() => run(() => withTransaction(async () => {
+      await invalidateCacheTables([TABLE.USERS]);
+      await assert.rejects(withTransaction(async () => {
+        await invalidateCacheTables([TABLE.GROUPS]);
+
+        throw new Error('savepoint rollback');
+      }), /savepoint rollback/);
+      inside = await readVersions(WATCHED_TABLES);
+    })));
+    const rolledBack = await listBumped(() => assert.rejects(run(() => withTransaction(async () => {
+      await invalidateCacheTables([TABLE.GROUPS, TABLE.USERS]);
+
+      throw new Error('rollback');
+    })), /rollback/));
+
+    assert.deepEqual(inside, start);
+    assert.deepEqual([committed, rolledBack], [USERS_REACH, {}]);
+  });
+
   test('writes and deletes an entry only after the commit', async () => {
     const { run, config } = await openWithDatabase();
     const kept = nextName('kept');
@@ -670,5 +823,71 @@ describe('cache inside a transaction', { skip: testRedis.skip || testDb.skip }, 
     assert.equal(await run(() => readCache(kept)), 'new');
     assert.equal(await run(() => readCache(dropped)), undefined);
     assert.equal(await testRedis.admin.exists(toEntryKey(config, never)), 0);
+  });
+});
+
+// The rows are written by hand, through the pool alone: the cache learns of a write from invalidateCacheTables() only.
+describe('cache and the foreign keys of the database', { skip: testRedis.skip || testDb.skip }, () => {
+  async function openMigrated() {
+    await up();
+
+    return openCache();
+  }
+
+  function cacheRows(run, table, sql, binding) {
+    const key = nextName(table);
+
+    return () => run(() => wrapCache(key, () => testDb.readRows(sql, binding), { tables: [table] }));
+  }
+
+  test('after a group is deleted by hand, invalidateCacheTables([groups]) leaves no cached read of group_scopes or user_groups that still holds the rows the delete took with it', async () => {
+    const { run } = await openMigrated();
+    const [groupId, userId] = [uuidv7(), uuidv7()];
+    const readScopes = cacheRows(run, TABLE.GROUP_SCOPES, SCOPES_SQL, { groupId });
+    const readMembers = cacheRows(run, TABLE.USER_GROUPS, MEMBERS_SQL, { groupId });
+
+    await testDb.readRows(INSERT_GROUP_SQL, { id: groupId, slug: nextName('cascade'), name: 'Readers' });
+    await testDb.readRows(INSERT_USER_SQL, { id: userId });
+    await testDb.readRows(INSERT_SCOPE_SQL, { groupId, scope: SCOPE.GROUPS_READ });
+    await testDb.readRows(INSERT_MEMBER_SQL, { userId, groupId, grantedBy: null });
+    await run(() => invalidateCacheTables([TABLE.GROUPS, TABLE.GROUP_SCOPES, TABLE.USER_GROUPS]));
+
+    const cached = [await readScopes(), await readMembers()];
+
+    await testDb.readRows(DELETE_GROUP_SQL, { id: groupId });
+
+    const stale = [await readScopes(), await readMembers()];
+
+    await run(() => invalidateCacheTables([TABLE.GROUPS]));
+
+    assert.deepEqual(cached, [[{ scope: SCOPE.GROUPS_READ }], [{ user_id: userId, granted_by: null }]]);
+    assert.deepEqual(stale, cached);
+    assert.deepEqual([await readScopes(), await readMembers()], [[], []]);
+  });
+
+  test('after a user is deleted by hand, invalidateCacheTables([users]) leaves no cached read of user_groups or audit_logs that still names the user in a column the delete set to NULL', async () => {
+    const { run } = await openMigrated();
+    const [memberId, granterId, groupId, auditId] = [uuidv7(), uuidv7(), uuidv7(), uuidv7()];
+    const readMembers = cacheRows(run, TABLE.USER_GROUPS, MEMBERS_SQL, { groupId });
+    const readActor = cacheRows(run, TABLE.AUDIT_LOGS, ACTOR_SQL, { id: auditId });
+
+    await testDb.readRows(INSERT_USER_SQL, { id: memberId });
+    await testDb.readRows(INSERT_USER_SQL, { id: granterId });
+    await testDb.readRows(INSERT_GROUP_SQL, { id: groupId, slug: nextName('set_null'), name: 'Writers' });
+    await testDb.readRows(INSERT_MEMBER_SQL, { userId: memberId, groupId, grantedBy: granterId });
+    await testDb.readRows(INSERT_AUDIT_SQL, { id: auditId, actorId: granterId, action: AUDIT_ACTION.USER_GROUP_GRANT });
+    await run(() => invalidateCacheTables([TABLE.USERS, TABLE.USER_GROUPS, TABLE.AUDIT_LOGS]));
+
+    const cached = [await readMembers(), await readActor()];
+
+    await testDb.readRows(DELETE_USER_SQL, { id: granterId });
+
+    const stale = [await readMembers(), await readActor()];
+
+    await run(() => invalidateCacheTables([TABLE.USERS]));
+
+    assert.deepEqual(cached, [[{ user_id: memberId, granted_by: granterId }], [{ actor_id: granterId }]]);
+    assert.deepEqual(stale, cached);
+    assert.deepEqual([await readMembers(), await readActor()], [[{ user_id: memberId, granted_by: null }], [{ actor_id: null }]]);
   });
 });

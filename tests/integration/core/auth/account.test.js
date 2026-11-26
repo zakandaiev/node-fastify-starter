@@ -1,4 +1,6 @@
 import { linkProvider, signInWithEmail, signInWithProvider } from '#core/auth/account.js';
+import { invalidateCacheTables } from '#core/cache/index.js';
+import { createQuery } from '#core/db/query.js';
 import { AppError } from '#core/error/index.js';
 import { AUDIT_ACTION } from '#enums/audit-action.js';
 import { ERROR_CODE } from '#enums/error-code.js';
@@ -48,6 +50,10 @@ const ADMIN = Object.freeze({
   DEV: 'dev@admin.test',
   AWAY: 'away@admin.test',
   UNVERIFIED: 'unverified@admin.test',
+  MEMBER: 'member@admin.test',
+  BESIDE: 'beside@admin.test',
+  TWICE: 'twice@admin.test',
+  CACHED: 'cached@admin.test',
 });
 const ADMIN_ENV = Object.freeze({ APP_ADMIN_EMAILS: Object.values(ADMIN).join(', ') });
 
@@ -93,7 +99,10 @@ const INSERT_IDENTITY_SQL = 'INSERT INTO user_identities (user_id, provider, pro
 const SESSIONS_SQL = 'SELECT is_dev FROM sessions WHERE user_id = :userId';
 const AUDIT_SQL = 'SELECT actor_id, action, entity_type, entity_id, meta, ip, request_id FROM audit_logs WHERE entity_id = :userId ORDER BY created_at, id';
 const MEMBERSHIPS_SQL = 'SELECT g.slug, ug.granted_by FROM user_groups ug JOIN groups g ON g.id = ug.group_id WHERE ug.user_id = :userId';
+const INSERT_MEMBERSHIP_SQL = 'INSERT INTO user_groups (user_id, group_id, granted_by) VALUES (:userId, :groupId, :grantedBy)';
+const MEMBER_IDS_SQL = 'SELECT user_id FROM user_groups WHERE group_id = :groupId ORDER BY user_id';
 const RENAME_GROUP_SQL = 'UPDATE groups SET slug = :to WHERE slug = :from';
+const SLUG_SQL = 'SELECT id FROM groups WHERE slug = :slug';
 
 const COUNT_SQL = `
   SELECT
@@ -119,6 +128,7 @@ const TABLE_WAITS_SQL = `
 
 const sink = createLogSink();
 let fastify = null;
+let adminGroupId = null;
 
 function refusalOf(code, statusCode) {
   function isRefusal(error) {
@@ -303,7 +313,7 @@ function grantRecordOf(userId) {
     action: AUDIT_ACTION.USER_GROUP_GRANT,
     entity_type: TABLE.USERS,
     entity_id: userId,
-    meta: { group: GROUP_SLUG.ADMIN },
+    meta: { group: GROUP_SLUG.ADMIN, groupId: adminGroupId },
     ip: REQUEST.ip,
     request_id: REQUEST.id,
   };
@@ -325,6 +335,13 @@ async function assertAdmin(userId, issuedList = []) {
 async function assertNoAdmin(userId) {
   assert.deepEqual(await readMemberships(userId), []);
   assert.deepEqual(await readGrants(userId), []);
+}
+
+// Outside a transaction, as a read of the API runs: served from the cache while the version of user_groups stays.
+async function readCachedAdminIds() {
+  const query = await runInApp(fastify, () => createQuery(MEMBER_IDS_SQL, { groupId: adminGroupId }).cache({ tables: [TABLE.USER_GROUPS] }).execute());
+
+  return query.fetchAll().map((row) => row.userId);
 }
 
 async function settle(promise) {
@@ -370,6 +387,7 @@ describe('accounts', { skip: testRedis.skip || testDb.skip }, () => {
     await up();
     await up({ type: MIGRATION_TYPE.SEED });
 
+    [{ id: adminGroupId }] = await readRows(SLUG_SQL, { slug: GROUP_SLUG.ADMIN });
     fastify = await testDb.buildApp({ env: ADMIN_ENV, db: SMALL_POOL, logger: { level: 'warn', stream: sink.stream } });
     await connectAppRedis(fastify);
   });
@@ -640,6 +658,50 @@ describe('accounts', { skip: testRedis.skip || testDb.skip }, () => {
       await assertAdmin(first.userId, [first, second]);
     });
 
+    test('grants nothing again to a listed user who is in the admin group already: no second row, no record, the granted_by of the row it has, and a token of full access', async () => {
+      const granterId = await insertUser();
+      const userId = await insertUser({ email: ADMIN.MEMBER, isVerified: true });
+
+      await readRows(INSERT_MEMBERSHIP_SQL, { userId, groupId: adminGroupId, grantedBy: granterId });
+
+      const counted = await countRows();
+      const issued = await signInByEmail(ADMIN.MEMBER);
+
+      assert.deepEqual(countAdded(counted, await countRows()), addedOf({ sessions: 1 }));
+      assert.deepEqual(await readMemberships(userId), [{ slug: GROUP_SLUG.ADMIN, granted_by: granterId }]);
+      assert.deepEqual(await readGrants(userId), []);
+      assert.deepEqual([issued.userId, issued.scopes, readClaims(issued.accessToken).scopes], [userId, [SCOPE_ALL], [SCOPE_ALL]]);
+    });
+
+    test('grants it to a listed user while another user is a member of the group: the row of someone else is no row of this user', async () => {
+      const otherId = await insertUser();
+
+      await readRows(INSERT_MEMBERSHIP_SQL, { userId: otherId, groupId: adminGroupId, grantedBy: null });
+
+      const issued = await signInBy(GOOGLE, verifiedProfileOf(ADMIN.BESIDE));
+
+      await assertAdmin(issued.userId, [issued]);
+    });
+
+    // A read of a table whose version is not there yet caches nothing: the bump starts the version first. The row behind
+    // the back is written by a statement that moves no version, and the cached read does not learn of it.
+    test('moves the version of user_groups with the grant: a cached read of the members of the admin group, which a write behind its back does not reach, shows the new admin at once', async () => {
+      const behindId = await insertUser();
+
+      await runInApp(fastify, () => invalidateCacheTables([TABLE.USER_GROUPS]));
+
+      const cached = await readCachedAdminIds();
+
+      await readRows(INSERT_MEMBERSHIP_SQL, { userId: behindId, groupId: adminGroupId, grantedBy: null });
+
+      const stale = await readCachedAdminIds();
+      const issued = await signInBy(GOOGLE, verifiedProfileOf(ADMIN.CACHED));
+
+      assert.deepEqual(stale, cached);
+      assert.deepEqual(await readCachedAdminIds(), [...cached, behindId, issued.userId].toSorted());
+      await assertAdmin(issued.userId, [issued]);
+    });
+
     test('grants nothing for an email of the list the provider has not verified', async () => {
       const issued = await signInBy(GOOGLE, profileOf({ email: ADMIN.UNVERIFIED }));
 
@@ -773,6 +835,14 @@ describe('accounts', { skip: testRedis.skip || testDb.skip }, () => {
       assert.deepEqual(readUserIds(outcomes), [owner.id]);
       assert.deepEqual((await readIdentitiesOf(owner.id)).map((identity) => identity.provider).toSorted(), [GOOGLE, TELEGRAM]);
       assert.equal((await readAudits(owner.id)).filter((record) => record.meta.reason === IDENTITY_LINK_REASON.EMAIL).length, 1);
+    });
+
+    test('two sign-ins of one listed user at once grant the admin group once: one row, one record, and full access for both', async (t) => {
+      const userId = await insertUser({ email: ADMIN.TWICE, isVerified: true });
+      const outcomes = await runSideBySide(t, TABLE.USERS, [() => signInByEmail(ADMIN.TWICE), () => signInByEmail(ADMIN.TWICE)]);
+
+      assert.deepEqual(readStatuses(outcomes), [FULFILLED, FULFILLED]);
+      await assertAdmin(userId, outcomes.map((outcome) => outcome.value));
     });
 
     test('two links of one account of a provider to two users: one is linked, the other gets IDENTITY_TAKEN', async (t) => {

@@ -1,3 +1,4 @@
+import { readGroupGrants } from '#core/authz/match.js';
 import { createQuery } from '#core/db/query.js';
 import { SCOPE_ALL } from '#enums/scope.js';
 import { unique } from '#utils/array.js';
@@ -16,9 +17,14 @@ export async function readUserScopes(userId) {
 
   await query.execute();
 
-  const grants = query.fetchAll();
+  const grants = query.fetchAll().flatMap((row) => readGroupGrants({
+    isSuperadmin: row.isSuperadmin,
+    scopes: row.scope === null
+      ? []
+      : [row.scope],
+  }));
 
-  return grants.some((grant) => grant.isSuperadmin)
+  return grants.includes(SCOPE_ALL)
     ? [SCOPE_ALL]
-    : unique(grants.map((grant) => grant.scope).filter((scope) => scope !== null)).toSorted();
+    : unique(grants).toSorted();
 }

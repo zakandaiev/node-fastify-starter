@@ -1,3 +1,4 @@
+import { assertScopeRequirement } from '#core/authz/match.js';
 import { AppError } from '#core/error/index.js';
 import { isJsonField, rememberSourceSchema } from '#core/schema/docs.js';
 import { guardRouteSchema } from '#core/schema/finite.js';
@@ -41,8 +42,13 @@ const PREFIX_REGEXP = /^\/[^/]+(?:\/[^/]+)*$/;
 
 const PROPERTY_NAMES_KEYWORD = 'propertyNames';
 
-// Put on requests by the auth plugin alone. A scope opened before that plugin has none, whatever it decorates itself.
+// Put on requests by the auth plugin and by the guard of scopes alone. A scope opened before such a plugin has none,
+// whatever it decorates itself.
 export const AUTH_DECORATOR = Symbol('auth');
+export const SCOPES_DECORATOR = Symbol('scopes');
+
+// A key no guard reads, such as a misspelt "scope", would leave the route to every user who signs in.
+const SECURITY_KEYS = Object.freeze(['auth', 'scopes']);
 
 function isUnderPrefix(url, prefix) {
   return url === prefix || url.startsWith(`${prefix}/`);
@@ -349,10 +355,46 @@ function guardBodyMediaTypes(routeOptions) {
   return true;
 }
 
-// The guard is put on the routes declared after its plugin, in scopes opened after it: any other would be open to anyone.
+function assertScopes(fastify, routeOptions) {
+  const { auth, scopes } = routeOptions.security;
+
+  if (auth !== true) {
+    throw new Error(`${formatRoute(routeOptions)} has security.scopes without auth: true: scopes are those of a signed-in user`);
+  }
+
+  try {
+    assertScopeRequirement(scopes, 'security.scopes');
+  } catch (error) {
+    throw new Error(`${formatRoute(routeOptions)}: ${error.message}`, { cause: error });
+  }
+
+  if (fastify?.hasRequestDecorator(SCOPES_DECORATOR) === false) {
+    throw new Error(`${formatRoute(routeOptions)} has security.scopes and is out of reach of the guard plugin, which guards what is declared after it, in scopes opened after it`);
+  }
+}
+
+function assertSecurityKeys(routeOptions) {
+  const unknown = Object.keys(routeOptions.security).find((key) => !SECURITY_KEYS.includes(key));
+
+  if (unknown !== undefined) {
+    throw new Error(`${formatRoute(routeOptions)} names security.${unknown}, which no guard reads: security takes ${SECURITY_KEYS.join(' and ')}`);
+  }
+}
+
+// A guard is put on the routes declared after its plugin, in scopes opened after it: any other would be open to anyone.
+// The form is checked for every route that has security, also outside the prefixes: auth: 'true' would let anyone in.
 function assertGuard(fastify, routeOptions) {
+  if (routeOptions.security !== undefined) {
+    assertSecurity(routeOptions);
+    assertSecurityKeys(routeOptions);
+  }
+
   if (routeOptions.security?.auth === true && fastify?.hasRequestDecorator(AUTH_DECORATOR) === false) {
     throw new Error(`${formatRoute(routeOptions)} has security: { auth: true } and is out of reach of the auth plugin, which guards what is declared after it, in scopes opened after it`);
+  }
+
+  if (routeOptions.security?.scopes !== undefined) {
+    assertScopes(fastify, routeOptions);
   }
 }
 

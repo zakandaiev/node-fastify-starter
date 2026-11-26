@@ -2,9 +2,11 @@ import { invalidateCacheTables } from '#core/cache/index.js';
 import { createContext, runInContext } from '#core/context/index.js';
 import { createQuery } from '#core/db/query.js';
 import { withTransaction } from '#core/db/transaction.js';
+import { AUDIT_ACTION } from '#enums/audit-action.js';
 import { DB_ERROR_KIND } from '#enums/db-error-kind.js';
 import { ERROR_CODE } from '#enums/error-code.js';
 import { HTTP_STATUS } from '#enums/http-status.js';
+import { SCOPE } from '#enums/scope.js';
 import { TABLE } from '#enums/table.js';
 import { rejectionOf } from '#root/tests/helper/async.js';
 import { createTestDb } from '#root/tests/helper/db.js';
@@ -24,8 +26,30 @@ const INSERT_GROUP_SQL = 'INSERT INTO groups (slug, name) VALUES (:slug, :name)'
 const RENAME_SQL = 'UPDATE groups SET name = :name WHERE slug = :slug';
 const INSERT_USER_SQL = 'INSERT INTO users (id, first_name) VALUES (:id, :firstName)';
 const INSERT_IDENTITY_SQL = 'INSERT INTO user_identities (user_id, provider, provider_user_id, profile) VALUES (:userId, :provider, :providerUserId, :profile) RETURNING provider_user_id, profile';
+const INSERT_GROUP_ROW_SQL = 'INSERT INTO groups (id, slug, name) VALUES (:id, :slug, :name)';
+const INSERT_SCOPE_SQL = 'INSERT INTO group_scopes (group_id, scope) VALUES (:groupId, :scope)';
+const INSERT_MEMBER_SQL = 'INSERT INTO user_groups (user_id, group_id) VALUES (:userId, :groupId)';
+const INSERT_IDENTITY_ROW_SQL = 'INSERT INTO user_identities (user_id, provider, provider_user_id) VALUES (:userId, :provider, :providerUserId)';
+const INSERT_AUDIT_SQL = 'INSERT INTO audit_logs (id, actor_id, action) VALUES (:id, :actorId, :action)';
+const SCOPES_SQL = 'SELECT scope FROM group_scopes WHERE group_id = :groupId ORDER BY scope';
+const MEMBER_IDS_SQL = 'SELECT user_id FROM user_groups WHERE group_id = :groupId ORDER BY user_id';
+const IDENTITY_IDS_SQL = 'SELECT provider_user_id FROM user_identities WHERE user_id = :userId ORDER BY provider_user_id';
+const AUDIT_IDS_SQL = 'SELECT id FROM audit_logs WHERE actor_id = :userId ORDER BY id';
+const DELETE_GROUP_SQL = 'DELETE FROM groups WHERE id = :groupId';
+const DELETE_USER_SQL = 'DELETE FROM users WHERE id = :userId';
 const BAD_FIELD_CODE = 'ER_BAD_FIELD_ERROR';
 const UNREADABLE_JSON_CODE = 'UNREADABLE_JSON';
+const DUPLICATE_COLUMN_CODE = 'DUPLICATE_COLUMN';
+const PROVIDER = 'test';
+const TABLE_NAMES = Object.freeze(Object.values(TABLE));
+const USERS_REACH = Object.freeze({
+  [TABLE.USERS]: 1,
+  [TABLE.USER_IDENTITIES]: 1,
+  [TABLE.USER_GROUPS]: 1,
+  [TABLE.AUDIT_LOGS]: 1,
+  [TABLE.SESSIONS]: 1,
+});
+const GROUPS_REACH = Object.freeze({ [TABLE.GROUPS]: 1, [TABLE.GROUP_SCOPES]: 1, [TABLE.USER_GROUPS]: 1 });
 
 // The JSON check of the server keeps it and JSON.parse refuses it: the driver fails a statement that has run.
 const UNREADABLE_PROFILE = '[1e]';
@@ -71,6 +95,23 @@ function readVersion(table) {
   return testRedis.admin.get(`${testRedis.keyPrefix}table-version:${table}`);
 }
 
+async function readVersions() {
+  const versions = await Promise.all(TABLE_NAMES.map((table) => readVersion(table)));
+
+  return Object.fromEntries(TABLE_NAMES.map((table, index) => [table, Number(versions[index])]));
+}
+
+// The tables of TABLE whose version fn has moved, each with how far: the others stayed as they were.
+async function listBumped(fn) {
+  const start = await readVersions();
+
+  await fn();
+
+  const end = await readVersions();
+
+  return Object.fromEntries(TABLE_NAMES.map((table) => [table, end[table] - start[table]]).filter(([, count]) => count !== 0));
+}
+
 async function countCacheEntries() {
   const keys = await testRedis.readKeys();
 
@@ -83,6 +124,19 @@ function listGroups(marker, binding = {}) {
 
 function renameGroup(slug, name) {
   return createQuery(RENAME_SQL, { slug, name }).cache({ tables: [TABLE.GROUPS] });
+}
+
+// A group with a scope and a member, written by the pool alone: the cache learns of none of it.
+async function insertGroupWithMember(marker) {
+  const groupId = uuidv7();
+  const userId = uuidv7();
+
+  await testDb.readRows(INSERT_GROUP_ROW_SQL, { id: groupId, slug: `${marker}a`, name: 'A' });
+  await testDb.readRows(INSERT_USER_SQL, { id: userId, firstName: 'Anna' });
+  await testDb.readRows(INSERT_SCOPE_SQL, { groupId, scope: SCOPE.GROUPS_READ });
+  await testDb.readRows(INSERT_MEMBER_SQL, { userId, groupId });
+
+  return { groupId, userId };
 }
 
 describe('createQuery and the cache', { skip: testRedis.skip || testDb.skip }, () => {
@@ -98,11 +152,23 @@ describe('createQuery and the cache', { skip: testRedis.skip || testDb.skip }, (
     return (await execute(query, runIn)).fetchAll().map((row) => row.name);
   }
 
+  async function readCached(table, sql, binding, column) {
+    return (await execute(createQuery(sql, binding).cache({ tables: [table] }))).fetchAll().map((row) => row[column]);
+  }
+
+  function readScopes(groupId) {
+    return readCached(TABLE.GROUP_SCOPES, SCOPES_SQL, { groupId }, 'scope');
+  }
+
+  function readMemberIds(groupId) {
+    return readCached(TABLE.USER_GROUPS, MEMBER_IDS_SQL, { groupId }, 'userId');
+  }
+
   // The versions are there before the first read: a read of a table that has none yet goes to the database uncached.
   before(async () => {
     await up();
     run = openWithDatabase();
-    await run(() => invalidateCacheTables([TABLE.USERS, TABLE.USER_IDENTITIES, TABLE.GROUPS]));
+    await run(() => invalidateCacheTables(TABLE_NAMES));
   });
 
   test('a repeated read comes from the cache, and the read after a write through createQuery does not', async () => {
@@ -182,6 +248,73 @@ describe('createQuery and the cache', { skip: testRedis.skip || testDb.skip }, (
     );
     assert.deepEqual(await testDb.readRows('SELECT provider_user_id FROM user_identities WHERE user_id = :userId', identity), [{ provider_user_id: identity.providerUserId }]);
     assert.deepEqual(await readNames(listGroups(marker)), [group.name]);
+  });
+
+  test('a cached read of group_scopes and one of user_groups are read again after DELETE FROM groups with .cache() of groups: the rows the foreign keys deleted with the group are not served from the cache', async () => {
+    const { groupId, userId } = await insertGroupWithMember(nextMarker('cascade'));
+    const otherId = uuidv7();
+
+    assert.deepEqual([await readScopes(groupId), await readMemberIds(groupId)], [[SCOPE.GROUPS_READ], [userId]]);
+
+    await testDb.readRows(INSERT_USER_SQL, { id: otherId, firstName: 'Borys' });
+    await testDb.readRows(INSERT_SCOPE_SQL, { groupId, scope: SCOPE.GROUPS_MANAGE });
+    await testDb.readRows(INSERT_MEMBER_SQL, { userId: otherId, groupId });
+
+    assert.deepEqual([await readScopes(groupId), await readMemberIds(groupId)], [[SCOPE.GROUPS_READ], [userId]]);
+
+    const bumps = await listBumped(async () => {
+      assert.equal((await execute(createQuery(DELETE_GROUP_SQL, { groupId }).cache({ tables: [TABLE.GROUPS] }))).affectedRows(), 1);
+    });
+
+    assert.deepEqual(bumps, GROUPS_REACH);
+    assert.deepEqual([await readScopes(groupId), await readMemberIds(groupId)], [[], []]);
+  });
+
+  test('a cached read of user_identities and one of audit_logs are read again after DELETE FROM users with .cache() of users: rows the cascade deleted and a column SET NULL cleared are not served from the cache', async () => {
+    const marker = nextMarker('person');
+    const userId = uuidv7();
+    const [firstAudit, secondAudit] = [uuidv7(), uuidv7()];
+
+    function readIdentityIds() {
+      return readCached(TABLE.USER_IDENTITIES, IDENTITY_IDS_SQL, { userId }, 'providerUserId');
+    }
+
+    function readAuditIds() {
+      return readCached(TABLE.AUDIT_LOGS, AUDIT_IDS_SQL, { userId }, 'id');
+    }
+
+    await testDb.readRows(INSERT_USER_SQL, { id: userId, firstName: 'Anna' });
+    await testDb.readRows(INSERT_IDENTITY_ROW_SQL, { userId, provider: PROVIDER, providerUserId: `${marker}a` });
+    await testDb.readRows(INSERT_AUDIT_SQL, { id: firstAudit, actorId: userId, action: AUDIT_ACTION.GROUP_CREATE });
+
+    assert.deepEqual([await readIdentityIds(), await readAuditIds()], [[`${marker}a`], [firstAudit]]);
+
+    await testDb.readRows(INSERT_IDENTITY_ROW_SQL, { userId, provider: PROVIDER, providerUserId: `${marker}b` });
+    await testDb.readRows(INSERT_AUDIT_SQL, { id: secondAudit, actorId: userId, action: AUDIT_ACTION.GROUP_UPDATE });
+
+    assert.deepEqual([await readIdentityIds(), await readAuditIds()], [[`${marker}a`], [firstAudit]]);
+
+    const bumps = await listBumped(async () => {
+      assert.equal((await execute(createQuery(DELETE_USER_SQL, { userId }).cache({ tables: [TABLE.USERS] }))).affectedRows(), 1);
+    });
+
+    assert.deepEqual(bumps, USERS_REACH);
+    assert.deepEqual([await readIdentityIds(), await readAuditIds()], [[], []]);
+    assert.deepEqual(await testDb.readRows('SELECT actor_id FROM audit_logs WHERE id IN (:ids)', { ids: [firstAudit, secondAudit] }), [{ actor_id: null }, { actor_id: null }]);
+  });
+
+  test('a DELETE FROM groups through createQuery that the server ran and the driver then failed on bumps the tables the foreign keys reach too: what they deleted is not served from the cache', async () => {
+    const { groupId, userId } = await insertGroupWithMember(nextMarker('executed-cascade'));
+
+    assert.deepEqual([await readScopes(groupId), await readMemberIds(groupId)], [[SCOPE.GROUPS_READ], [userId]]);
+
+    const bumps = await listBumped(() => assert.rejects(
+      run(() => createQuery(`${DELETE_GROUP_SQL} RETURNING id, id`, { groupId }).cache({ tables: [TABLE.GROUPS] }).execute()),
+      (error) => error.code === DUPLICATE_COLUMN_CODE && error.isExecuted === true,
+    ));
+
+    assert.deepEqual(bumps, GROUPS_REACH);
+    assert.deepEqual([await readScopes(groupId), await readMemberIds(groupId)], [[], []]);
   });
 
   test('a read inside a transaction goes past the cache: it sees what the cache does not, and leaves the entry as it was', async () => {

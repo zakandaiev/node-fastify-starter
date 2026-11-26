@@ -1,11 +1,11 @@
 import { PAGINATION } from '#config/pagination.js';
 import { SCHEMA_LIMITS } from '#config/schema.js';
-import { createSchema } from '#core/schema/create-schema.js';
+import { addErrorResponses, createSchema } from '#core/schema/create-schema.js';
 import { ERROR_CATALOG, ERROR_CODE } from '#enums/error-code.js';
 import { FILTER_OPERATOR, FILTER_TYPE } from '#enums/filter-type.js';
 import { HTTP_STATUS } from '#enums/http-status.js';
 import { buildTestApp } from '#root/tests/helper/app.js';
-import { isDeepFrozen } from '#root/tests/helper/object.js';
+import { createHoled, isDeepFrozen } from '#root/tests/helper/object.js';
 import { errorEnvelope, listEnvelope, successEnvelope } from '#schemas/common/envelope.js';
 import {
   dateTimeUtc,
@@ -24,9 +24,76 @@ import { UUID_LENGTH } from '#utils/id.js';
 import { freezeDeep, omit, pick } from '#utils/object.js';
 import { EMAIL_MAX_LENGTH } from '#utils/validate.js';
 import assert from 'node:assert/strict';
+import { STATUS_CODES } from 'node:http';
 import { describe, test } from 'node:test';
+import { inspect } from 'node:util';
 
 const PUBLIC = Object.freeze({ auth: false });
+
+// A path no route of src/routes takes: the same path there would fail these tests on a duplicate route.
+const PROBE_URL = '/api/v1/schema-probe';
+const USERS_URL = `${PROBE_URL}/users`;
+const GROUPS_URL = `${PROBE_URL}/groups`;
+const ITEMS_URL = `${PROBE_URL}/items`;
+
+const CONFLICT_DESCRIPTION = 'Conflict: NO_CHANGES, CONTACT_TAKEN, IDENTITY_TAKEN, GROUP_PROTECTED';
+const ERROR_STATUSES = Object.freeze([...new Set(Object.values(ERROR_CATALOG).map((entry) => entry.statusCode))]);
+
+const RESPONSE_SIGNATURE = 'createSchema(...sources).response(409)';
+const CONFLICT_CODES_REFUSAL = 'takes "codes" as distinct codes of src/enums/error-code.js that answer with this status: NO_CHANGES, CONTACT_TAKEN, IDENTITY_TAKEN, GROUP_PROTECTED';
+const PROTECTED_DESCRIPTION = 'Conflict: GROUP_PROTECTED, NO_CHANGES';
+const NO_CODE_REFUSAL = 'no code of src/enums/error-code.js answers with this status';
+
+const ADD_SIGNATURE = 'addErrorResponses(response, statusCodes)';
+const ADD_REFUSAL = `${ADD_SIGNATURE} requires the response map of a route and a list of HTTP statuses`;
+
+const UNAUTHORIZED_DESCRIPTION = 'Unauthorized: AUTHENTICATION_ERROR, SESSION_REVOKED';
+
+const DEFAULT_ERROR_STATUSES = Object.freeze([400, 401, 403, 404, 413, 415, 422, 429, 500, 503]);
+
+const NOT_CONFLICT_CODES = Object.freeze([
+  [ERROR_CODE.AUTHORIZATION_ERROR],
+  [ERROR_CODE.GROUP_PROTECTED, ERROR_CODE.NOT_FOUND_ERROR],
+  ['GROUP_LOCKED'],
+  ['group_protected'],
+  [ERROR_CATALOG.GROUP_PROTECTED],
+  [],
+  ERROR_CODE.GROUP_PROTECTED,
+  { 0: ERROR_CODE.GROUP_PROTECTED, length: 1 },
+  new Set([ERROR_CODE.GROUP_PROTECTED]),
+  [null],
+  [undefined],
+  [ERROR_CODE.GROUP_PROTECTED, undefined],
+  1,
+]);
+
+const REPEATED_CODES = Object.freeze([
+  [ERROR_CODE.GROUP_PROTECTED, ERROR_CODE.GROUP_PROTECTED],
+  [ERROR_CODE.NO_CHANGES, ERROR_CODE.GROUP_PROTECTED, ERROR_CODE.NO_CHANGES],
+  [ERROR_CODE.NO_CHANGES, ERROR_CODE.CONTACT_TAKEN, ERROR_CODE.IDENTITY_TAKEN, ERROR_CODE.GROUP_PROTECTED, ERROR_CODE.CONTACT_TAKEN],
+]);
+
+const NOT_OPTIONS = Object.freeze(['Refused', null, [], [ERROR_CODE.GROUP_PROTECTED], 1, true]);
+
+const NOT_RESPONSE_MAPS = Object.freeze([undefined, null, [], [{}], 'response', 401, true, new Map([[401, errorEnvelope]])]);
+
+const NOT_STATUS_LISTS = Object.freeze([
+  undefined,
+  null,
+  [],
+  HTTP_STATUS.UNAUTHORIZED,
+  '401',
+  ['401'],
+  [401.5],
+  [NaN],
+  [Infinity],
+  [HTTP_STATUS.UNAUTHORIZED, null],
+  [HTTP_STATUS.UNAUTHORIZED, undefined],
+  [Object(HTTP_STATUS.UNAUTHORIZED)],
+  new Set([HTTP_STATUS.UNAUTHORIZED]),
+  { 0: HTTP_STATUS.UNAUTHORIZED, length: 1 },
+  HTTP_STATUS,
+]);
 
 const USER_ID = userSchema.example.id;
 const OTHER_ID = '019a1b2c-3d4e-7f50-8a6b-7c8d9e0f1a2d';
@@ -112,6 +179,15 @@ function assertRefused(run, reason, name) {
   assert.throws(run, { name: 'TypeError', message: reason }, name);
 }
 
+function listStatusCodes(statusCode) {
+  return Object.keys(ERROR_CATALOG).filter((code) => ERROR_CATALOG[code].statusCode === statusCode);
+}
+
+function createErrorExample(code) {
+  return { status: 'error', code, message: ERROR_CATALOG[code].message };
+}
+
+// No literal holds a hole: the linter refuses a sparse array.
 // AJV compiles a pattern with the "u" flag.
 function toRegExp(schema) {
   return new RegExp(schema.pattern, 'u');
@@ -800,7 +876,7 @@ describe('createSchema: response', () => {
       description: 'Unauthorized: AUTHENTICATION_ERROR, SESSION_REVOKED',
       examples: [{ status: 'error', code: ERROR_CODE.AUTHENTICATION_ERROR, message: ERROR_CATALOG.AUTHENTICATION_ERROR.message }],
     });
-    assert.equal(readErrorResponse(HTTP_STATUS.CONFLICT).description, 'Conflict: NO_CHANGES, CONTACT_TAKEN, IDENTITY_TAKEN');
+    assert.equal(readErrorResponse(HTTP_STATUS.CONFLICT).description, CONFLICT_DESCRIPTION);
     assert.equal(readErrorResponse(HTTP_STATUS.BAD_GATEWAY).description, 'Bad Gateway: UPSTREAM_ERROR');
     assert.equal(readErrorResponse(HTTP_STATUS.NOT_FOUND, { description: 'No such user' }).description, 'No such user');
   });
@@ -819,9 +895,120 @@ describe('createSchema: response', () => {
     assertRefused(() => createSchema(userSchema).response(HTTP_STATUS.UNPROCESSABLE_ENTITY, { format: 'object' }), /\.response\(422\) is an error/);
   });
 
-  test('refuses an error status that no code of the catalog answers with', () => {
+  test('describes an error status by the codes a route names of it, in the order given, with an example of the first one', () => {
+    assert.deepEqual(readErrorResponse(HTTP_STATUS.CONFLICT, { codes: [ERROR_CODE.GROUP_PROTECTED] }), {
+      ...errorEnvelope,
+      description: 'Conflict: GROUP_PROTECTED',
+      examples: [createErrorExample(ERROR_CODE.GROUP_PROTECTED)],
+    });
+    assert.deepEqual(readErrorResponse(HTTP_STATUS.CONFLICT, { codes: [ERROR_CODE.GROUP_PROTECTED, ERROR_CODE.NO_CHANGES] }), {
+      ...errorEnvelope,
+      description: PROTECTED_DESCRIPTION,
+      examples: [createErrorExample(ERROR_CODE.GROUP_PROTECTED)],
+    });
+    assert.deepEqual(readErrorResponse(HTTP_STATUS.UNAUTHORIZED, { codes: [ERROR_CODE.SESSION_REVOKED] }).examples, [createErrorExample(ERROR_CODE.SESSION_REVOKED)]);
+  });
+
+  test('takes a description of its own next to the codes and keeps the example of the first one', () => {
+    const response = readErrorResponse(HTTP_STATUS.CONFLICT, { description: 'A group of the system', codes: [ERROR_CODE.GROUP_PROTECTED] });
+
+    assert.equal(response.description, 'A group of the system');
+    assert.deepEqual(response.examples, [createErrorExample(ERROR_CODE.GROUP_PROTECTED)]);
+  });
+
+  test('describes a status alike when a route names every code of it in the order of the catalog and when it names none, 422 with its entry of validation', () => {
+    ERROR_STATUSES.forEach((statusCode) => {
+      const described = readErrorResponse(statusCode);
+
+      [{ codes: listStatusCodes(statusCode) }, { codes: undefined }, {}].forEach((options) => {
+        assert.deepEqual(readErrorResponse(statusCode, options), described, `${statusCode} ${inspect(options)}`);
+      });
+    });
+  });
+
+  test('describes each error status of the catalog by the codes given in their order, with the error envelope and an example of the first one, also next to a description of its own', () => {
+    ERROR_STATUSES.forEach((statusCode) => {
+      const codes = listStatusCodes(statusCode).toReversed();
+      const response = readErrorResponse(statusCode, { codes });
+
+      assert.deepEqual(omit(response, ['description', 'examples']), errorEnvelope, String(statusCode));
+      assert.equal(response.description, `${STATUS_CODES[statusCode]}: ${codes.join(', ')}`, String(statusCode));
+      assert.deepEqual(omit(response.examples[0], ['validation']), createErrorExample(codes[0]), String(statusCode));
+      assert.deepEqual(readErrorResponse(statusCode, { codes, description: 'Refused' }), { ...response, description: 'Refused' }, String(statusCode));
+    });
+  });
+
+  test('refuses codes of another status, an unknown code, an empty list and what is not a list of codes, naming the status and the codes it takes', () => {
+    NOT_CONFLICT_CODES.forEach((codes) => {
+      assertRefused(() => createSchema(userSchema).response(HTTP_STATUS.CONFLICT, { codes }), `${RESPONSE_SIGNATURE} ${CONFLICT_CODES_REFUSAL}`, inspect(codes));
+    });
+    assertRefused(
+      () => createSchema(userSchema).response(HTTP_STATUS.FORBIDDEN, { codes: [ERROR_CODE.GROUP_PROTECTED] }),
+      'createSchema(...sources).response(403) takes "codes" as distinct codes of src/enums/error-code.js that answer with this status: AUTHORIZATION_ERROR, ORIGIN_ERROR',
+    );
+  });
+
+  test('refuses a code given twice, every code of the status given and one of them again among them, naming the status and the codes it takes', () => {
+    REPEATED_CODES.forEach((codes) => {
+      assertRefused(() => createSchema(userSchema).response(HTTP_STATUS.CONFLICT, { codes }), `${RESPONSE_SIGNATURE} ${CONFLICT_CODES_REFUSAL}`, inspect(codes));
+    });
+  });
+
+  // every() skips a hole: the description would name an empty code, or the example none.
+  test('refuses a hole among the codes as it refuses undefined there', () => {
+    [new Array(1), createHoled(2, { 0: ERROR_CODE.GROUP_PROTECTED }), createHoled(2, { 1: ERROR_CODE.GROUP_PROTECTED })].forEach((codes) => {
+      assertRefused(() => createSchema(userSchema).response(HTTP_STATUS.CONFLICT, { codes }), `${RESPONSE_SIGNATURE} ${CONFLICT_CODES_REFUSAL}`, inspect(codes));
+    });
+  });
+
+  // undefined alone is no list given, as for "data" and "required": null is a value, and not a list.
+  test('refuses codes: null as it refuses data: null, and does not read it as every code of the status', () => {
+    assertRefused(() => createSchema(userSchema).response(HTTP_STATUS.CONFLICT, { codes: null }), `${RESPONSE_SIGNATURE} ${CONFLICT_CODES_REFUSAL}`);
+    assertRefused(
+      () => createSchema(userSchema).response(HTTP_STATUS.UNAUTHORIZED, { description: 'Sign in first', codes: null }),
+      'createSchema(...sources).response(401) takes "codes" as distinct codes of src/enums/error-code.js that answer with this status: AUTHENTICATION_ERROR, SESSION_REVOKED',
+    );
+  });
+
+  test('refuses codes on a success, on 204 and on a redirect, an empty list and null among them: only an error answers with a code', () => {
+    [HTTP_STATUS.OK, HTTP_STATUS.CREATED, HTTP_STATUS.NO_CONTENT, HTTP_STATUS.FOUND, HTTP_STATUS.PERMANENT_REDIRECT].forEach((statusCode) => {
+      [[ERROR_CODE.NOT_FOUND_ERROR], [], null].forEach((codes) => {
+        assertRefused(
+          () => createSchema(userSchema).response(statusCode, { codes }),
+          `createSchema(...sources).response(${statusCode}) is no error: it takes no "codes"`,
+          `${statusCode} ${inspect(codes)}`,
+        );
+      });
+    });
+    assertRefused(() => createSchema(userSchema).response(HTTP_STATUS.OK, { data: ['id'], codes: [ERROR_CODE.NOT_FOUND_ERROR] }), /\.response\(200\) is no error: it takes no "codes"$/);
+    assertRefused(() => createSchema(userSchema).response(HTTP_STATUS.CREATED, { data: ['id'], format: 'array', codes: [] }), /\.response\(201\) is no error: it takes no "codes"$/);
+  });
+
+  test('takes codes: undefined on a success, on 204 and on a redirect as no codes given', () => {
+    assert.deepEqual(
+      readResponse(HTTP_STATUS.OK, { data: ['id'], codes: undefined }, userSchema),
+      readResponse(HTTP_STATUS.OK, { data: ['id'] }, userSchema),
+    );
+    [HTTP_STATUS.NO_CONTENT, HTTP_STATUS.FOUND].forEach((statusCode) => {
+      assert.deepEqual(readResponse(statusCode, { codes: undefined }, userSchema), readResponse(statusCode, undefined, userSchema), String(statusCode));
+    });
+  });
+
+  test('refuses options of an error status that are not an object, a description or a list of codes given in their place among them', () => {
+    NOT_OPTIONS.forEach((options) => {
+      assertRefused(() => createSchema(userSchema).response(HTTP_STATUS.CONFLICT, options), /\.response\(code, options\) requires options to be an object$/, inspect(options));
+    });
+  });
+
+  test('refuses an error status that no code of the catalog answers with, codes given or not', () => {
     [405, 408, 418, 501, 504].forEach((statusCode) => {
-      assertRefused(() => createSchema(userSchema).response(statusCode), /no code of src\/enums\/error-code\.js answers with this status/, String(statusCode));
+      [undefined, { codes: [ERROR_CODE.NOT_FOUND_ERROR] }].forEach((options) => {
+        assertRefused(
+          () => createSchema(userSchema).response(statusCode, options),
+          `createSchema(...sources).response(${statusCode}): ${NO_CODE_REFUSAL}`,
+          `${statusCode} ${inspect(options)}`,
+        );
+      });
     });
   });
 
@@ -841,6 +1028,105 @@ describe('createSchema: response', () => {
       assertRefused(() => createSchema(userSchema).response(HTTP_STATUS.OK, { data }), /\.response\(code, \{ data \}\) requires "data" to be a list of field names/, String(index));
     });
     assertRefused(() => createSchema(userSchema).response(HTTP_STATUS.OK, { data: ['id', 'passwordHash'] }), /names a field that is not there: "passwordHash"/);
+  });
+});
+
+describe('addErrorResponses', () => {
+  test('adds each status the map lacks with the error envelope, every code of the catalog that answers with it in their order and an example of the first one', () => {
+    assert.deepEqual(addErrorResponses({}, [HTTP_STATUS.UNAUTHORIZED, HTTP_STATUS.CONFLICT]), {
+      401: {
+        ...errorEnvelope,
+        description: UNAUTHORIZED_DESCRIPTION,
+        examples: [createErrorExample(ERROR_CODE.AUTHENTICATION_ERROR)],
+      },
+      409: {
+        ...errorEnvelope,
+        description: CONFLICT_DESCRIPTION,
+        examples: [createErrorExample(ERROR_CODE.NO_CHANGES)],
+      },
+    });
+  });
+
+  test('adds each error status of the catalog as .response() declares it without codes, an entry of validation in the example of 422 alone', () => {
+    const added = addErrorResponses({}, ERROR_STATUSES);
+
+    assert.deepEqual(Object.keys(added), ERROR_STATUSES.toSorted((left, right) => left - right).map(String));
+    ERROR_STATUSES.forEach((statusCode) => {
+      assert.deepEqual(added[statusCode], readErrorResponse(statusCode), String(statusCode));
+    });
+    assert.deepEqual(ERROR_STATUSES.filter((statusCode) => Object.hasOwn(added[statusCode].examples[0], 'validation')), [HTTP_STATUS.UNPROCESSABLE_ENTITY]);
+  });
+
+  test('keeps each status the map has as it is, the same object, and the statuses it is not asked for too', () => {
+    const own = { ...errorEnvelope, description: 'Sign in first' };
+    const success = successEnvelope({ type: 'object', properties: { id: userSchema.properties.id } });
+    const conflict = { type: 'null' };
+    const added = addErrorResponses({ 200: success, 401: own, 409: conflict }, [HTTP_STATUS.UNAUTHORIZED, HTTP_STATUS.FORBIDDEN]);
+
+    assert.deepEqual(Object.keys(added), ['200', '401', '403', '409']);
+    assert.equal(added[HTTP_STATUS.OK], success);
+    assert.equal(added[HTTP_STATUS.UNAUTHORIZED], own);
+    assert.equal(added[HTTP_STATUS.CONFLICT], conflict);
+    assert.deepEqual(added[HTTP_STATUS.FORBIDDEN], readErrorResponse(HTTP_STATUS.FORBIDDEN));
+  });
+
+  test('gives a new map and leaves the one it is given as it was, a frozen one too', () => {
+    const response = {
+      200: successEnvelope({ type: 'object', properties: { id: userSchema.properties.id } }),
+      404: { ...errorEnvelope, description: 'No such user' },
+    };
+    const snapshot = structuredClone(response);
+    const frozen = freezeDeep(structuredClone(response));
+    const complete = addErrorResponses(response, [HTTP_STATUS.NOT_FOUND]);
+
+    assert.notEqual(complete, response);
+    assert.deepEqual(complete, response);
+    assert.deepEqual(Object.keys(addErrorResponses(response, [HTTP_STATUS.NOT_FOUND, HTTP_STATUS.CONFLICT])), ['200', '404', '409']);
+    assert.deepEqual(Object.keys(addErrorResponses(frozen, [HTTP_STATUS.UNAUTHORIZED])), ['200', '401', '404']);
+    assert.deepEqual(response, snapshot);
+    assert.deepEqual(frozen, snapshot);
+  });
+
+  test('is what .defaultResponses() adds: the statuses any route can answer with, the ones a route declares kept', () => {
+    function declareUser() {
+      return createSchema(userSchema)
+        .response(HTTP_STATUS.OK, { data: ['id'] })
+        .response(HTTP_STATUS.NOT_FOUND, { description: 'No such user' })
+        .response(HTTP_STATUS.CONFLICT, { codes: [ERROR_CODE.CONTACT_TAKEN] });
+    }
+
+    const { response } = declareUser().defaultResponses().build();
+
+    assert.deepEqual(response, addErrorResponses(declareUser().build().response, DEFAULT_ERROR_STATUSES));
+    assert.equal(response[HTTP_STATUS.NOT_FOUND].description, 'No such user');
+  });
+
+  test('refuses a response that is not a map and statuses that are not a non-empty list of integers, naming its signature', () => {
+    class Responses {}
+
+    [...NOT_RESPONSE_MAPS, new Responses()].forEach((response) => {
+      assertRefused(() => addErrorResponses(response, [HTTP_STATUS.UNAUTHORIZED]), ADD_REFUSAL, inspect(response));
+    });
+    NOT_STATUS_LISTS.forEach((statusCodes) => {
+      assertRefused(() => addErrorResponses({}, statusCodes), ADD_REFUSAL, inspect(statusCodes));
+    });
+  });
+
+  // every() and filter() skip a hole: a list of holes alone would add nothing and refuse nothing.
+  test('refuses statuses with a hole as it refuses undefined there', () => {
+    [new Array(1), new Array(2), createHoled(2, { 0: HTTP_STATUS.UNAUTHORIZED }), createHoled(2, { 1: HTTP_STATUS.FORBIDDEN })].forEach((statusCodes) => {
+      assertRefused(() => addErrorResponses({}, statusCodes), ADD_REFUSAL, inspect(statusCodes));
+    });
+  });
+
+  test('refuses a status it has to add that no code of the catalog answers with, naming its signature and the status: a success, a redirect, an error of no code', () => {
+    [HTTP_STATUS.OK, HTTP_STATUS.NO_CONTENT, HTTP_STATUS.FOUND, 405, 418, 504, 600].forEach((statusCode) => {
+      assertRefused(
+        () => addErrorResponses({}, [HTTP_STATUS.UNAUTHORIZED, statusCode]),
+        `${ADD_SIGNATURE} for ${statusCode}: ${NO_CODE_REFUSAL}`,
+        String(statusCode),
+      );
+    });
   });
 });
 
@@ -864,7 +1150,7 @@ describe('createSchema: defaultResponses, meta and build', () => {
       .build();
 
     assert.equal(response[HTTP_STATUS.NOT_FOUND].description, 'No such user');
-    assert.equal(response[HTTP_STATUS.CONFLICT].description, 'Conflict: NO_CHANGES, CONTACT_TAKEN, IDENTITY_TAKEN');
+    assert.equal(response[HTTP_STATUS.CONFLICT].description, CONFLICT_DESCRIPTION);
   });
 
   test('defaultResponses() keeps a status declared after it: the steps of the chain come in any order', () => {
@@ -992,10 +1278,10 @@ describe('createSchema in a route of the app', () => {
   test('lets out of reply.ok() and reply.list() only the fields that .response() names', async (t) => {
     const fastify = await createApp(t);
 
-    fastify.get('/api/v1/users', { schema: LIST_USERS_SCHEMA, security: PUBLIC }, (request, reply) => reply.list({ data: [USER_ROW, USER_ROW] }));
-    fastify.get('/api/v1/users/:id', { schema: GET_USER_SCHEMA, security: PUBLIC }, (request, reply) => reply.ok(USER_ROW));
+    fastify.get(USERS_URL, { schema: LIST_USERS_SCHEMA, security: PUBLIC }, (request, reply) => reply.list({ data: [USER_ROW, USER_ROW] }));
+    fastify.get(`${USERS_URL}/:id`, { schema: GET_USER_SCHEMA, security: PUBLIC }, (request, reply) => reply.ok(USER_ROW));
 
-    const [list, one] = await Promise.all(['/api/v1/users', `/api/v1/users/${USER_ID}`].map((url) => fastify.inject(url)));
+    const [list, one] = await Promise.all([USERS_URL, `${USERS_URL}/${USER_ID}`].map((url) => fastify.inject(url)));
 
     assert.equal(list.statusCode, 200);
     assert.deepEqual(list.json().data, [pick(USER_ROW, LIST_FIELDS), pick(USER_ROW, LIST_FIELDS)]);
@@ -1008,15 +1294,15 @@ describe('createSchema in a route of the app', () => {
     const fastify = await createApp(t);
     const queries = [];
 
-    fastify.get('/api/v1/users', { schema: LIST_USERS_SCHEMA, security: PUBLIC }, (request, reply) => {
+    fastify.get(USERS_URL, { schema: LIST_USERS_SCHEMA, security: PUBLIC }, (request, reply) => {
       queries.push({ ...request.query });
 
       return reply.list({ data: [] });
     });
 
     const statuses = ['evil', 'active,evil', 'ACTIVE', 'active,'];
-    const accepted = await fastify.inject('/api/v1/users?status=active,blocked');
-    const refused = await Promise.all(statuses.map((status) => fastify.inject(`/api/v1/users?status=${status}`)));
+    const accepted = await fastify.inject(`${USERS_URL}?status=active,blocked`);
+    const refused = await Promise.all(statuses.map((status) => fastify.inject(`${USERS_URL}?status=${status}`)));
 
     assert.equal(accepted.statusCode, 200);
     assert.deepEqual(queries, [{
@@ -1037,9 +1323,9 @@ describe('createSchema in a route of the app', () => {
   test('answers a list of options longer than each option once with an entry of maxLength alone', async (t) => {
     const fastify = await createApp(t);
 
-    fastify.get('/api/v1/users', { schema: LIST_USERS_SCHEMA, security: PUBLIC }, (request, reply) => reply.list({ data: [] }));
+    fastify.get(USERS_URL, { schema: LIST_USERS_SCHEMA, security: PUBLIC }, (request, reply) => reply.list({ data: [] }));
 
-    const response = await fastify.inject('/api/v1/users?status=active,blocked,active');
+    const response = await fastify.inject(`${USERS_URL}?status=active,blocked,active`);
 
     assert.equal(response.statusCode, 422);
     assert.deepEqual(response.json().validation, [createEntry('status', 'active,blocked,active', 'maxLength', STATUS_LIST_MAX_LENGTH)]);
@@ -1049,18 +1335,18 @@ describe('createSchema in a route of the app', () => {
     const fastify = await createApp(t);
     const queries = [];
 
-    fastify.get('/api/v1/users', { schema: LIST_USERS_SCHEMA, security: PUBLIC }, (request, reply) => {
+    fastify.get(USERS_URL, { schema: LIST_USERS_SCHEMA, security: PUBLIC }, (request, reply) => {
       queries.push({ ...request.query });
 
       return reply.list({ data: [] });
     });
 
     const accepted = await fastify.inject({
-      url: '/api/v1/users',
+      url: USERS_URL,
       query: { createdAtFrom: '2026-11-01T00:00:00Z', createdAtTo: '2026-11-20T10:00:00.000+00:00', createdAt: '2026-11-01T00:00:00Z' },
     });
     const refused = await fastify.inject({
-      url: '/api/v1/users',
+      url: USERS_URL,
       query: { createdAtFrom: '2026-11-01T00:00:00', createdAtTo: '2026-11-20T12:00:00+02:00' },
     });
 
@@ -1082,10 +1368,10 @@ describe('createSchema in a route of the app', () => {
   test('answers 404 for an id in upper case or without hyphens in the path', async (t) => {
     const fastify = await createApp(t);
 
-    fastify.get('/api/v1/users/:id', { schema: GET_USER_SCHEMA, security: PUBLIC }, (request, reply) => reply.ok(USER_ROW));
+    fastify.get(`${USERS_URL}/:id`, { schema: GET_USER_SCHEMA, security: PUBLIC }, (request, reply) => reply.ok(USER_ROW));
 
     const ids = [USER_ID, USER_ID.toUpperCase(), USER_ID.replaceAll('-', '')];
-    const responses = await Promise.all(ids.map((id) => fastify.inject(`/api/v1/users/${id}`)));
+    const responses = await Promise.all(ids.map((id) => fastify.inject(`${USERS_URL}/${id}`)));
 
     assert.deepEqual(responses.map((response) => response.statusCode), [200, 404, 404]);
     assert.deepEqual(responses.slice(1).map((response) => response.json().code), [ERROR_CODE.NOT_FOUND_ERROR, ERROR_CODE.NOT_FOUND_ERROR]);
@@ -1095,9 +1381,9 @@ describe('createSchema in a route of the app', () => {
     const fastify = await createApp(t);
     const schema = createSchema(userSchema).body(['emailVerifiedAt'], { isPatch: true }).response(HTTP_STATUS.NO_CONTENT).build();
 
-    fastify.patch('/api/v1/users/me', { schema, security: PUBLIC }, (request, reply) => reply.noContent());
+    fastify.patch(`${USERS_URL}/me`, { schema, security: PUBLIC }, (request, reply) => reply.noContent());
 
-    const send = (emailVerifiedAt) => fastify.inject({ method: 'PATCH', url: '/api/v1/users/me', payload: { emailVerifiedAt } });
+    const send = (emailVerifiedAt) => fastify.inject({ method: 'PATCH', url: `${USERS_URL}/me`, payload: { emailVerifiedAt } });
     const refusedValues = ['2026-11-19T10:00:00', '2026-11-19T12:00:00+02:00'];
     const acceptedValues = ['2026-11-19T10:00:00Z', '2026-11-19T10:00:00.000+00:00', null];
     const refused = await Promise.all(refusedValues.map(send));
@@ -1126,10 +1412,10 @@ describe('createSchema in a route of the app', () => {
     const listSchema = createSchema(groupSchema).response(HTTP_STATUS.OK, { data: fields, format: 'array' }).build();
     const itemSchema = createSchema(groupSchema).params(['id']).response(HTTP_STATUS.OK, { data: fields }).build();
 
-    fastify.get('/api/v1/groups', { schema: listSchema, security: PUBLIC }, (request, reply) => reply.list({ data: rows }));
-    fastify.get('/api/v1/groups/:id', { schema: itemSchema, security: PUBLIC }, (request, reply) => reply.ok(rows[0]));
+    fastify.get(GROUPS_URL, { schema: listSchema, security: PUBLIC }, (request, reply) => reply.list({ data: rows }));
+    fastify.get(`${GROUPS_URL}/:id`, { schema: itemSchema, security: PUBLIC }, (request, reply) => reply.ok(rows[0]));
 
-    const [list, one] = await Promise.all(['/api/v1/groups', `/api/v1/groups/${groupSchema.example.id}`].map((url) => fastify.inject(url)));
+    const [list, one] = await Promise.all([GROUPS_URL, `${GROUPS_URL}/${groupSchema.example.id}`].map((url) => fastify.inject(url)));
     const first = {
       ...pick(groupSchema.example, ['id', 'slug']),
       isSuperadmin: true,
@@ -1153,14 +1439,14 @@ describe('createSchema in a route of the app', () => {
       .defaultResponses()
       .build();
 
-    fastify.post('/api/v1/groups', { schema, security: PUBLIC }, (request, reply) => reply.created({ id: groupSchema.example.id, ...request.body }));
+    fastify.post(GROUPS_URL, { schema, security: PUBLIC }, (request, reply) => reply.created({ id: groupSchema.example.id, ...request.body }));
 
     const payloads = [
       { slug: 'admin', name: 42 },
       { slug: 'admin', name: null },
       { slug: 'admin', name: 'Administrators', description: null },
     ];
-    const [number, nullName, nullDescription] = await Promise.all(payloads.map((payload) => fastify.inject({ method: 'POST', url: '/api/v1/groups', payload })));
+    const [number, nullName, nullDescription] = await Promise.all(payloads.map((payload) => fastify.inject({ method: 'POST', url: GROUPS_URL, payload })));
 
     assert.equal(number.statusCode, 422);
     assert.deepEqual(number.json().validation, [createEntry('name', 42, 'type', 'string')]);
@@ -1189,11 +1475,11 @@ describe('createSchema in a route of the app', () => {
       return reply.noContent();
     }
 
-    fastify.post('/api/v1/items', { schema: plainSchema, security: PUBLIC }, readBodyOf);
-    fastify.patch('/api/v1/items', { schema: patchSchema, security: PUBLIC }, readBodyOf);
+    fastify.post(ITEMS_URL, { schema: plainSchema, security: PUBLIC }, readBodyOf);
+    fastify.patch(ITEMS_URL, { schema: patchSchema, security: PUBLIC }, readBodyOf);
 
     const payload = { firstName: 'Anna', passwordHash: 'row-secret', isAdmin: true };
-    const responses = await Promise.all(['POST', 'PATCH'].map((method) => fastify.inject({ method, url: '/api/v1/items', payload })));
+    const responses = await Promise.all(['POST', 'PATCH'].map((method) => fastify.inject({ method, url: ITEMS_URL, payload })));
 
     assert.deepEqual(responses.map((response) => response.statusCode), [204, 204]);
     assert.deepEqual(bodies, {

@@ -9,9 +9,14 @@ import {
 } from '#core/db/index.js';
 import { withTransaction } from '#core/db/transaction.js';
 import { DB_ERROR_KIND } from '#enums/db-error-kind.js';
+import { SCOPE } from '#enums/scope.js';
+import { TABLE } from '#enums/table.js';
 import { rejectionOf } from '#root/tests/helper/async.js';
 import { createTestDb } from '#root/tests/helper/db.js';
+import { bindMigrator } from '#root/tests/helper/migration.js';
 import { createTestRedis, REDIS_DOWN_ENV } from '#root/tests/helper/redis.js';
+import { mapSeries } from '#utils/async.js';
+import { uuidv7 } from '#utils/id.js';
 import assert from 'node:assert/strict';
 import {
   before,
@@ -22,10 +27,23 @@ import {
 
 const testRedis = await createTestRedis();
 const testDb = await createTestDb();
+const { up } = bindMigrator(testDb);
 
 const MEMBERS = 'members';
 const NOTES = 'notes';
 const TABLES = Object.freeze([MEMBERS, NOTES]);
+
+// Names an object finds on Object.prototype: a write to a table of such a name must find no dependents there.
+const PROTOTYPE_NAMES = Object.freeze(['constructor', '__proto__', 'toString']);
+const WATCHED_TABLES = Object.freeze([...Object.values(TABLE), ...TABLES, ...PROTOTYPE_NAMES]);
+const USERS_REACH = Object.freeze({
+  [TABLE.USERS]: 1,
+  [TABLE.USER_IDENTITIES]: 1,
+  [TABLE.USER_GROUPS]: 1,
+  [TABLE.AUDIT_LOGS]: 1,
+  [TABLE.SESSIONS]: 1,
+});
+const GROUPS_REACH = Object.freeze({ [TABLE.GROUPS]: 1, [TABLE.GROUP_SCOPES]: 1, [TABLE.USER_GROUPS]: 1 });
 const ANNA = Object.freeze({ email: 'anna@example.com', firstName: 'Anna' });
 const BORYS = Object.freeze({ email: 'borys@example.com', firstName: 'Borys' });
 const BAD_FIELD_CODE = 'ER_BAD_FIELD_ERROR';
@@ -40,6 +58,14 @@ function isUnreadable(error) {
   return error.code === 'UNREADABLE_JSON' && error.isExecuted === true;
 }
 
+function isDuplicateColumn(error) {
+  return error.code === 'DUPLICATE_COLUMN' && error.isExecuted === true;
+}
+
+function isRefusedColumn(error) {
+  return error.code === BAD_FIELD_CODE && !Object.hasOwn(error, 'isExecuted');
+}
+
 // The context of a request: the database of the file and a cache Redis, the one of the file unless another is given.
 function openWithDatabase(opened = testRedis) {
   const context = createContext({ ...opened.context, db: testDb.db });
@@ -51,21 +77,28 @@ function openWithDatabase(opened = testRedis) {
   return run;
 }
 
-async function readVersions() {
-  const values = await testRedis.admin.mget(TABLES.map((table) => `${testRedis.keyPrefix}table-version:${table}`));
+async function readVersions(tables = TABLES) {
+  const values = await testRedis.admin.mget(tables.map((table) => `${testRedis.keyPrefix}table-version:${table}`));
 
-  return Object.fromEntries(TABLES.map((table, index) => [table, Number(values[index])]));
+  return Object.fromEntries(tables.map((table, index) => [table, Number(values[index])]));
 }
 
 // How far fn has moved the version of each table, read from the cache Redis before and after it.
-async function countBumps(fn) {
-  const start = await readVersions();
+async function countBumps(fn, tables = TABLES) {
+  const start = await readVersions(tables);
 
   await fn();
 
-  const end = await readVersions();
+  const end = await readVersions(tables);
 
-  return Object.fromEntries(TABLES.map((table) => [table, end[table] - start[table]]));
+  return Object.fromEntries(tables.map((table) => [table, end[table] - start[table]]));
+}
+
+// Only the tables of WATCHED_TABLES whose version fn has moved, each with how far: the others stayed as they were.
+async function listBumped(fn) {
+  const bumps = await countBumps(fn, WATCHED_TABLES);
+
+  return Object.fromEntries(Object.entries(bumps).filter(([, count]) => count !== 0));
 }
 
 function readMembers() {
@@ -156,7 +189,7 @@ describe('db helpers and the versions of the cache', { skip: testRedis.skip || t
   test('invalidateAfterWrite bumps its tables after a write and after one the driver failed once it had run, not after one the server refused', async () => {
     const duplicated = await countBumps(() => assert.rejects(
       run(() => invalidateAfterWrite([MEMBERS], () => getDb().query('INSERT INTO members (email) VALUES (:email) RETURNING email, email', { email: ANNA.email }))),
-      (error) => error.code === 'DUPLICATE_COLUMN' && error.isExecuted === true,
+      isDuplicateColumn,
     ));
     const selectedTwice = await countBumps(() => assert.rejects(
       run(() => invalidateAfterWrite([MEMBERS, NOTES], () => getDb().query('CALL add_member_and_select_twice()'))),
@@ -164,7 +197,7 @@ describe('db helpers and the versions of the cache', { skip: testRedis.skip || t
     ));
     const refused = await countBumps(() => assert.rejects(
       run(() => invalidateAfterWrite([MEMBERS], () => getDb().query('INSERT INTO members (nickname) VALUES (:email)', { email: BORYS.email }))),
-      (error) => error.code === BAD_FIELD_CODE && !Object.hasOwn(error, 'isExecuted'),
+      isRefusedColumn,
     ));
     const written = await countBumps(async () => {
       assert.equal(await run(() => invalidateAfterWrite([NOTES], async () => 'written')), 'written');
@@ -264,6 +297,114 @@ describe('db helpers and the versions of the cache', { skip: testRedis.skip || t
     assert.deepEqual(member, { email: ANNA.email });
     assert.equal(upserted.affectedRows, 2);
     assert.deepEqual(updated, [{ firstName: 'Hanna' }]);
+  });
+});
+
+describe('db writes and the tables the foreign keys of their table reach', { skip: testRedis.skip || testDb.skip }, () => {
+  let run;
+
+  function bumpAfter(tables) {
+    return listBumped(() => run(() => invalidateAfterWrite(tables, async () => 'written')));
+  }
+
+  before(async () => {
+    await up();
+    run = openWithDatabase();
+  });
+
+  // The versions are there before each test: the first bump of a table also starts its version.
+  beforeEach(async () => {
+    await run(() => invalidateCacheTables(WATCHED_TABLES));
+  });
+
+  test('invalidateAfterWrite bumps with users the versions of user_identities, user_groups, audit_logs and sessions, with groups those of group_scopes and user_groups, and a table both reach once', async () => {
+    const users = await bumpAfter([TABLE.USERS]);
+    const groups = await bumpAfter([TABLE.GROUPS]);
+    const both = await bumpAfter([TABLE.GROUPS, TABLE.USERS]);
+
+    assert.deepEqual([users, groups, both], [USERS_REACH, GROUPS_REACH, { ...USERS_REACH, ...GROUPS_REACH }]);
+  });
+
+  test('invalidateAfterWrite bumps its own version alone for a table no foreign key reaches out of, a name TABLE does not know and a name Object.prototype has', async () => {
+    const tables = [TABLE.USER_IDENTITIES, TABLE.GROUP_SCOPES, TABLE.USER_GROUPS, TABLE.AUDIT_LOGS, TABLE.SESSIONS, MEMBERS, ...PROTOTYPE_NAMES];
+    const bumps = await mapSeries(tables, (table) => bumpAfter([table]));
+
+    assert.deepEqual(bumps, tables.map((table) => ({ [table]: 1 })));
+  });
+
+  test('insertReturning, upsert and updateReturning on users and on groups bump the tables their foreign keys reach too, and on a table no key reaches out of that table alone', async () => {
+    const userId = uuidv7();
+    const groupId = uuidv7();
+    const group = { id: groupId, slug: `reach-${groupId}`, name: 'Readers' };
+
+    const userInserted = await listBumped(() => run(() => insertReturning(TABLE.USERS, { id: userId, firstName: 'Anna' })));
+    const userUpserted = await listBumped(() => run(() => upsert(TABLE.USERS, { id: userId, firstName: 'Hanna' }, { update: ['firstName'] })));
+    const userUpdated = await listBumped(() => run(() => updateReturning(TABLE.USERS, { lastName: 'Koval' }, { where: { id: userId } })));
+    const groupInserted = await listBumped(() => run(() => insertReturning(TABLE.GROUPS, group)));
+    const groupUpserted = await listBumped(() => run(() => upsert(TABLE.GROUPS, { ...group, name: 'Writers' }, { update: ['name'] })));
+    const groupUpdated = await listBumped(() => run(() => updateReturning(TABLE.GROUPS, { description: 'Read only' }, { where: { id: groupId } })));
+    const scopeInserted = await listBumped(() => run(() => insertReturning(TABLE.GROUP_SCOPES, { groupId, scope: SCOPE.GROUPS_READ })));
+    const memberInserted = await listBumped(() => run(() => insertReturning(TABLE.USER_GROUPS, { userId, groupId })));
+
+    assert.deepEqual(
+      [userInserted, userUpserted, userUpdated, groupInserted, groupUpserted, groupUpdated, scopeInserted, memberInserted],
+      [USERS_REACH, USERS_REACH, USERS_REACH, GROUPS_REACH, GROUPS_REACH, GROUPS_REACH, { [TABLE.GROUP_SCOPES]: 1 }, { [TABLE.USER_GROUPS]: 1 }],
+    );
+    assert.deepEqual(await testDb.readRows('SELECT first_name, last_name FROM users WHERE id = :userId', { userId }), [{ first_name: 'Hanna', last_name: 'Koval' }]);
+    assert.deepEqual(await testDb.readRows('SELECT name, description FROM groups WHERE id = :groupId', { groupId }), [{ name: 'Writers', description: 'Read only' }]);
+  });
+
+  test('inside a transaction the tables the foreign keys reach are bumped with their own table after the commit, and a rollback drops every one of the bumps', async () => {
+    const userId = uuidv7();
+    const start = await readVersions(WATCHED_TABLES);
+    let inside = null;
+
+    const committed = await listBumped(() => run(() => withTransaction(async () => {
+      await insertReturning(TABLE.USERS, { id: userId });
+      inside = await readVersions(WATCHED_TABLES);
+    })));
+    const rolledBack = await listBumped(() => assert.rejects(run(() => withTransaction(async () => {
+      await updateReturning(TABLE.USERS, { firstName: 'Anna' }, { where: { id: userId } });
+
+      throw new Error('rollback');
+    })), /rollback/));
+
+    assert.deepEqual(inside, start);
+    assert.deepEqual([committed, rolledBack], [USERS_REACH, {}]);
+  });
+
+  test('a write to users or to groups that the server ran and the driver then failed on bumps the tables their foreign keys reach too, and one the server refused bumps none of them', async () => {
+    const userId = uuidv7();
+    const groupId = uuidv7();
+    const group = { groupId, slug: `executed-${groupId}`, name: 'Readers' };
+
+    await testDb.readRows('INSERT INTO users (id) VALUES (:userId)', { userId });
+    await testDb.readRows('INSERT INTO user_identities (user_id, provider, provider_user_id) VALUES (:userId, :provider, :providerUserId)', {
+      userId,
+      provider: 'test',
+      providerUserId: userId,
+    });
+
+    const deleted = await listBumped(() => assert.rejects(
+      run(() => invalidateAfterWrite([TABLE.USERS], () => getDb().query('DELETE FROM users WHERE id = :userId RETURNING id, id', { userId }))),
+      isDuplicateColumn,
+    ));
+    const inserted = await listBumped(() => assert.rejects(
+      run(() => invalidateAfterWrite([TABLE.GROUPS], () => getDb().query('INSERT INTO groups (id, slug, name) VALUES (:groupId, :slug, :name) RETURNING slug, slug', group))),
+      isDuplicateColumn,
+    ));
+    const refused = await listBumped(() => assert.rejects(
+      run(() => invalidateAfterWrite([TABLE.USERS, TABLE.GROUPS], () => getDb().query('DELETE FROM groups WHERE nickname = :name', { name: group.name }))),
+      isRefusedColumn,
+    ));
+    const duplicated = await listBumped(() => assert.rejects(
+      run(() => insertReturning(TABLE.GROUPS, { slug: group.slug, name: group.name })),
+      (error) => error.kind === DB_ERROR_KIND.UNIQUE,
+    ));
+
+    assert.deepEqual([deleted, inserted, refused, duplicated], [USERS_REACH, GROUPS_REACH, {}, {}]);
+    assert.deepEqual(await testDb.readRows('SELECT user_id FROM user_identities WHERE user_id = :userId', { userId }), []);
+    assert.deepEqual(await testDb.readRows('SELECT slug FROM groups WHERE id = :groupId', { groupId }), [{ slug: group.slug }]);
   });
 });
 

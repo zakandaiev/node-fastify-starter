@@ -1,6 +1,7 @@
 import { settleAlerts } from '#core/alert/index.js';
 import { signInForDev } from '#core/auth/dev-login.js';
 import { AppError } from '#core/error/index.js';
+import { AUDIT_ACTION } from '#enums/audit-action.js';
 import { ERROR_CODE } from '#enums/error-code.js';
 import { GROUP_SLUG } from '#enums/group.js';
 import { HEADER } from '#enums/header.js';
@@ -57,6 +58,8 @@ const USER_SQL = 'SELECT id, email, email_verified_at, status FROM users WHERE e
 const INSERT_USER_SQL = 'INSERT INTO users (id, email, email_verified_at, status) VALUES (:id, :email, CURRENT_TIMESTAMP(3), :status)';
 const SESSIONS_SQL = 'SELECT is_dev FROM sessions WHERE user_id = :userId';
 const MEMBERSHIPS_SQL = 'SELECT g.slug FROM user_groups ug JOIN groups g ON g.id = ug.group_id WHERE ug.user_id = :userId';
+const SLUG_SQL = 'SELECT id FROM groups WHERE slug = :slug';
+const AUDIT_SQL = 'SELECT actor_id, action, entity_type, entity_id, meta, ip, request_id FROM audit_logs WHERE entity_id = :userId';
 const COUNT_SQL = `
   SELECT
     (SELECT COUNT(*) FROM users) AS users,
@@ -170,11 +173,21 @@ describe('signInForDev', { skip: testRedis.skip || testDb.skip }, () => {
     assert.deepEqual(bodies.map((body) => readBlock(body, 'Error').userId).toSorted(), [first.userId, other.userId].toSorted());
   });
 
-  test('signs an email of APP_ADMIN_EMAILS in to the admin group, with a token of full access', async (t) => {
+  test('signs an email of APP_ADMIN_EMAILS in to the admin group, with a record of the grant that names the group by its slug and its id, and a token of full access', async (t) => {
     const { fastify } = await openApp(t);
     const issued = await signIn(fastify, ADMIN_EMAIL);
+    const [{ id: groupId }] = await readAppRows(fastify, SLUG_SQL, { slug: GROUP_SLUG.ADMIN });
 
     assert.deepEqual(await readAppRows(fastify, MEMBERSHIPS_SQL, { userId: issued.userId }), [{ slug: GROUP_SLUG.ADMIN }]);
+    assert.deepEqual(await readAppRows(fastify, AUDIT_SQL, { userId: issued.userId }), [{
+      actor_id: null,
+      action: AUDIT_ACTION.USER_GROUP_GRANT,
+      entity_type: TABLE.USERS,
+      entity_id: issued.userId,
+      meta: { group: GROUP_SLUG.ADMIN, groupId },
+      ip: REQUEST.ip,
+      request_id: REQUEST.id,
+    }]);
     assert.deepEqual([issued.scopes, readClaims(issued.accessToken).scopes], [[SCOPE_ALL], [SCOPE_ALL]]);
   });
 

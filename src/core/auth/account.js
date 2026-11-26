@@ -1,12 +1,8 @@
 import { writeAudit } from '#core/audit/index.js';
 import { createSession, SESSION_TRANSACTION } from '#core/auth/session.js';
+import { grantMembership } from '#core/authz/membership.js';
 import { getContext } from '#core/context/index.js';
-import {
-  getDb,
-  insertReturning,
-  invalidateAfterWrite,
-  updateReturning,
-} from '#core/db/index.js';
+import { insertReturning, updateReturning } from '#core/db/index.js';
 import { createQuery } from '#core/db/query.js';
 import { retryOnce, withTransaction } from '#core/db/transaction.js';
 import { findUniqueViolation } from '#core/error/classify.js';
@@ -20,7 +16,7 @@ import { UNIQUE_INDEX } from '#enums/unique-index.js';
 import { USER_STATUS } from '#enums/user-status.js';
 import { camelToSnakeKey } from '#utils/case.js';
 import { nowUtc } from '#utils/date.js';
-import { isUuid, uuidv7 } from '#utils/id.js';
+import { assertUuid, uuidv7 } from '#utils/id.js';
 import { compact } from '#utils/object.js';
 import { toValidPersonName } from '#utils/person.js';
 import { toJsonTree } from '#utils/serialize.js';
@@ -40,17 +36,10 @@ const LOCK_USER_SQL = `SELECT ${USER_COLUMNS} FROM users WHERE id = :userId FOR 
 const LOCK_EMAIL_OWNER_SQL = `SELECT ${USER_COLUMNS} FROM users WHERE email = :email FOR UPDATE`;
 const IDENTITY_SQL = 'SELECT id, user_id FROM user_identities WHERE provider = :provider AND provider_user_id = :subject';
 
-const MEMBERSHIP_SQL = `
-  SELECT ug.group_id
-  FROM user_groups ug
-  JOIN groups g ON g.id = ug.group_id
-  WHERE ug.user_id = :userId AND g.slug = :slug
-`;
-
-const GRANT_SQL = `
-  INSERT INTO user_groups (user_id, group_id, granted_by)
-  SELECT :userId, g.id, NULL
+const ADMIN_GROUP_SQL = `
+  SELECT g.id, ug.user_id AS member_id
   FROM groups g
+  LEFT JOIN user_groups ug ON ug.group_id = g.id AND ug.user_id = :userId
   WHERE g.slug = :slug
 `;
 
@@ -254,35 +243,26 @@ function isListedAdmin(user) {
     && getContext().config.auth.adminEmails.includes(user.email);
 }
 
-// Granted by nobody: writeAudit() takes the actor from request.user, which the routes of signing in never set.
+// Granted by nobody: writeAudit() takes the actor from request.user, which the routes of signing in never set. The
+// row of the user is locked by then.
 async function grantListedAdmin(user, request) {
   if (!isListedAdmin(user)) {
     return false;
   }
 
-  const binding = { userId: user.id, slug: GROUP_SLUG.ADMIN };
+  const group = await readRow(ADMIN_GROUP_SQL, { userId: user.id, slug: GROUP_SLUG.ADMIN });
 
-  if ((await readRow(MEMBERSHIP_SQL, binding)) !== null) {
-    return false;
-  }
-
-  const { affectedRows } = await invalidateAfterWrite([TABLE.USER_GROUPS], () => getDb().query(GRANT_SQL, binding));
-
-  if (affectedRows === 0) {
+  if (group === null) {
     getContext().log.warn({ userId: user.id }, NO_ADMIN_GROUP_MESSAGE);
 
     return false;
   }
 
-  await writeAudit({
-    action: AUDIT_ACTION.USER_GROUP_GRANT,
-    entityType: TABLE.USERS,
-    entityId: user.id,
-    meta: { group: GROUP_SLUG.ADMIN },
-    request,
-  });
+  if (group.memberId !== null) {
+    return false;
+  }
 
-  return true;
+  return grantMembership({ userId: user.id, group: { id: group.id, slug: GROUP_SLUG.ADMIN }, request });
 }
 
 async function signInByIdentity(identity, flow) {
@@ -387,10 +367,7 @@ export async function linkProvider({
 } = {}) {
   const signature = 'linkProvider({ userId, providerId, profile, request })';
 
-  if (!isUuid(userId)) {
-    throw new TypeError(`${signature} requires the UUID of a user`);
-  }
-
+  assertUuid(userId, signature, 'a user');
   assertProvider(providerId, signature);
 
   const mapped = readProfile(profile, signature);

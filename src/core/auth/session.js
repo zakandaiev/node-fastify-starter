@@ -9,7 +9,7 @@ import { ERROR_CODE } from '#enums/error-code.js';
 import { ISOLATION_LEVEL } from '#enums/isolation-level.js';
 import { USER_STATUS } from '#enums/user-status.js';
 import { nowUtc } from '#utils/date.js';
-import { isUuid, uuidv7 } from '#utils/id.js';
+import { assertUuid, uuidv7 } from '#utils/id.js';
 
 // Under REPEATABLE READ a locking read fails once another session has changed its row since the first plain read of
 // the transaction, and every refresh of the user changes one. A transaction around these calls names both, and only the
@@ -51,15 +51,11 @@ const LIST_SQL = `
 const NO_SID = '00000000-0000-0000-0000-000000000000';
 
 function assertUserId(userId, signature) {
-  if (!isUuid(userId)) {
-    throw new TypeError(`${signature} requires the UUID of a user`);
-  }
+  return assertUuid(userId, signature, 'a user');
 }
 
 function assertSid(sid, signature) {
-  if (!isUuid(sid)) {
-    throw new TypeError(`${signature} requires the UUID of a session`);
-  }
+  return assertUuid(sid, signature, 'a session');
 }
 
 // No statement on sessions is cached, so none of them moves a version of the table: a refresh of anyone would move it,

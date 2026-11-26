@@ -1,5 +1,8 @@
 import { MODE } from '#config/env.js';
-import { createSchema } from '#core/schema/create-schema.js';
+import { addErrorResponses, createSchema } from '#core/schema/create-schema.js';
+import { ERROR_CODE } from '#enums/error-code.js';
+import { HTTP_STATUS } from '#enums/http-status.js';
+import { SCOPE } from '#enums/scope.js';
 import { buildTestApp, readRequestId } from '#root/tests/helper/app.js';
 import { createLogSink, findLogLines, LOG_LEVEL } from '#root/tests/helper/log.js';
 import { errorEnvelope, successEnvelope } from '#schemas/common/envelope.js';
@@ -26,6 +29,18 @@ const SERVED_MESSAGE = 'API docs are served';
 const OFF_MESSAGE = 'API docs are off: they are served in dev mode only';
 
 const PUBLIC = Object.freeze({ auth: false });
+const GUARDED = Object.freeze({ auth: true });
+const SCOPED = Object.freeze({ auth: true, scopes: [[SCOPE.GROUPS_READ, SCOPE.USERS_READ], SCOPE.GROUPS_MANAGE] });
+
+const TOKEN_SCHEMES = Object.freeze([{ cookieAuth: [] }, { bearerAuth: [] }]);
+
+const UNAUTHORIZED_DESCRIPTION = 'Unauthorized: AUTHENTICATION_ERROR, SESSION_REVOKED';
+const FORBIDDEN_DESCRIPTION = 'Forbidden: AUTHORIZATION_ERROR, ORIGIN_ERROR';
+
+// What @fastify/swagger writes for a route without a response schema.
+const DEFAULT_ANSWER = Object.freeze({ description: 'Default Response' });
+
+const OUTSIDE_URL = '/outside-probe';
 
 // What the gate, the finite guards and the json marker put into a schema: only the validation reads them.
 const VALIDATION_KEYS = Object.freeze(['allOf', 'finite', 'if', 'json', 'then']);
@@ -170,6 +185,15 @@ function withoutDescriptions(properties) {
   return Object.fromEntries(Object.entries(properties).map(([name, schema]) => [name, omit(schema, ['description'])]));
 }
 
+// @fastify/swagger moves the first example of a response schema next to it, under the media type.
+function toDocumentedError({ examples: [example], ...schema }) {
+  return { description: schema.description, content: { [JSON_MEDIA_TYPE]: { schema, example } } };
+}
+
+function documentErrorResponses(statusCodes) {
+  return Object.fromEntries(Object.entries(addErrorResponses({}, statusCodes)).map(([statusCode, response]) => [statusCode, toDocumentedError(response)]));
+}
+
 describe('swagger plugin', () => {
   test('serves the UI and the spec with a dev config, and answers 404 with a prod config, in one process', async (t) => {
     const info = { APP_NAME_FORMATTED: 'Docs Probe API', APP_VERSION: '9.8.7', APP_DESCRIPTION: 'The API the docs describe' };
@@ -264,6 +288,30 @@ describe('swagger plugin', () => {
     assert.equal(responses['404'].description, 'Not Found: NOT_FOUND_ERROR');
     assert.deepEqual(omit(readMedia(responses['404']).schema, ['description']), errorEnvelope);
     assert.deepEqual(readMedia(responses['404']).example, { status: 'error', code: 'NOT_FOUND_ERROR', message: 'Not found' });
+  });
+
+  test('documents the codes a route names of an error status in their order and the example of the first one, beside the refusals of its guard', async (t) => {
+    const fastify = await buildModeApp(t, MODE.DEV);
+    const schema = createSchema(userSchema)
+      .params(['id'])
+      .response(204)
+      .response(409, { codes: [ERROR_CODE.GROUP_PROTECTED, ERROR_CODE.NO_CHANGES] })
+      .response(404)
+      .build();
+
+    fastify.delete(`${PROBE_URL}/:id/protected`, { schema, security: PUBLIC }, answerNothing);
+    fastify.patch(`${PROBE_URL}/:id/protected`, { schema, security: SCOPED }, answerNothing);
+
+    const { paths } = await readSpec(fastify);
+    const { delete: open, patch: scoped } = paths[`${PROBE_URL}/{id}/protected`];
+    const conflict = open.responses['409'];
+
+    assert.equal(conflict.description, 'Conflict: GROUP_PROTECTED, NO_CHANGES');
+    assert.deepEqual(omit(readMedia(conflict).schema, ['description']), errorEnvelope);
+    assert.deepEqual(readMedia(conflict).example, { status: 'error', code: 'GROUP_PROTECTED', message: 'Group is protected' });
+    assert.deepEqual(Object.keys(open.responses), ['204', '404', '409']);
+    assert.deepEqual(Object.keys(scoped.responses), ['204', '401', '403', '404', '409']);
+    assert.deepEqual(scoped.responses['409'], conflict);
   });
 
   test('keeps the json marker out of a shared schema that a route reaches by $ref', async (t) => {
@@ -390,5 +438,146 @@ describe('swagger plugin', () => {
     assert.deepEqual(oldSpec.json(), notFoundBody(oldSpec, `Route GET ${DOCS_PREFIX}${SPEC_PATH} not found`));
     assert.deepEqual([oldUi.statusCode, oldSpec.statusCode], [404, 404]);
     assert.deepEqual(findLogLines(sink, SERVED_MESSAGE).map((line) => line.docs), [{ prefix: MOVED_DOCS_PREFIX }]);
+  });
+});
+
+describe('swagger plugin: security', () => {
+  test('documents a guarded route with both ways the token rides in, no scope named, and the 401 of the catalog as createSchema documents it', async (t) => {
+    const fastify = await buildModeApp(t, MODE.DEV);
+
+    useProbeRoutes(fastify);
+    fastify.get(`${PROBE_URL}/guarded`, { schema: { response: FOUND_RESPONSE }, security: GUARDED }, answerNothing);
+
+    const { paths } = await readSpec(fastify);
+    const guarded = paths[`${PROBE_URL}/guarded`].get;
+    const unauthorized = guarded.responses['401'];
+
+    assert.deepEqual(guarded.security, TOKEN_SCHEMES);
+    assert.deepEqual(Object.keys(guarded.responses), ['200', '401']);
+    assert.equal(unauthorized.description, UNAUTHORIZED_DESCRIPTION);
+    assert.deepEqual(omit(readMedia(unauthorized).schema, ['description']), errorEnvelope);
+    assert.deepEqual(readMedia(unauthorized).example, { status: 'error', code: 'AUTHENTICATION_ERROR', message: 'Authentication error' });
+    assert.deepEqual(unauthorized, paths[PROBE_URL].get.responses['401']);
+  });
+
+  test('documents a route with scopes with one requirement per term and per way the token rides in, the scopes named, and 401 and 403 as createSchema documents them', async (t) => {
+    const fastify = await buildModeApp(t, MODE.DEV);
+
+    useProbeRoutes(fastify);
+    fastify.post(`${PROBE_URL}/scoped`, { schema: { response: FOUND_RESPONSE }, security: SCOPED }, answerNothing);
+    fastify.get(`${PROBE_URL}/scoped`, { schema: { response: FOUND_RESPONSE }, security: { auth: true, scopes: [SCOPE.USERS_READ] } }, answerNothing);
+
+    const { paths } = await readSpec(fastify);
+    const { get: one, post: terms } = paths[`${PROBE_URL}/scoped`];
+    const forbidden = terms.responses['403'];
+    const { responses } = paths[PROBE_URL].get;
+
+    assert.deepEqual(terms.security, [
+      { cookieAuth: [SCOPE.GROUPS_READ, SCOPE.USERS_READ] },
+      { bearerAuth: [SCOPE.GROUPS_READ, SCOPE.USERS_READ] },
+      { cookieAuth: [SCOPE.GROUPS_MANAGE] },
+      { bearerAuth: [SCOPE.GROUPS_MANAGE] },
+    ]);
+    assert.deepEqual(one.security, [{ cookieAuth: [SCOPE.USERS_READ] }, { bearerAuth: [SCOPE.USERS_READ] }]);
+    assert.deepEqual([one, terms].map((operation) => Object.keys(operation.responses)), [['200', '401', '403'], ['200', '401', '403']]);
+    assert.equal(forbidden.description, FORBIDDEN_DESCRIPTION);
+    assert.deepEqual(readMedia(forbidden).example, { status: 'error', code: 'AUTHORIZATION_ERROR', message: 'Authorization error' });
+    assert.deepEqual(pick(terms.responses, ['401', '403']), pick(responses, ['401', '403']));
+  });
+
+  test('documents the 401 and the 403 it adds as addErrorResponses gives them, under the API and outside it, and as a route that declares them itself', async (t) => {
+    const fastify = await buildModeApp(t, MODE.DEV);
+    const refusals = [HTTP_STATUS.UNAUTHORIZED, HTTP_STATUS.FORBIDDEN];
+    const expected = documentErrorResponses(refusals);
+    const routes = [
+      [`${PROBE_URL}/guarded`, { schema: { response: FOUND_RESPONSE }, security: GUARDED }],
+      [`${PROBE_URL}/scoped`, { schema: { response: FOUND_RESPONSE }, security: SCOPED }],
+      [`${PROBE_URL}/declared`, { schema: { response: addErrorResponses(FOUND_RESPONSE, refusals) }, security: PUBLIC }],
+      [`${OUTSIDE_URL}/guarded`, { security: GUARDED }],
+      [`${OUTSIDE_URL}/scoped`, { security: { auth: true, scopes: [SCOPE.USERS_READ] } }],
+    ];
+
+    routes.forEach(([url, options]) => fastify.get(url, options, answerNothing));
+
+    const { paths } = await readSpec(fastify);
+    const [guarded, scoped, declared, outsideGuarded, outsideScoped] = routes.map(([url]) => paths[url].get.responses);
+
+    [guarded, outsideGuarded].forEach((responses) => assert.deepEqual(omit(responses, ['200']), pick(expected, ['401'])));
+    [scoped, declared, outsideScoped].forEach((responses) => assert.deepEqual(omit(responses, ['200']), expected));
+    assert.deepEqual(scoped, declared);
+  });
+
+  test('keeps a 401 and a 403 a guarded route declares as they are, and adds only the refusal it lacks', async (t) => {
+    const fastify = await buildModeApp(t, MODE.DEV);
+    const signInFirst = { ...errorEnvelope, description: 'Sign in first' };
+    const notYours = { ...errorEnvelope, description: 'Not yours to see' };
+    const declared = {
+      'own-401': { ...FOUND_RESPONSE, 401: signInFirst },
+      'own-403': { ...FOUND_RESPONSE, 403: notYours },
+      'own-both': { ...FOUND_RESPONSE, 401: signInFirst, 403: notYours },
+    };
+
+    Object.entries(declared).forEach(([name, response]) => {
+      fastify.get(`${PROBE_URL}/${name}`, { schema: { response }, security: SCOPED }, answerNothing);
+    });
+    fastify.get(`${PROBE_URL}/own-401-guarded`, { schema: { response: declared['own-401'] }, security: GUARDED }, answerNothing);
+
+    const { paths } = await readSpec(fastify);
+    const documented = ['own-401', 'own-403', 'own-both', 'own-401-guarded'].map((name) => {
+      const { responses } = paths[`${PROBE_URL}/${name}`].get;
+
+      return [name, Object.fromEntries(Object.entries(responses).map(([code, { description }]) => [code, description]))];
+    });
+
+    assert.deepEqual(documented, [
+      ['own-401', { 200: 'Default Response', 401: 'Sign in first', 403: FORBIDDEN_DESCRIPTION }],
+      ['own-403', { 200: 'Default Response', 401: UNAUTHORIZED_DESCRIPTION, 403: 'Not yours to see' }],
+      ['own-both', { 200: 'Default Response', 401: 'Sign in first', 403: 'Not yours to see' }],
+      ['own-401-guarded', { 200: 'Default Response', 401: 'Sign in first' }],
+    ]);
+  });
+
+  test('documents no security and adds no refusal to a public route and to one without security outside the API', async (t) => {
+    const fastify = await buildModeApp(t, MODE.DEV);
+
+    fastify.get(`${PROBE_URL}/public`, { schema: { response: FOUND_RESPONSE }, security: PUBLIC }, answerNothing);
+    fastify.get(`${OUTSIDE_URL}/plain`, { schema: { response: FOUND_RESPONSE } }, answerNothing);
+    fastify.get(`${OUTSIDE_URL}/bare`, answerNothing);
+
+    const { paths } = await readSpec(fastify);
+    const operations = [`${PROBE_URL}/public`, `${OUTSIDE_URL}/plain`, `${OUTSIDE_URL}/bare`].map((path) => paths[path].get);
+
+    assert.deepEqual(operations.map((operation) => [Object.hasOwn(operation, 'security'), Object.keys(operation.responses)]), operations.map(() => [false, ['200']]));
+  });
+
+  test('documents a guarded route outside the API that has no schema or no response schema with its security and its refusals next to its default answer', async (t) => {
+    const fastify = await buildModeApp(t, MODE.DEV);
+
+    fastify.get(`${OUTSIDE_URL}/guarded`, { security: GUARDED }, answerNothing);
+    fastify.get(`${OUTSIDE_URL}/scoped`, { security: { auth: true, scopes: [SCOPE.USERS_READ] } }, answerNothing);
+    fastify.get(`${OUTSIDE_URL}/search`, { schema: omit(SEARCH_SCHEMA, ['response']), security: GUARDED }, answerNothing);
+
+    const { paths } = await readSpec(fastify);
+    const operations = ['guarded', 'scoped', 'search'].map((name) => paths[`${OUTSIDE_URL}/${name}`].get);
+
+    assert.deepEqual(operations.map((operation) => [operation.security, Object.keys(operation.responses)]), [
+      [TOKEN_SCHEMES, ['200', '401']],
+      [[{ cookieAuth: [SCOPE.USERS_READ] }, { bearerAuth: [SCOPE.USERS_READ] }], ['200', '401', '403']],
+      [TOKEN_SCHEMES, ['200', '401']],
+    ]);
+  });
+
+  test('documents the default answer of a guarded route without a response schema as @fastify/swagger does for any route without one: a description and no content', async (t) => {
+    const fastify = await buildModeApp(t, MODE.DEV);
+
+    fastify.get(`${OUTSIDE_URL}/bare`, answerNothing);
+    fastify.get(`${OUTSIDE_URL}/guarded`, { security: GUARDED }, answerNothing);
+    fastify.get(`${OUTSIDE_URL}/scoped`, { security: { auth: true, scopes: [SCOPE.USERS_READ] } }, answerNothing);
+    fastify.get(`${OUTSIDE_URL}/search`, { schema: omit(SEARCH_SCHEMA, ['response']), security: GUARDED }, answerNothing);
+
+    const { paths } = await readSpec(fastify);
+    const answers = ['bare', 'guarded', 'scoped', 'search'].map((name) => paths[`${OUTSIDE_URL}/${name}`].get.responses['200']);
+
+    assert.deepEqual(answers, [DEFAULT_ANSWER, DEFAULT_ANSWER, DEFAULT_ANSWER, DEFAULT_ANSWER]);
   });
 });

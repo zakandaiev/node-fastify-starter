@@ -1,7 +1,18 @@
-import { isDeepFrozen } from '#root/tests/helper/object.js';
+import { createHoled, isDeepFrozen } from '#root/tests/helper/object.js';
 import { freezeDeep } from '#utils/object.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
+
+describe('createHoled', () => {
+  test('gives a list of the length with the items it names and holes everywhere else', () => {
+    const holed = createHoled(3, { 1: 'b' });
+
+    assert.equal(holed.length, 3);
+    assert.deepEqual([0 in holed, 1 in holed, 2 in holed], [false, true, false]);
+    assert.equal(holed[1], 'b');
+    assert.deepEqual(createHoled(2).filter(() => true), []);
+  });
+});
 
 describe('isDeepFrozen', () => {
   test('accepts a tree that is frozen at every level, arrays included', () => {

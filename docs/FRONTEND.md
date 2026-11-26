@@ -163,6 +163,31 @@ the cookies of its session. Other devices: `GET /api/v1/sessions` lists them (`i
 `DELETE /api/v1/sessions/:id` ends one, `DELETE /api/v1/sessions?except=current` all others,
 `DELETE /api/v1/sessions?scope=all` all of them.
 
+## Rights
+
+`GET /api/v1/auth/me` gives `scopes`: the rights of the session, as codes such as `groups:read`. `*` is full access,
+and `groups:*` is every action on groups. Show a control when the scopes grant its code; the backend decides all the
+same.
+
+```js
+function isGranted(scopes, code) {
+  return scopes.some((held) => held === '*' || held === code || (held.endsWith(':*') && code.startsWith(held.slice(0, -1))));
+}
+```
+
+- The scopes ride in the access token: a change of the groups of a person reaches them with their next refresh, within
+  the 10 minutes of the token. A route the session has no rights for answers `403 AUTHORIZATION_ERROR`.
+- Groups are under `/api/v1/groups` (Swagger lists every route). `GET /api/v1/groups/scopes` gives what a group may
+  grant, as `{ code, name, description }`: translate by `code`, the name and the description are an English fallback.
+- One changes a group, its scopes and its members only holding all it grants (full access included), and never one's
+  own memberships: `403 AUTHORIZATION_ERROR`. A system group (`isSystem`) keeps its slug and its full access, is never
+  deleted and keeps one member at least: `409 GROUP_PROTECTED`; no other group may take its slug.
+- A slug is words of lower-case Latin letters and digits joined by hyphens, up to 64 characters; a taken one answers
+  `422` with `validation[]` on `slug`. `PATCH` with `scopes` replaces the whole list; an empty `PATCH` answers
+  `409 NO_CHANGES`.
+- `PUT /api/v1/groups/:groupId/members/:userId` adds a member and answers `204` also for one who is a member already;
+  `DELETE` of a user who is no member answers `404`. The list of members also needs `users:read`.
+
 ## Development
 
 - **Dev sign-in.** With `APP_MODE=dev` the backend has `POST /api/v1/auth/login-dev` with `{ "email": "anna@example.com" }`:

@@ -1,6 +1,7 @@
 import { PAGINATION } from '#config/pagination.js';
 import { createSchema } from '#core/schema/create-schema.js';
 import { FILTER_TYPE } from '#enums/filter-type.js';
+import { SCOPE_ALL, SCOPE_CATALOG } from '#enums/scope.js';
 import { USER_STATUS } from '#enums/user-status.js';
 import { buildTestApp } from '#root/tests/helper/app.js';
 import { isDeepFrozen } from '#root/tests/helper/object.js';
@@ -47,7 +48,23 @@ const GROUP = Object.freeze({
   isSystem: true,
   createdAt: MOMENT,
   updatedAt: MOMENT,
+  scopes: ['groups:read', 'users:read'],
 });
+
+const SCOPE_CODES = Object.freeze(SCOPE_CATALOG.map((entry) => entry.code));
+
+const SLUGS = Object.freeze(['admin', 'content-editors', 'team-2', '2fa', 'a', 'a'.repeat(64)]);
+const BAD_SLUGS = Object.freeze([
+  'Admin',
+  'content_editors',
+  'content editors',
+  'content--editors',
+  '-admin',
+  'admin-',
+  'admin.',
+  'admin\n',
+  `ukr-${String.fromCharCode(0x043a)}`,
+]);
 
 const ENTITIES = Object.freeze({ user: userSchema, group: groupSchema });
 
@@ -68,6 +85,9 @@ const TIE_BREAKER_REGEXP = /(?:^|,\s*)id (?:ASC|DESC)$/;
 const COSTLY_KEYWORDS = Object.freeze(['pattern', 'format']);
 
 const PUBLIC = Object.freeze({ auth: false });
+
+// A path no route of src/routes takes: the same path there would fail these tests on a duplicate route.
+const PROBE_URL = '/api/v1/entity-probe';
 
 function forEachEntity(check) {
   Object.entries(ENTITIES).forEach(([name, schema]) => check(schema, name));
@@ -136,12 +156,55 @@ describe('entity schemas', () => {
     assert.deepEqual(readFailures(tooLong), [['firstName', 'maxLength'], ['locale', 'maxLength']]);
   });
 
-  test('let a group through as the table gives one, and refuse a slug longer than its column and a flag that is not a boolean', async (t) => {
+  test('let a group through as the API gives one, with its scopes, and refuse a slug longer than its column and a flag that is not a boolean', async (t) => {
     const [group, refused] = await validate(t, groupSchema.properties, [GROUP, { ...GROUP, slug: 'a'.repeat(65), isSystem: 'yes' }]);
 
     assert.equal(group.statusCode, 200);
     assert.deepEqual(group.json(), GROUP);
     assert.deepEqual(readFailures(refused), [['slug', 'maxLength'], ['isSystem', 'type']]);
+  });
+
+  test('take a slug of words of lower-case Latin letters and digits joined by single hyphens, and refuse any other by its pattern', async (t) => {
+    const responses = await validate(t, groupSchema.properties, [...SLUGS, ...BAD_SLUGS].map((slug) => ({ ...GROUP, slug })));
+    const taken = responses.slice(0, SLUGS.length);
+    const refused = responses.slice(SLUGS.length);
+
+    assert.deepEqual(taken.map((response) => response.statusCode), SLUGS.map(() => 200));
+    assert.deepEqual(taken.map((response) => response.json().slug), SLUGS);
+    assert.deepEqual(
+      refused.map((response, index) => [BAD_SLUGS[index], readFailures(response)]),
+      BAD_SLUGS.map((slug) => [slug, [['slug', 'pattern']]]),
+    );
+  });
+
+  test('take as scopes distinct codes of the catalog, and refuse full access, an unknown code, a code twice, a list longer than the catalog and a code that is no list', async (t) => {
+    const lists = [[], SCOPE_CODES, ['users:read', 'groups:*']];
+    const responses = await validate(t, groupSchema.properties, [
+      ...lists.map((scopes) => ({ ...GROUP, scopes })),
+      { ...GROUP, scopes: [SCOPE_ALL] },
+      { ...GROUP, scopes: ['groups:read', 'groups:write'] },
+      { ...GROUP, scopes: ['groups:read', 'groups:read'] },
+      { ...GROUP, scopes: [...SCOPE_CODES, SCOPE_CODES[0]] },
+      { ...GROUP, scopes: 'groups:read' },
+    ]);
+    const taken = responses.slice(0, lists.length);
+
+    assert.deepEqual(taken.map((response) => [response.statusCode, response.json().scopes]), lists.map((scopes) => [200, scopes]));
+    assert.deepEqual(responses.slice(lists.length).map((response) => readFailures(response)), [
+      [['scopes.0', 'enum']],
+      [['scopes.1', 'enum']],
+      [['scopes', 'uniqueItems']],
+      [['scopes', 'maxItems']],
+      [['scopes', 'type']],
+    ]);
+  });
+
+  test('describe the scopes of a group as a list of the codes of the catalog, the wildcards among them and full access not, each once', () => {
+    const { scopes } = groupSchema.properties;
+
+    assert.deepEqual(scopes.items.enum, SCOPE_CODES);
+    assert.equal(scopes.items.enum.includes(SCOPE_ALL), false);
+    assert.deepEqual([scopes.type, scopes.uniqueItems, scopes.maxItems], ['array', true, SCOPE_CATALOG.length]);
   });
 });
 
@@ -155,6 +218,14 @@ describe('the exports of an entity schema', () => {
       Object.entries(schema.properties)
         .filter(([, field]) => COSTLY_KEYWORDS.some((keyword) => field[keyword] !== undefined))
         .forEach(([key, field]) => assert.ok(Number.isSafeInteger(field.maxLength), `${name}.${key}`));
+    });
+  });
+
+  test('give a maxItems to every list whose items are compared with each other: the gate of a request needs it', () => {
+    forEachEntity((schema, name) => {
+      Object.entries(schema.properties)
+        .filter(([, field]) => field.uniqueItems === true)
+        .forEach(([key, field]) => assert.ok(Number.isSafeInteger(field.maxItems), `${name}.${key}`));
     });
   });
 
@@ -253,12 +324,12 @@ describe('entity schemas as sources of createSchema', () => {
     const queries = {};
 
     forEachEntity((schema, name) => {
-      fastify.get(`/api/v1/${name}s`, { schema: buildListSchema(schema), security: PUBLIC }, (request, reply) => {
+      fastify.get(`${PROBE_URL}/${name}s`, { schema: buildListSchema(schema), security: PUBLIC }, (request, reply) => {
         queries[name] = { ...request.query };
 
         return reply.list({ data: [schema.example] });
       });
-      fastify.patch(`/api/v1/${name}s/:id`, { schema: buildUpdateSchema(schema), security: PUBLIC }, (request, reply) => reply.ok({
+      fastify.patch(`${PROBE_URL}/${name}s/:id`, { schema: buildUpdateSchema(schema), security: PUBLIC }, (request, reply) => reply.ok({
         ...schema.example,
         ...request.body,
       }));
@@ -266,10 +337,10 @@ describe('entity schemas as sources of createSchema', () => {
 
     const names = Object.keys(ENTITIES);
     const [lists, updates] = await Promise.all([
-      Promise.all(names.map((name) => fastify.inject(`/api/v1/${name}s`))),
+      Promise.all(names.map((name) => fastify.inject(`${PROBE_URL}/${name}s`))),
       Promise.all(names.map((name) => fastify.inject({
         method: 'PATCH',
-        url: `/api/v1/${name}s/${ENTITIES[name].example.id}`,
+        url: `${PROBE_URL}/${name}s/${ENTITIES[name].example.id}`,
         payload: pick(ENTITIES[name].example, readUpdatedFields(ENTITIES[name])),
       }))),
     ]);
