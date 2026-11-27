@@ -113,7 +113,7 @@ function openApp(t, options) {
 
 async function openProxiedApp(t, sections) {
   const proxy = await createTcpProxy(t, getServiceAddress('mariadb'));
-  const opened = await openApp(t, { ...sections, env: { APP_DATABASE_HOST: LOOPBACK, APP_DATABASE_PORT: String(proxy.port) } });
+  const opened = await openApp(t, { ...sections, env: proxy.databaseEnv });
 
   return { ...opened, proxy };
 }

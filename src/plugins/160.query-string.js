@@ -1,23 +1,18 @@
 import { getPath } from '#utils/object.js';
-import { isNumericSchema } from '#utils/schema.js';
-import { isArray, isBlankString, isObject } from '#utils/type.js';
+import { isBlankNumberText } from '#utils/schema.js';
+import { isArray, isObject } from '#utils/type.js';
 import fp from 'fastify-plugin';
 
 const EMPTY_VALUE = '';
 const QUERY_FIELDS_PATH = Object.freeze(['querystring', 'properties']);
 
-function isEmptyValue(value) {
-  return value === EMPTY_VALUE;
+function isEmptyValue(field, value) {
+  return value === EMPTY_VALUE || isBlankNumberText(field, value);
 }
 
-function takesNumbers(field) {
-  return isObject(field)
-    && (isNumericSchema(field) || (isObject(field.items) && isNumericSchema(field.items)));
-}
-
-function dropEmptyItems(query, key, isEmpty) {
+function dropEmptyItems(query, key, field) {
   const items = query[key];
-  const filled = items.filter((item) => !isEmpty(item));
+  const filled = items.filter((item) => !isEmptyValue(field, item));
 
   if (filled.length === items.length) {
     return false;
@@ -32,12 +27,12 @@ function dropEmptyItems(query, key, isEmpty) {
   return true;
 }
 
-function dropEmptyValue(query, key, isEmpty) {
+function dropEmptyValue(query, key, field) {
   if (isArray(query[key])) {
-    return dropEmptyItems(query, key, isEmpty);
+    return dropEmptyItems(query, key, field);
   }
 
-  if (!isEmpty(query[key])) {
+  if (!isEmptyValue(field, query[key])) {
     return false;
   }
 
@@ -52,13 +47,7 @@ function dropEmptyQueryValues(request, reply, done) {
     const fields = getPath(request.routeOptions.schema, QUERY_FIELDS_PATH);
 
     Object.keys(request.query).forEach((key) => {
-      // AJV coerces a string of white space to 0 for a number or an integer; isBlankString() trims the same
-      // characters ToNumber skips, a no-break space and a line break included.
-      const isEmpty = takesNumbers(getPath(fields, [key]))
-        ? isBlankString
-        : isEmptyValue;
-
-      dropEmptyValue(request.query, key, isEmpty);
+      dropEmptyValue(request.query, key, getPath(fields, [key]));
     });
   }
 

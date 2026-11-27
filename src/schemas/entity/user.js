@@ -8,6 +8,7 @@ import {
   nullable,
   personName,
   text,
+  url,
   uuid,
 } from '#schemas/common/field.js';
 import { freezeDeep } from '#utils/object.js';
@@ -23,6 +24,7 @@ export const properties = freezeDeep({
   lastName: nullable(personName(`Last name: ${NAME_RULE}`, { maxLength: 100 })),
   locale: nullable(text('Language as a BCP 47 tag; null until the user chooses one', { maxLength: 35 })),
   timezone: nullable(text('IANA time zone; null until the user chooses one', { maxLength: 64 })),
+  avatarUrl: nullable(url('Address of the avatar, which never changes its content: a new avatar comes at a new address; null without one')),
   status: enumOf(Object.values(USER_STATUS), 'Status'),
   createdAt: dateTimeUtc('Created at'),
   updatedAt: dateTimeUtc('Updated at'),
@@ -65,6 +67,7 @@ export const example = freezeDeep({
   lastName: 'Kovalenko',
   locale: 'uk',
   timezone: 'Europe/Kyiv',
+  avatarUrl: 'https://api.example.com/upload/019a1b2c-3d4e-7f50-8a6b-7c8d9e0f1a2d.webp',
   status: USER_STATUS.ACTIVE,
   createdAt: '2026-11-19T10:00:00.000Z',
   updatedAt: '2026-11-19T10:00:00.000Z',

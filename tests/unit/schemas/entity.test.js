@@ -12,6 +12,7 @@ import * as userSchema from '#schemas/entity/user.js';
 import { pick } from '#utils/object.js';
 import { PERSON_NAME_MAX_LENGTH } from '#utils/person.js';
 import { isNonEmptyString } from '#utils/type.js';
+import { URL_MAX_LENGTH } from '#utils/validate.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
@@ -25,6 +26,7 @@ const USER = Object.freeze({
   lastName: 'Kovalenko',
   locale: 'uk',
   timezone: 'Europe/Kyiv',
+  avatarUrl: 'https://app.test/upload/019a1b2c-3d4e-7f50-8a6b-7c8d9e0f1a2d.webp',
   status: USER_STATUS.ACTIVE,
   createdAt: MOMENT,
   updatedAt: MOMENT,
@@ -39,6 +41,7 @@ const BARE_USER = Object.freeze({
   lastName: null,
   locale: null,
   timezone: null,
+  avatarUrl: null,
 });
 
 const GROUP = Object.freeze({
@@ -182,6 +185,17 @@ describe('entity schemas', () => {
     assert.deepEqual(readFailures(upperCase), [['status', 'enum']]);
     assert.deepEqual(readFailures(unknown), [['status', 'enum']]);
     assert.deepEqual(readFailures(tooLong), [['firstName', 'maxLength'], ['locale', 'maxLength']]);
+  });
+
+  test('describe the avatar of a user as an absolute URL of its file, as long as a URL may be, or null: a path or a key alone is none', async (t) => {
+    const [relative, keyOnly] = await validate(t, userSchema.properties, [
+      { ...USER, avatarUrl: '/upload/019a1b2c-3d4e-7f50-8a6b-7c8d9e0f1a2d.webp' },
+      { ...USER, avatarUrl: '019a1b2c-3d4e-7f50-8a6b-7c8d9e0f1a2d.webp' },
+    ]);
+
+    assert.deepEqual(pick(userSchema.properties.avatarUrl, ['type', 'format', 'maxLength']), { type: ['string', 'null'], format: 'uri', maxLength: URL_MAX_LENGTH });
+    assert.deepEqual(readFailures(relative), [['avatarUrl', 'format']]);
+    assert.deepEqual(readFailures(keyOnly), [['avatarUrl', 'format']]);
   });
 
   test('let a group through as the API gives one, with its scopes, and refuse a slug longer than its column and a flag that is not a boolean', async (t) => {

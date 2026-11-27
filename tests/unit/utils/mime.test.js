@@ -1,4 +1,5 @@
 import {
+  MIME_EXTENSIONS,
   MIME_SIGNATURE_BYTES,
   MIME_WHITELIST,
   detectMime,
@@ -112,6 +113,35 @@ describe('MIME_WHITELIST', () => {
     assert.equal(MIME_WHITELIST.length, FORMATS.length);
     assert.equal(extFromMime('image/svg+xml'), null);
     assert.equal(detectMime(SVG), null);
+  });
+});
+
+describe('MIME_EXTENSIONS', () => {
+  test('lists the extensions of the accepted types, in the order of the whitelist', () => {
+    assert.deepEqual(MIME_EXTENSIONS, ['jpg', 'png', 'webp', 'gif', 'pdf']);
+    assert.deepEqual(MIME_EXTENSIONS, FORMATS.map(({ extension }) => extension));
+    assert.deepEqual(MIME_EXTENSIONS, MIME_WHITELIST.map((type) => extFromMime(type)));
+  });
+
+  test('holds one spelling of each, without a dot: includes() is an exact check of a file name tail', () => {
+    assert.equal(new Set(MIME_EXTENSIONS).size, MIME_EXTENSIONS.length);
+
+    MIME_EXTENSIONS.forEach((extension) => {
+      assert.match(extension, /^[a-z0-9]+$/);
+    });
+
+    ['.jpg', 'JPG', 'jpeg', 'svg', 'exe', '', null].forEach((extension) => {
+      assert.equal(MIME_EXTENSIONS.includes(extension), false, String(extension));
+    });
+  });
+
+  test('is frozen: a consumer cannot add a name a file may be stored under', () => {
+    assert.ok(Object.isFrozen(MIME_EXTENSIONS));
+    assert.throws(() => MIME_EXTENSIONS.push('exe'), TypeError);
+    assert.throws(() => {
+      MIME_EXTENSIONS[0] = 'exe';
+    }, TypeError);
+    assert.equal(MIME_EXTENSIONS.length, FORMATS.length);
   });
 });
 

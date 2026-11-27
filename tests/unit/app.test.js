@@ -247,6 +247,20 @@ describe('buildApp', () => {
     assert.equal(response.headers['retry-after'], '0');
   });
 
+  // The ceilings go no lower than the avatar of PATCH /users/me: below it the routes of the app would not start.
+  test('gives the route hook the upload section of the config: a route with files is held to the limits of config.upload', async (t) => {
+    const fastify = await buildTestApp({ upload: { maxFileSize: '5MB', maxTotalSize: '5MB' } });
+    t.after(() => fastify.close());
+
+    const files = { fields: { document: { maxSize: '6MB', mime: ['application/pdf'] } } };
+
+    assert.throws(() => fastify.post('/documents', { files }, () => ({ isDone: true })), {
+      name: 'Error',
+      message: 'Route POST /documents: "files.fields.document" has maxSize above config.upload.maxFileSize, 5 MB: the parser would cut the file there',
+    });
+    assert.doesNotThrow(() => fastify.post('/documents', { files: { fields: { document: { ...files.fields.document, maxSize: '5MB' } } } }, () => ({ isDone: true })));
+  });
+
   // The hook is created before the instance and its logger: a config both refuse is refused by the hook.
   test('refuses a bad prefix before it creates the instance', async () => {
     await assert.rejects(buildTestApp({ app: { apiPrefix: '/api/' }, logger: { level: '' } }), /createRouteHook/);

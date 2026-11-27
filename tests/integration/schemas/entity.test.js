@@ -25,6 +25,10 @@ const QUOTED_VALUE_REGEXP = /'([^']*)'/g;
 const SESSION_COMPUTED_FIELDS = Object.freeze(['isCurrent']);
 const SESSION_UNTOLD_COLUMNS = Object.freeze(['user_id', 'refresh_token_hash', 'revoked_at', 'created_at', 'updated_at']);
 
+// The API gives the URL the storage makes of the key in avatar_key, never the key itself.
+const USER_COMPUTED_FIELDS = Object.freeze(['avatarUrl']);
+const USER_UNTOLD_COLUMNS = Object.freeze(['avatar_key']);
+
 // The rows of group_scopes, gathered by the repository: no column of groups holds them.
 const GROUP_COMPUTED_FIELDS = Object.freeze(['scopes']);
 
@@ -113,8 +117,14 @@ describe('the entity schemas', { skip: testDb.skip }, () => {
     ({ tables } = await testDb.run(() => readStructure(testDb.name)));
   });
 
-  test('describe a user as the table users holds one: a property for every column, in its order, with its type, its NULL, its length and the values its check allows', () => {
-    assertDescribes(userProperties, tables.users);
+  test('describe a user as the table users holds one: a property for every column, in its order, with its type, its NULL, its length and the values its check allows, but for the key of the avatar, told as the URL made of it', () => {
+    const { users } = tables;
+    const described = omit(userProperties, USER_COMPUTED_FIELDS);
+    const columnOrder = users.columnOrder.filter((column) => !USER_UNTOLD_COLUMNS.includes(column));
+
+    assert.deepEqual([...Object.keys(described).map((key) => camelToSnakeKey(key)), ...USER_UNTOLD_COLUMNS].toSorted(), users.columnOrder.toSorted());
+    assertDescribes(described, { ...users, columnOrder });
+    assert.deepEqual(pick(userProperties.avatarUrl, ['type']), pick(describeColumn(users.columns.avatar_key, users.checks.avatar_key), ['type']));
   });
 
   test('describe a group as the table groups holds one, but for its scopes, which no column of it holds', () => {

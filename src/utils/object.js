@@ -55,6 +55,14 @@ export function omit(object, keys) {
   return Object.fromEntries(Object.entries(object).filter(([key]) => !omitted.has(key)));
 }
 
+export function findUnknownKey(object, keys) {
+  assertSelection(object, keys, 'findUnknownKey');
+
+  const known = new Set(keys.map(String));
+
+  return Object.keys(object).find((key) => !known.has(key));
+}
+
 // Without a prototype, like what groupBy() and keyBy() give: when the keys come from the data, a key that only
 // one object has must not be answered by an inherited property of the other.
 export function mapValues(object, toValue) {

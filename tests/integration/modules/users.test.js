@@ -1,6 +1,7 @@
 import { SESSION_TRANSACTION } from '#core/auth/session.js';
 import { invalidateCacheTables } from '#core/cache/index.js';
 import { findUniqueViolation } from '#core/error/classify.js';
+import { toStorageKey } from '#core/storage/key.js';
 import { AUDIT_ACTION } from '#enums/audit-action.js';
 import { MIGRATION_TYPE } from '#enums/migration-type.js';
 import { SCOPE, SCOPE_ALL } from '#enums/scope.js';
@@ -29,6 +30,7 @@ import {
 } from '#root/tests/helper/db.js';
 import { assertAppError, assertTypeError, REFUSAL } from '#root/tests/helper/error.js';
 import { bindMigrator } from '#root/tests/helper/migration.js';
+import { removeTestUploads } from '#root/tests/helper/multipart.js';
 import { createTestRedis } from '#root/tests/helper/redis.js';
 import {
   ALIVE_MARK,
@@ -72,6 +74,8 @@ const testRedis = await createTestRedis();
 const testDb = await createTestDb();
 const { up } = bindMigrator(testDb);
 
+after(() => removeTestUploads());
+
 // An address of its own for each user of the tests: the rows of the file stay for the tests after it.
 const ADMIN = Object.freeze({
   VERIFIED: 'verified@admin.test',
@@ -102,9 +106,17 @@ const SIGNATURE = Object.freeze({
   BLOCK_USER: 'blockUser({ id, actorId, request })',
   UNBLOCK_USER: 'unblockUser({ id, actorId, request })',
   REMOVE_USER: 'removeUser({ id, actorId, request })',
-  UPDATE_PROFILE: 'updateOwnProfile({ userId, input })',
+  UPDATE_PROFILE: 'updateOwnProfile({ userId, input, avatar })',
   REMOVE_ACCOUNT: 'removeOwnAccount({ userId, request })',
 });
+const AVATAR_INPUT_REFUSAL = `${SIGNATURE.UPDATE_PROFILE} requires avatar of the input to be null: a new avatar is a file of request.uploadedFiles`;
+const AVATAR_FILE_REFUSAL = `${SIGNATURE.UPDATE_PROFILE} requires avatar to be a stored file of request.uploadedFiles, and no avatar in the input beside it`;
+
+// What the route stores for an avatar: the service reads the key alone, never the bytes.
+const AVATAR_EXTENSION = 'webp';
+const AVATAR_MIME = 'image/webp';
+const AVATAR_BYTES = Buffer.from('the bytes of an encoded avatar');
+
 const A_USER = 'a user';
 const THE_ACTOR = 'the actor';
 const A_NAME = 'a name of a person';
@@ -164,12 +176,13 @@ const NO_MANAGED_FIELDS = Object.freeze([
 const NO_PROFILE_FIELDS = Object.freeze([
   {},
   { lastName: undefined },
+  { avatar: undefined },
   { email: 'own@example.test' },
   { status: USER_STATUS.BLOCKED },
   { emailVerifiedAt: VERIFIED_AT },
 ]);
 
-const USER_SQL = 'SELECT email, email_verified_at, first_name, last_name, status, updated_at FROM users WHERE id = :id';
+const USER_SQL = 'SELECT email, email_verified_at, first_name, last_name, avatar_key, status, updated_at FROM users WHERE id = :id';
 const STATUS_SQL = 'UPDATE users SET status = :status WHERE id = :id';
 const RENAME_SQL = 'UPDATE users SET first_name = :firstName WHERE id = :id';
 const DELETE_USER_SQL = 'DELETE FROM users WHERE id = :id';
@@ -244,12 +257,30 @@ function remove(id, actorId) {
   return runInApp(fastify, () => removeUser({ id, actorId, request: TEST_REQUEST }));
 }
 
-function updateOwn(userId, input) {
-  return runInApp(fastify, () => updateOwnProfile({ userId, input }));
+function updateOwn(userId, input, avatar) {
+  return runInApp(fastify, () => updateOwnProfile({ userId, input, avatar }));
 }
 
 function removeOwn(userId) {
   return runInApp(fastify, () => removeOwnAccount({ userId, request: TEST_REQUEST }));
+}
+
+// A file in the storage, and the stored file of request.uploadedFiles that the route hands the service for it.
+async function storeAvatar() {
+  const key = toStorageKey(AVATAR_EXTENSION);
+
+  await fastify.storage.put(key, AVATAR_BYTES);
+
+  return {
+    key,
+    url: fastify.storage.url(key),
+    mime: AVATAR_MIME,
+    size: AVATAR_BYTES.length,
+  };
+}
+
+function hasFile(file) {
+  return fastify.storage.exists(file.key);
 }
 
 // The four calls of a manager on one user, outside any context: the caller runs each in the context it tests.
@@ -527,6 +558,59 @@ describe('the service of users', { skip: testRedis.skip || testDb.skip }, () => 
       assert.deepEqual(same, cleared);
       assert.deepEqual(await readAudit(testDb, userId), []);
     });
+
+    test('updateOwnProfile writes the key of the stored file it is given as the avatar, beside a name or alone, and removes the file of the avatar it replaces once it has committed; null in the input removes the avatar and its file, null again writes nothing, and no record is written', async () => {
+      const userId = await insertUser(testDb, { firstName: 'Anna' });
+      const [first, second] = await mapSeries(['first', 'second'], () => storeAvatar());
+      const named = await updateOwn(userId, { firstName: 'Olena' }, first);
+      const replaced = await updateOwn(userId, {}, second);
+      const isFirstKept = await hasFile(first);
+      const replacedRow = await readUserRow(userId);
+      const removed = await updateOwn(userId, { avatar: null });
+      const removedRow = await readUserRow(userId);
+      const again = await updateOwn(userId, { avatar: null });
+
+      assert.deepEqual([named.firstName, named.avatarUrl], ['Olena', first.url]);
+      assert.deepEqual([replaced.avatarUrl, replacedRow.avatar_key, isFirstKept], [second.url, second.key, false]);
+      assert.deepEqual([removed.avatarUrl, removedRow.avatar_key, await hasFile(second)], [null, null, false]);
+      assert.equal(Object.hasOwn(removed, 'avatarKey'), false);
+      assert.deepEqual(again, removed);
+      assert.deepEqual(await readUserRow(userId), removedRow);
+      assert.deepEqual(await readAudit(testDb, userId), []);
+    });
+
+    test('updateOwnProfile refuses with a TypeError a string as the avatar of the input, which would name a file of somebody else, a file that is no stored file of a request, and a file beside an avatar of the input, before any statement: the row and the files stay', async () => {
+      const file = await storeAvatar();
+      const userId = await insertUser(testDb, { avatarKey: file.key });
+      const other = await storeAvatar();
+      const calls = [
+        [{ avatar: other.key }, undefined, AVATAR_INPUT_REFUSAL],
+        [{ avatar: '' }, undefined, AVATAR_INPUT_REFUSAL],
+        [{ firstName: 'Taras', avatar: other.url }, other, AVATAR_INPUT_REFUSAL],
+        [{}, { ...other, key: 'not-a-key.webp' }, AVATAR_FILE_REFUSAL],
+        [{}, other.key, AVATAR_FILE_REFUSAL],
+        [{}, null, AVATAR_FILE_REFUSAL],
+        [{ avatar: null }, other, AVATAR_FILE_REFUSAL],
+      ];
+      const stateBefore = await readState(testDb, STATE_TABLES);
+      const errors = await mapSeries(calls, ([input, avatar]) => rejectionOf(updateOwn(userId, input, avatar)));
+
+      errors.forEach((error, index) => assertTypeError(error, calls[index][2]));
+      assert.deepEqual(await readState(testDb, STATE_TABLES), stateBefore);
+      assert.deepEqual(await mapSeries([file, other], (stored) => hasFile(stored)), [true, true]);
+    });
+
+    test('updateOwnProfile that the transaction around it rolls back keeps the avatar of the row and its file: the file goes only after a commit', async () => {
+      const file = await storeAvatar();
+      const userId = await insertUser(testDb, { avatarKey: file.key });
+      const next = await storeAvatar();
+      const rowBefore = await readUserRow(userId);
+      const seen = await runRolledBack(() => updateOwnProfile({ userId, input: {}, avatar: next }), userId);
+
+      assert.equal(seen.result.avatarUrl, next.url);
+      assert.deepEqual(await readUserRow(userId), rowBefore);
+      assert.equal(await hasFile(file), true);
+    });
   });
 
   describe('updateUser', () => {
@@ -754,10 +838,21 @@ describe('the service of users', { skip: testRedis.skip || testDb.skip }, () => 
       assert.equal((await readUserRow(returned.userId))?.status, USER_STATUS.ACTIVE);
     });
 
-    test('a removal or a block that the transaction around it rolls back leaves nothing of any statement it has run: the user, their identity, memberships, sessions and records stay, and no session is marked revoked in the memory of the process or in Redis', async () => {
+    test('remove the file of the avatar of the user once the deletion has committed, and leave every other file alone', async () => {
+      const managerId = await createActor(testDb, [SCOPE.USERS_MANAGE]);
+      const files = await mapSeries(['own', 'removed', 'kept'], () => storeAvatar());
+      const [ownId, removedId] = await mapSeries(files, (file) => insertUser(testDb, { avatarKey: file.key }));
+      const removed = [await removeOwn(ownId), await remove(removedId, managerId)];
+
+      assert.deepEqual(removed, [true, true]);
+      assert.deepEqual(await mapSeries(files, (file) => hasFile(file)), [false, false, true]);
+    });
+
+    test('a removal or a block that the transaction around it rolls back leaves nothing of any statement it has run: the user, their identity, memberships, sessions, records and the file of their avatar stay, and no session is marked revoked in the memory of the process or in Redis', async () => {
       const rootId = await createActor(testDb, [SCOPE_ALL]);
       const { id: groupId } = await insertGroup(testDb);
-      const userIds = await mapSeries(['own', 'removed', 'blocked'], () => insertUser(testDb, { firstName: 'Anna' }));
+      const files = await mapSeries(['own', 'removed', 'blocked'], () => storeAvatar());
+      const userIds = await mapSeries(files, (file) => insertUser(testDb, { firstName: 'Anna', avatarKey: file.key }));
       const [ownId, removedId, blockedId] = userIds;
 
       await mapSeries(userIds, async (userId) => {
@@ -782,6 +877,7 @@ describe('the service of users', { skip: testRedis.skip || testDb.skip }, () => 
       assert.deepEqual(await readState(testDb, STATE_TABLES), stateBefore);
       assert.deepEqual(await mapSeries(sids, (sid) => isAliveIn(fastify, sid)), [true, true, true]);
       assert.deepEqual(await readRegistryMarks(testRedis, sids), [ALIVE_MARK, ALIVE_MARK, ALIVE_MARK]);
+      assert.deepEqual(await mapSeries(files, (file) => hasFile(file)), [true, true, true]);
     });
   });
 

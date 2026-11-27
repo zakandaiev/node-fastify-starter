@@ -13,9 +13,12 @@ import {
   isPositiveInteger,
   isString,
 } from '#utils/type.js';
-import { EMAIL_MAX_LENGTH } from '#utils/validate.js';
+import { EMAIL_MAX_LENGTH, URL_MAX_LENGTH } from '#utils/validate.js';
 
 const NULL_TYPE = 'null';
+
+// A format of ajv-formats, not of the app: an absolute URI, its scheme included.
+const URI_FORMAT = 'uri';
 
 export function withDescription(schema, description) {
   return description === undefined
@@ -40,6 +43,10 @@ export function dateTimeUtc(description) {
 
 export function isoDate(description) {
   return withDescription({ type: 'string', maxLength: ISO_DATE_LENGTH, format: SCHEMA_FORMAT.DATE }, description);
+}
+
+export function url(description) {
+  return withDescription({ type: 'string', maxLength: URL_MAX_LENGTH, format: URI_FORMAT }, description);
 }
 
 // Empty text is refused by default: a field is cleared with null, so a column does not hold both '' and NULL

@@ -27,7 +27,7 @@ import { inspect } from 'node:util';
 const testDb = await createTestDb();
 const { up } = bindMigrator(testDb);
 
-const LOCKED_FIELDS = Object.freeze(['id', 'email', 'emailVerifiedAt', 'firstName', 'lastName', 'status']);
+const LOCKED_FIELDS = Object.freeze(['id', 'email', 'emailVerifiedAt', 'firstName', 'lastName', 'avatarKey', 'status']);
 
 const VERIFIED_AT = parseStrictUtc('2026-11-01T10:00:00.000Z');
 
@@ -56,6 +56,7 @@ async function insertLockedUser(fields = {}) {
     emailVerifiedAt: null,
     firstName: null,
     lastName: null,
+    avatarKey: null,
     status: USER_STATUS.ACTIVE,
     ...fields,
   };
@@ -100,7 +101,7 @@ function listWrongPairs() {
 }
 
 describe('ACCOUNT_FIELDS', () => {
-  test('names, frozen, the fields of a locked row in the order of its columns: the id, the email, when it was verified, the names and the status', () => {
+  test('names, frozen, the fields of a locked row in the order of its columns: the id, the email, when it was verified, the names, the key of the avatar and the status', () => {
     assert.deepEqual(ACCOUNT_FIELDS, LOCKED_FIELDS);
     assert.equal(Object.isFrozen(ACCOUNT_FIELDS), true);
   });
@@ -183,6 +184,7 @@ describe('lockUsers', { skip: testDb.skip }, () => {
       emailVerifiedAt: VERIFIED_AT,
       firstName: 'Anna',
       lastName: 'Kovalenko',
+      avatarKey: `${uuidv7()}.webp`,
     });
     const blocked = await insertLockedUser({ status: USER_STATUS.BLOCKED });
     const rows = await lockUsersInTransaction([blocked.id, active.id]);

@@ -19,6 +19,7 @@ import {
   personName,
   pickFields,
   text,
+  url,
   uuid,
   withDescription,
   withoutNull,
@@ -30,7 +31,7 @@ import { UUID_REGEXP, uuidv7 } from '#utils/id.js';
 import { freezeDeep, omit } from '#utils/object.js';
 import { PERSON_NAME_MAX_LENGTH } from '#utils/person.js';
 import { isArray, isNonEmptyString, isObject } from '#utils/type.js';
-import { EMAIL_MAX_LENGTH } from '#utils/validate.js';
+import { EMAIL_MAX_LENGTH, URL_MAX_LENGTH } from '#utils/validate.js';
 import fastJson from 'fast-json-stringify';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
@@ -42,6 +43,7 @@ const NIL_ID = '00000000-0000-0000-0000-000000000000';
 const ISO_DAY = '2026-11-19';
 const LONGEST_UTC_DATE_TIME = '2026-11-20T10:00:00.123456789+00:00';
 const EMAIL_DOMAIN = '@example.com';
+const WEB_ORIGIN = 'https://app.test';
 
 const STATUSES = Object.freeze(['active', 'blocked']);
 
@@ -339,6 +341,36 @@ describe('isoDate', () => {
     assert.deepEqual(readFailures(missingDay), [['day', 'format']]);
     assert.deepEqual(readFailures(dotted), [['day', 'format']]);
     assert.deepEqual(readLimits(dateTime), [['day', 'maxLength', ISO_DAY.length]]);
+  });
+});
+
+describe('url', () => {
+  test('describes a string in the uri format of ajv-formats, as long as the longest address every browser and proxy takes', () => {
+    assert.deepEqual(url(), { type: 'string', maxLength: URL_MAX_LENGTH, format: 'uri' });
+  });
+
+  test('carries a description only when one is given', () => {
+    assert.equal(Object.hasOwn(url(), 'description'), false);
+    assert.deepEqual(url('Avatar'), { ...url(), description: 'Avatar' });
+  });
+
+  test('takes an absolute address of any scheme, refuses a path, a bare name and text by the format, and an address over its maxLength by the length alone', async (t) => {
+    const address = `${WEB_ORIGIN}/upload/${uuidv7()}.webp`;
+    const longest = `${WEB_ORIGIN}/${'a'.repeat(URL_MAX_LENGTH - WEB_ORIGIN.length - 1)}`;
+    const [taken, mail, atLimit, path, bare, spaced, tooLong] = await postFields(t, { link: url() }, [
+      { link: address },
+      { link: 'mailto:anna@example.com' },
+      { link: longest },
+      { link: '/upload/avatar.webp' },
+      { link: 'avatar.webp' },
+      { link: 'not an address' },
+      { link: `${longest}a` },
+    ]);
+
+    assert.deepEqual([taken, mail, atLimit].map((response) => response.statusCode), [200, 200, 200]);
+    assert.deepEqual(taken.json(), { link: address });
+    [path, bare, spaced].forEach((response) => assert.deepEqual(readFailures(response), [['link', 'format']]));
+    assert.deepEqual(readLimits(tooLong), [['link', 'maxLength', URL_MAX_LENGTH]]);
   });
 });
 
@@ -1266,8 +1298,8 @@ describe('errorEnvelope', () => {
       security: PUBLIC,
     }, createUser);
 
-    function post(url, payload) {
-      return fastify.inject({ method: 'POST', url, payload });
+    function post(path, payload) {
+      return fastify.inject({ method: 'POST', url: path, payload });
     }
 
     const [plainInvalid, declaredInvalid, plainBroken, declaredBroken] = await Promise.all([

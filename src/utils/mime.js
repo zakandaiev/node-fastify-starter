@@ -22,6 +22,8 @@ const REGISTRY = freezeDeep([
 
 export const MIME_WHITELIST = Object.freeze(REGISTRY.map(({ type }) => type));
 
+export const MIME_EXTENSIONS = Object.freeze(REGISTRY.map(({ extension }) => extension));
+
 export const MIME_SIGNATURE_BYTES = Math.max(
   ...REGISTRY.flatMap(({ signatures }) => signatures.map((signature) => signature.length)),
 );

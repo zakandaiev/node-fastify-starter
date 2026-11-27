@@ -6,6 +6,7 @@ import {
   toNumber,
   toString,
 } from '#utils/type.js';
+import { inspect } from 'node:util';
 
 const SPACE = ' ';
 const WHITESPACE_REGEXP = /^\s$/;
@@ -72,6 +73,8 @@ const BYTE_UNITS = Object.freeze(['B', 'KB', 'MB', 'GB', 'TB']);
 const BYTES_PER_UNIT = 1024;
 const BYTES_DECIMALS = 1;
 const DECIMALS_MAX = 100;
+const SIZE_REGEXP = new RegExp(`^(?<amount>\\d+(?:\\.\\d+)?) ?(?<unit>${BYTE_UNITS.join('|')})$`);
+const BYTES_SIGNATURE = 'convertStringToBytes(value)';
 
 // NFC takes quadratic time on a long run of combining marks, and no address is longer than this.
 const EMAIL_INPUT_MAX_LENGTH = 320;
@@ -337,6 +340,25 @@ export function formatBytes(bytes, decimals = BYTES_DECIMALS) {
   const unitIndex = values.findIndex((value, index) => value < BYTES_PER_UNIT || index === lastIndex);
 
   return `${values[unitIndex]} ${BYTE_UNITS[unitIndex]}`;
+}
+
+export function convertStringToBytes(value) {
+  const match = isString(value)
+    ? SIZE_REGEXP.exec(value)
+    : null;
+
+  if (!match) {
+    throw new TypeError(`${BYTES_SIGNATURE} requires a non-negative number with a unit B, KB, MB, GB or TB, such as "5MB" or "1.5 GB": received ${inspect(value)}`);
+  }
+
+  const { amount, unit } = match.groups;
+  const bytes = Math.floor(Number(amount) * (BYTES_PER_UNIT ** BYTE_UNITS.indexOf(unit)));
+
+  if (!Number.isSafeInteger(bytes)) {
+    throw new TypeError(`${BYTES_SIGNATURE} requires a size of at most Number.MAX_SAFE_INTEGER bytes: received ${inspect(value)}`);
+  }
+
+  return bytes;
 }
 
 // NFC goes last: lower-casing keeps canonical equivalence but not the form. "İ" becomes "i" + U+0307,

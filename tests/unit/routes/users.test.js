@@ -1,4 +1,6 @@
+import { IMAGE_INPUT_TYPES } from '#core/image/profile.js';
 import { assertRouteContract } from '#core/schema/route.js';
+import { FILE_CHECK } from '#enums/file-check.js';
 import { MEDIA_TYPE } from '#enums/media-type.js';
 import { USER_STATUS } from '#enums/user-status.js';
 import { getUserSchema, getUsersSchema } from '#root/src/routes/v1/users/controller.js';
@@ -28,12 +30,25 @@ import {
   withHeaders,
 } from '#root/tests/helper/guard.js';
 import { createLogSink } from '#root/tests/helper/log.js';
+import {
+  createImage,
+  createUploadSection,
+  listStored,
+  removeTestUploads,
+  textPart,
+} from '#root/tests/helper/multipart.js';
+import { avatarPart, patchMeFormRequest } from '#root/tests/helper/route.js';
 import { buildDownApp } from '#root/tests/helper/session.js';
 import * as userSchema from '#schemas/entity/user.js';
+import { mapSeries } from '#utils/async.js';
 import { uuidv7 } from '#utils/id.js';
 import { freezeDeep, pick } from '#utils/object.js';
+import { convertStringToBytes } from '#utils/string.js';
 import assert from 'node:assert/strict';
-import { describe, test } from 'node:test';
+import { existsSync } from 'node:fs';
+import { after, describe, test } from 'node:test';
+
+after(() => removeTestUploads());
 
 const PUBLIC = Object.freeze({ auth: false });
 const OWN = Object.freeze({ auth: true });
@@ -84,7 +99,7 @@ const ALL_SCOPES_OF_GROUPS = Object.freeze(['groups:*']);
 const READER_WITH_GROUPS = Object.freeze(['groups:*', 'users:read']);
 const FULL_ACCESS = Object.freeze(['*']);
 
-const LIST_FIELDS = Object.freeze(['id', 'email', 'firstName', 'lastName', 'status', 'createdAt']);
+const LIST_FIELDS = Object.freeze(['id', 'email', 'firstName', 'lastName', 'avatarUrl', 'status', 'createdAt']);
 const MANAGED_FIELDS = Object.freeze(['email', 'firstName', 'lastName']);
 const PROFILE_FIELDS = Object.freeze(['firstName', 'lastName']);
 const NAME_FORMAT = 'person-name';
@@ -92,6 +107,26 @@ const EMAIL_FORMAT = 'email';
 const NULLABLE_TEXT = Object.freeze(['string', 'null']);
 const SUCCESS_CODES = Object.freeze(['200', '204']);
 const LIST_ORDER = freezeDeep({ enum: ['newest', 'name'], default: 'newest' });
+
+// The avatar of PATCH /me: in JSON null alone, which removes it, in a form a file of these types and size.
+const AVATAR_JSON_FIELD = freezeDeep({ type: 'null', description: 'null removes the file; a file itself is sent as multipart/form-data' });
+const AVATAR_FORM_FIELD = freezeDeep({
+  type: 'string',
+  format: 'binary',
+  description: 'A file of image/jpeg, image/png, image/webp, of at most 5 MB; the text null removes it',
+});
+const AVATAR_MAX_SIZE = convertStringToBytes('5MB');
+const SMALL_AVATAR_MAX_SIZE = '1MB';
+const KB = 1024;
+
+// The key of a file of somebody else, as a client would name it in place of the file.
+const STRANGER_KEY = `${uuidv7()}.webp`;
+
+const PHOTO_WIDTH = 64;
+const PHOTO_HEIGHT = 48;
+const PHOTO = await createImage(PHOTO_WIDTH, PHOTO_HEIGHT).png().toBuffer();
+const PROGRAM = Buffer.concat([Buffer.from('MZ'), Buffer.alloc(KB)]);
+const OVERSIZED = Buffer.alloc(AVATAR_MAX_SIZE + KB, 1);
 
 // A request each route takes from a caller with the scopes beside it: past the guard, it goes to the database.
 const REQUESTS = freezeDeep([
@@ -195,6 +230,17 @@ function readParameters(parameters = []) {
   return parameters.map((parameter) => [parameter.in, parameter.name, parameter.required]);
 }
 
+function patchMeForm(headers, parts) {
+  return withHeaders(patchMeFormRequest(parts), headers);
+}
+
+// An app whose storage root is a folder of its own: what a test stores there is all its root holds.
+async function buildUploadApp(build, t, sections = {}) {
+  const fastify = await build(t, { ...sections, upload: { ...sections.upload, ...createUploadSection() } });
+
+  return { fastify, root: fastify.config.upload.storage.root };
+}
+
 describe('routes of users: who may call them', () => {
   test('each has the method, the path and the security of its contract, and a GET a HEAD twin of its security: one\'s own account takes any signed-in user, a read users:read or users:manage, a change users:manage', async (t) => {
     const routes = await listDeclaredRoutes(await buildDownApp(t), useUserRoutes, MOVED_PREFIX);
@@ -229,6 +275,14 @@ describe('routes of users: who may call them', () => {
 
     assertRefused(responses, UNAUTHENTICATED, requests.map(([name]) => name));
     assertHeadsRefused(heads, UNAUTHENTICATED, HEAD_REQUESTS.map(([name]) => name));
+  });
+
+  test('a guest who sends PATCH /me a form with a photo gets 401 before the body is parsed: the storage root is never even made', async (t) => {
+    const { fastify, root } = await buildUploadApp(buildDownApp, t);
+    const response = await fastify.inject(patchMeForm({}, [textPart('firstName', NAME), avatarPart(PHOTO)]));
+
+    assertRefused([response], UNAUTHENTICATED);
+    assert.equal(existsSync(root), false);
   });
 
   test('a user whose token lacks the scopes of a route gets 403 that names no scheme and may not be stored, before a body over bodyLimit, invalid JSON, a wrong id or a wrong query is looked at', async (t) => {
@@ -319,11 +373,28 @@ describe('routes of users with a service down', () => {
       ['PATCH /me of a name of another script', ME_URL, { firstName: CYRILLIC_NAME }, owner],
       ['PATCH /me of a name with spaces around it', ME_URL, { lastName: PADDED_NAME }, owner],
       ['PATCH /me clearing a name', ME_URL, { lastName: null }, owner],
+      ['PATCH /me removing the avatar', ME_URL, { avatar: null }, owner],
     ];
     const responses = await injectPatches(fastify, entries);
 
     assertRefused(responses, OUTAGE, entries.map(([name]) => name));
     assert.deepEqual(readFailureLines(sink, responses), entries.map(() => [REFUSED_CONNECTION]));
+  });
+
+  test('with Redis alive and the database down, PATCH /me takes as a form what it takes as JSON: a name with a photo, a photo alone and the text null of the avatar each reach the database and answer the 500 of its outage, and no photo stays in the storage root', async (t) => {
+    const sink = createLogSink();
+    const { fastify, root } = await buildUploadApp(buildOpenApp, t, { logger: { level: 'error', stream: sink.stream } });
+    const { headers } = issueFor(fastify, NO_SCOPES);
+    const forms = [
+      ['a name with a photo', [textPart('firstName', CYRILLIC_NAME), avatarPart(PHOTO)]],
+      ['a photo alone', [avatarPart(PHOTO)]],
+      ['the text null of the avatar', [textPart('avatar', 'null')]],
+    ];
+    const responses = await mapSeries(forms, ([, parts]) => fastify.inject(patchMeForm(headers, parts)));
+
+    assertRefused(responses, OUTAGE, forms.map(([name]) => name));
+    assert.deepEqual(readFailureLines(sink, responses), forms.map(() => [REFUSED_CONNECTION]));
+    assert.deepEqual(await listStored(root), []);
   });
 });
 
@@ -401,6 +472,56 @@ describe('routes of users: what they refuse before the database', () => {
       responses.map((response, index) => [entries[index][0], describeInvalid(response, entries[index][3])]),
     );
   });
+
+  test('PATCH /me takes no text in the avatar, which would name a file of somebody else: a string is 422 of the type null as JSON and of the constant null as a field of a form, while the database is down', async (t) => {
+    const fastify = await buildOpenApp(t);
+    const { headers } = issueFor(fastify, NO_SCOPES);
+    const [json, form] = await Promise.all([
+      fastify.inject({
+        method: 'PATCH', url: ME_URL, headers, payload: { avatar: STRANGER_KEY },
+      }),
+      fastify.inject(patchMeForm(headers, [textPart('avatar', STRANGER_KEY)])),
+    ]);
+
+    assert.deepEqual(describeAnswer(json), describeInvalid(json, {
+      column: 'avatar', columnValue: STRANGER_KEY, operator: 'type', operatorValue: 'null',
+    }));
+    assert.deepEqual(describeAnswer(form), describeInvalid(form, {
+      column: 'avatar', columnValue: STRANGER_KEY, operator: 'const', operatorValue: null,
+    }));
+  });
+
+  test('PATCH /me refuses with 422 of its field a program renamed a.png and sent as image/png, a file over 5 MB and a name that is none beside a photo, while the database is down: no file stays in the storage root', async (t) => {
+    const { fastify, root } = await buildUploadApp(buildOpenApp, t);
+    const { headers } = issueFor(fastify, NO_SCOPES);
+    const forms = [
+      [[avatarPart(PROGRAM, { filename: 'a.png' })], {
+        column: 'avatar', columnValue: null, operator: FILE_CHECK.MIME, operatorValue: IMAGE_INPUT_TYPES,
+      }],
+      [[avatarPart(OVERSIZED, { filename: 'big.png' })], {
+        column: 'avatar', columnValue: null, operator: FILE_CHECK.MAX_SIZE, operatorValue: AVATAR_MAX_SIZE,
+      }],
+      [[textPart('firstName', TITLED_NAME), avatarPart(PHOTO)], {
+        column: 'firstName', columnValue: TITLED_NAME, operator: 'format', operatorValue: NAME_FORMAT,
+      }],
+    ];
+    const responses = await mapSeries(forms, ([parts]) => fastify.inject(patchMeForm(headers, parts)));
+
+    assert.deepEqual(responses.map((response) => describeAnswer(response)), responses.map((response, index) => describeInvalid(response, forms[index][1])));
+    assert.deepEqual(await listStored(root), []);
+  });
+
+  test('PATCH /me takes an avatar up to avatarMaxSize of config.upload: below 5 MB there, a file past it is refused with that size', async (t) => {
+    const { fastify, root } = await buildUploadApp(buildOpenApp, t, { upload: { avatarMaxSize: SMALL_AVATAR_MAX_SIZE } });
+    const { headers } = issueFor(fastify, NO_SCOPES);
+    const maxSize = convertStringToBytes(SMALL_AVATAR_MAX_SIZE);
+    const response = await fastify.inject(patchMeForm(headers, [avatarPart(Buffer.alloc(maxSize + KB, 1), { filename: 'big.png' })]));
+
+    assert.deepEqual(describeAnswer(response), describeInvalid(response, {
+      column: 'avatar', columnValue: null, operator: FILE_CHECK.MAX_SIZE, operatorValue: maxSize,
+    }));
+    assert.deepEqual(await listStored(root), []);
+  });
 });
 
 describe('routes of users: what they say', () => {
@@ -439,7 +560,7 @@ describe('routes of users: what they say', () => {
     );
   });
 
-  test('in dev mode the spec documents the fields a change takes, the names in the format person-name, and what each answer holds: a row of the list six fields of a user, a user every field of its schema, a deletion no body', async (t) => {
+  test('in dev mode the spec documents the fields a change takes, the names in the format person-name and the avatar as null alone in JSON, and what each answer holds: a row of the list seven fields of a user, a user every field of its schema, a deletion no body', async (t) => {
     const operations = await readDocumentedOperations(t, USERS_URL);
     const bodies = operations
       .filter(([, { requestBody }]) => requestBody !== undefined)
@@ -448,11 +569,15 @@ describe('routes of users: what they say', () => {
     const rows = { type: 'array', items: { type: 'object', properties: pick(userSchema.properties, LIST_FIELDS) } };
 
     assert.deepEqual(bodies, [
-      [`PATCH ${ME_URL}`, { type: 'object', properties: pick(userSchema.properties, PROFILE_FIELDS), additionalProperties: false }],
+      [`PATCH ${ME_URL}`, {
+        type: 'object',
+        properties: { ...pick(userSchema.properties, PROFILE_FIELDS), avatar: AVATAR_JSON_FIELD },
+        additionalProperties: false,
+      }],
       [`PATCH ${DOCUMENTED_USER_URL}`, { type: 'object', properties: pick(userSchema.properties, MANAGED_FIELDS), additionalProperties: false }],
     ]);
     assert.deepEqual(bodies.map(([name, schema]) => [name, readFormats(schema)]), [
-      [`PATCH ${ME_URL}`, [['firstName', NAME_FORMAT], ['lastName', NAME_FORMAT]]],
+      [`PATCH ${ME_URL}`, [['firstName', NAME_FORMAT], ['lastName', NAME_FORMAT], ['avatar', undefined]]],
       [`PATCH ${DOCUMENTED_USER_URL}`, [['email', EMAIL_FORMAT], ['firstName', NAME_FORMAT], ['lastName', NAME_FORMAT]]],
     ]);
     assert.deepEqual(operations.map(([name, { responses }]) => [name, readSuccess(responses)]), [
@@ -466,6 +591,20 @@ describe('routes of users: what they say', () => {
       [`POST ${DOCUMENTED_USER_URL}/block`, ['200', user]],
       [`POST ${DOCUMENTED_USER_URL}/unblock`, ['200', user]],
     ]);
+  });
+
+  test('in dev mode the spec documents a form beside JSON on PATCH /me alone, of the same fields with the avatar as a file picker for an image of at most 5 MB, and the avatar of a user as the URI of a file or null', async (t) => {
+    const operations = await readDocumentedOperations(t, USERS_URL);
+    const forms = operations
+      .filter(([, { requestBody }]) => requestBody?.content?.[MEDIA_TYPE.FORM_DATA] !== undefined)
+      .map(([name, { requestBody: { content } }]) => [name, Object.keys(content), content[MEDIA_TYPE.FORM_DATA].schema]);
+
+    assert.deepEqual(forms, [[`PATCH ${ME_URL}`, [MEDIA_TYPE.JSON, MEDIA_TYPE.FORM_DATA], {
+      type: 'object',
+      properties: { ...pick(userSchema.properties, PROFILE_FIELDS), avatar: AVATAR_FORM_FIELD },
+      additionalProperties: false,
+    }]]);
+    assert.deepEqual(pick(userSchema.properties.avatarUrl, ['type', 'format']), { type: ['string', 'null'], format: 'uri' });
   });
 
   test('in dev mode the spec documents the query of the list, its filters, its order with newest first by default and its page, and the id in the path of each route of one user', async (t) => {
@@ -495,7 +634,7 @@ describe('routes of users: what they say', () => {
     assert.deepEqual(pick(list.parameters.find(({ name }) => name === 'sort').schema, ['enum', 'default']), LIST_ORDER);
   });
 
-  test('what a handler would hand out by mistake never reaches the body: a user is every field of its schema, a row of the list six of them', async (t) => {
+  test('what a handler would hand out by mistake never reaches the body: a user is every field of its schema, a row of the list seven of them', async (t) => {
     const fastify = await buildDownApp(t);
     const extra = { passwordHash: 'row-secret', providerUserId: 'provider-subject' };
     const user = userSchema.example;

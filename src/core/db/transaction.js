@@ -1,5 +1,5 @@
 import { createContext, getContext, runInContext } from '#core/context/index.js';
-import { createTransactionTimeoutError, isLockConflict } from '#core/db/error.js';
+import { createTransactionTimeoutError, findDbError, isLockConflict } from '#core/db/error.js';
 import { assertIsolation } from '#core/db/isolation.js';
 import {
   mapSeries,
@@ -59,6 +59,18 @@ function assertAlive(root) {
   }
 }
 
+// A connection lost before COMMIT takes its transaction with it: nothing of it is written. isOutcomeUnknown of
+// core/db/error.js reads the mark; a COMMIT lost on the way stays unmarked, since it may have landed.
+function markRolledBack(error) {
+  const dbError = findDbError(error);
+
+  if (dbError?.isFatal === true) {
+    dbError.isRolledBack = true;
+  }
+
+  return error;
+}
+
 // After a lock conflict the server has rolled the transaction back, and after a fatal error the connection
 // is gone: a statement sent now would run outside any transaction. So the first such error closes the
 // transaction for everything that follows, also when the caller has swallowed it.
@@ -70,7 +82,7 @@ async function send(root, run) {
       root.failure ??= error;
     }
 
-    throw error;
+    throw markRolledBack(error);
   }
 }
 
@@ -188,7 +200,7 @@ async function begin(driver, connection, options) {
   } catch (error) {
     driver.destroy(connection);
 
-    throw error;
+    throw markRolledBack(error);
   }
 }
 

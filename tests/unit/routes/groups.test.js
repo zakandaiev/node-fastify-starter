@@ -118,7 +118,7 @@ const RESERVED_POSTS = freezeDeep(Object.values(GROUP_SLUG).flatMap((slug) => [
   [`POST of "${slug}" with users:*`, { slug, name: 'Reserved', scopes: ['users:*'] }],
 ]).map(([name, payload]) => [name, { method: 'POST', url: GROUPS_URL, payload }]));
 
-const MEMBER_FIELDS = Object.freeze(['id', 'email', 'firstName', 'lastName', 'status', 'createdAt']);
+const MEMBER_FIELDS = Object.freeze(['id', 'email', 'firstName', 'lastName', 'avatarUrl', 'status', 'createdAt']);
 
 describe('routes of groups: who may call them', () => {
   test('each has the method, the path and the scopes of its contract, and a GET a HEAD twin of its scopes: a read takes groups:read or groups:manage, a change groups:manage, the members users:read or users:manage beside either', async (t) => {
@@ -336,7 +336,7 @@ describe('routes of groups: what they say', () => {
     );
   });
 
-  test('what a handler would hand out by mistake never reaches the body: a group is its fields with its scopes, a member six fields of a user, a scope its code, its name and its description', async (t) => {
+  test('what a handler would hand out by mistake never reaches the body: a group is its fields with its scopes, a member seven fields of a user, a scope its code, its name and its description', async (t) => {
     const fastify = await buildDownApp(t);
     const extra = { passwordHash: 'row-secret', grantedBy: uuidv7() };
     const group = groupSchema.example;

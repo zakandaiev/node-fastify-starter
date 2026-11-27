@@ -9,6 +9,7 @@ import { createLoggerConfig } from '#config/logger.js';
 import { createOauthConfig } from '#config/oauth.js';
 import { createRateLimitConfig } from '#config/rate-limit.js';
 import { createRedisConfig } from '#config/redis.js';
+import { createUploadConfig } from '#config/upload.js';
 
 export function createConfig(env) {
   if (!env?.APP_MODE) {
@@ -25,6 +26,7 @@ export function createConfig(env) {
     auth: createAuthConfig(env),
     oauth: createOauthConfig(env),
     http: createHttpConfig(),
+    upload: createUploadConfig(),
     alert: createAlertConfig(env),
     logger: createLoggerConfig(env),
   });

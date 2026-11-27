@@ -1,4 +1,5 @@
 import { MODE } from '#config/env.js';
+import { absPath } from '#config/path.js';
 
 export function createAppConfig(env) {
   return Object.freeze({
@@ -24,6 +25,9 @@ export function createAppConfig(env) {
     apiPrefix: '/api',
     healthPrefix: '/health',
     docsPrefix: '/docs',
+
+    // Served at "/" in dev mode only: in production the frontend or a proxy in front of the app serves its files.
+    publicRoot: absPath.public,
 
     bodyLimit: 16 * 1024,
     maxParamLength: 100,

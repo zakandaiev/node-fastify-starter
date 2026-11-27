@@ -27,6 +27,7 @@ const TEXT_COLLATIONS = Object.freeze({
   'users.last_name': HUMAN,
   'users.locale': MACHINE,
   'users.timezone': MACHINE,
+  'users.avatar_key': MACHINE,
   'users.status': MACHINE,
   'user_identities.provider': MACHINE,
   'user_identities.provider_user_id': MACHINE,
@@ -71,6 +72,15 @@ const FAILED_CHECK = Object.freeze({ name: 'DbError', code: 'ER_CONSTRAINT_FAILE
 const UNKNOWN_PARENT = Object.freeze({ name: 'DbError', code: 'ER_NO_REFERENCED_ROW_2' });
 
 const ACTOR_MIGRATION = Object.freeze({ id: '0009_audit_logs_actor', name: 'audit_logs_actor' });
+const AVATAR_MIGRATION = Object.freeze({ id: '0010_users_avatar_key', name: 'users_avatar_key' });
+
+// users.avatar_key: a key of the storage, never a URL, and none until the user has an avatar.
+const AVATAR_KEY_COLUMN = Object.freeze({
+  type: 'varchar(64)',
+  nullable: 'YES',
+  collation: MACHINE,
+  comment: 'The key of the avatar in the upload storage, not its URL: the URL follows the address of the app; NULL without an avatar',
+});
 
 // audit_logs.actor_id after 0009, and after its rollback.
 const KEPT_ACTOR = Object.freeze({
@@ -331,6 +341,23 @@ describe('the migrations of the repository', { skip: testDb.skip }, () => {
 
     assert.deepEqual(await readActors(), { [deleted]: null, [kept]: null, [stranger]: null });
     await assert.rejects(recordOwnAction(uuidv7()), UNKNOWN_PARENT);
+  });
+
+  test('keep the avatar of a user in 0010 as the key of its file, next to the time zone and none for a new user; its rollback takes the column off, and nothing else of the table', async () => {
+    const id = await createUser();
+    const key = `${uuidv7()}.webp`;
+    const { columns, columnOrder } = (await readOwnStructure()).tables.users;
+
+    assert.deepEqual(pick(columns.avatar_key, Object.keys(AVATAR_KEY_COLUMN)), AVATAR_KEY_COLUMN);
+    assert.equal(columnOrder[columnOrder.indexOf('timezone') + 1], 'avatar_key');
+    assert.deepEqual(await testDb.readRows('SELECT avatar_key FROM users WHERE id = :id', { id }), [{ avatar_key: null }]);
+
+    await testDb.readRows('UPDATE users SET avatar_key = :key WHERE id = :id', { id, key });
+
+    assert.deepEqual(await testDb.readRows('SELECT avatar_key FROM users WHERE id = :id', { id }), [{ avatar_key: key }]);
+    assert.deepEqual(await down({ names: [AVATAR_MIGRATION.name] }), { files: [`${AVATAR_MIGRATION.id}.down.sql`], isDryRun: false });
+    assert.deepEqual((await readOwnStructure()).tables.users.columnOrder, columnOrder.filter((column) => column !== 'avatar_key'));
+    assert.deepEqual(await testDb.readRows('SELECT id FROM users'), [{ id }]);
   });
 
   test('make a session live, not of dev mode and active since its sign-in', async () => {

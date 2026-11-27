@@ -19,6 +19,7 @@ describe('absPath', () => {
     assert.equal(absPath.plugin, nodePath.join(absPath.root, 'src', 'plugins'));
     assert.equal(absPath.route, nodePath.join(absPath.root, 'src', 'routes'));
     assert.equal(absPath.migration, nodePath.join(absPath.root, 'migrations'));
+    assert.equal(absPath.public, nodePath.join(absPath.root, 'public'));
     assert.equal(absPath.upload, nodePath.join(absPath.root, 'upload'));
   });
 });

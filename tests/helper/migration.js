@@ -31,6 +31,7 @@ export const REPOSITORY_MIGRATIONS = Object.freeze([
   '0007_sessions',
   '0008_user_identities_email_verified',
   '0009_audit_logs_actor',
+  '0010_users_avatar_key',
 ]);
 export const REPOSITORY_SEEDS = Object.freeze(['0001_groups']);
 

@@ -5,6 +5,7 @@ import {
   createDownDb,
   createDownEnv,
   DATABASE_PREFIX,
+  isCommitPacket,
   toLikePattern,
 } from '#root/tests/helper/db.js';
 import { createLogSink } from '#root/tests/helper/log.js';
@@ -14,6 +15,10 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
 const RUN_DATABASE_SUITE = 'tests/fixture/run-database-suite.js';
+
+// What mysql2 sends MariaDB 12.3 for COMMIT and for START TRANSACTION, as a relay reads them.
+const COMMIT_BYTES = Buffer.from('0700000003434f4d4d4954', 'hex');
+const BEGIN_BYTES = Buffer.from('12000000035354415254205452414e53414354494f4e', 'hex');
 
 describe('DATABASE_PREFIX and ACCOUNT_HOST', () => {
   test('are the prefix a database or an account of the tests is named with, and the host such an account is made for: any host', () => {
@@ -38,6 +43,15 @@ describe('toLikePattern', () => {
     assert.equal(toLikePattern(DATABASE_PREFIX), 'nfs\\_test\\_%');
     assert.equal(toLikePattern('nfs_test_019a0000_0000_'), 'nfs\\_test\\_019a0000\\_0000\\_%');
     assert.equal(toLikePattern('plain'), 'plain%');
+  });
+});
+
+describe('isCommitPacket', () => {
+  test('is true of the bytes of a COMMIT alone: another statement, a part of the packet or one more packet after it is none', () => {
+    assert.equal(isCommitPacket(COMMIT_BYTES), true);
+    assert.equal(isCommitPacket(BEGIN_BYTES), false);
+    assert.equal(isCommitPacket(COMMIT_BYTES.subarray(0, -1)), false);
+    assert.equal(isCommitPacket(Buffer.concat([COMMIT_BYTES, BEGIN_BYTES])), false);
   });
 });
 

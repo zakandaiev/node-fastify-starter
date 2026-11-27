@@ -37,8 +37,8 @@ Then name the table where the code looks for it:
 `src/schemas/entity/user.js` is the one description of a user. It exports:
 
 - `properties`: the fields of the API in camelCase, built with the factories of `#schemas/common/field.js` (`uuid`,
-  `email`, `text`, `personName`, `enumOf`, `dateTimeUtc`, `json`, `nullable`). A field of a column has the length of the
-  column;
+  `email`, `text`, `personName`, `enumOf`, `dateTimeUtc`, `url`, `json`, `nullable`). A field of a column has the length
+  of the column;
 - `filters`: what a list may be filtered by (`text` searches a fragment, `options`, ranges of dates and numbers);
 - `sort`: the orders of a list, each ending with `id` so that a page never shuffles;
 - `unique`: the index that reports a duplicate, and the field it is reported on: a taken email answers `422` with
@@ -154,3 +154,180 @@ export const patchUserSchema = createSchema(userSchema)
 `npm run lint && npm test` runs them all; without MariaDB and Redis the integration tests are skipped with a message.
 Swagger documents the routes by itself in dev mode (`/docs`). After you export a new function from `src/core` or
 `src/utils`, `npm run api:index` updates `docs/CORE-API.md`.
+
+## Add a file field to a route
+
+A file comes in the body of the route that writes its row, beside the other fields: there is no upload route and no
+table of files. `PATCH /api/v1/users/me` with `avatar` is the example to copy: the option in
+`src/routes/v1/users/index.js`, the handler `patchMe` in `controller.js`, the rules in `updateOwnProfile()` of
+`src/modules/users/users.service.js`.
+
+### 1. The column
+
+The row holds the key of its file in the storage, never the URL: the URL follows the address of the app, the key stays.
+
+- The migration adds a column for the key with its comment, `avatar_key VARCHAR(64) NULL`. A key is no text for people:
+  it keeps the collation of the table.
+- The entity schema gives the URL in its place, `avatarUrl: nullable(url('…'))`, with an example. No column holds it:
+  `tests/integration/schemas/entity.test.js` lists it among the computed fields and `avatar_key` among the columns the
+  API does not tell.
+
+### 2. The option
+
+`files` stands beside `security`, on a `POST`, `PUT` or `PATCH` route:
+
+```js
+function readProfileFiles(uploadConfig) {
+  return freezeDeep({
+    fields: {
+      avatar: { maxSize: uploadConfig.avatarMaxSize, mime: [...IMAGE_INPUT_TYPES], image: IMAGE_PROFILE.AVATAR },
+    },
+  });
+}
+
+fastify.patch('/me', { schema: patchMeSchema, security: OWN, files: readProfileFiles(fastify.config.upload) }, patchMe);
+```
+
+A size someone may tune lives in `src/config/upload.js`, as `avatarMaxSize` (5 MB) does, and the route reads it from
+`fastify.config`.
+
+Each key of `fields` is a field of the body, in camelCase:
+
+- `max`: how many files the field takes, 1 by default; above 1 the handler gets a list.
+- `maxSize`, required: the largest file, a size with a unit B, KB, MB, GB or TB of 1024 (`'512KB'`, `'5MB'`).
+- `mime`, required: the types the field takes, of those the app tells by the first bytes of a file (`MIME_WHITELIST` of
+  `#utils/mime.js`): a type without a signature, such as SVG or text, is never taken. An image is JPEG, PNG or WebP
+  (`IMAGE_INPUT_TYPES`), the types the decoder reads; a PDF is stored as it came.
+- `image`: the profile an image is encoded by; required when `mime` names an image, refused otherwise.
+
+Beside `fields`, `totalMaxSize` bounds the bytes of all the files of a body (by default the sum of `max × maxSize` of
+every field) and `maxFiles` their count (by default the sum of `max`).
+
+A profile is a name in `src/enums/image-profile.js` and an entry of `config.upload.image.profiles`: `format` (`webp`,
+`jpeg` or `png`), `quality` (1 to 100, 80 by default) and `maxSize`, the longest side in pixels; `avatar` is a WebP of
+512 pixels at most. The same section caps every decode: `maxPixels`, `maxDecodeBytes`, `maxJpegScans` and `timeout`.
+
+`src/config/upload.js` holds the ceilings of every route: `maxFileSize` and `maxTotalSize` (10 MB each), `maxBodySize`
+(12 MB of a whole form, the parts it drops included), `maxPartHeaderSize` (2 KB of the header of a part), `maxParts` (50
+text fields and files in one body) and `maxActiveFiles` (3 files read, decoded and stored at once in a process). A
+process holds up to `maxActiveFiles` files of `maxFileSize` in memory, and `config.app.requestTimeout` (2 minutes) must
+carry a body of `maxBodySize` over a slow link: raise them together.
+
+An option the core cannot work with stops the start, with the route in the message: an unknown key, a size over a
+ceiling (a default `totalMaxSize` too), a type the app cannot tell, an image without a profile, a method other than
+those three.
+
+### 3. What the core does
+
+Write the body schema without the file fields, as for JSON alone: `.body(['firstName', 'lastName'], { isPatch: true })`.
+The core adds them from `files`, and a body that names one stops the start. The route then takes the same fields in two
+media types:
+
+- `application/json`: a file field takes `null` alone, which removes the file; a missing field leaves it. A string there
+  could name a file of somebody else: `422` with `operator: 'type'`.
+- `multipart/form-data`: the text fields pass the same schema, coerced as a query is, and a name given twice is a list.
+  The text `null` is `null` in a field that takes `null`; elsewhere it stays the text, which a number or a boolean
+  refuses as it refuses `null` of JSON. Blank text of a field of numbers is no value, as in a query. A file field takes
+  files, or the text `null` alone (`422` with `operator: 'const'`).
+
+Swagger documents both, the form with a file picker. A form sent to a route without `files` is
+`415 UNSUPPORTED_MEDIA_TYPE_ERROR`, and one to a path or a method with no route `404`, as JSON is.
+
+`src/plugins/180.multipart.js` reads the form in `preValidation`, after the auth and the guard of `onRequest`: the form
+of a guest is `401` before any file is stored. The validation and the hooks of the route come after it, and see the text
+of the form as `request.body`.
+
+- Every part is read to its end before the answer: an answer before the end of the body is a 502 behind a proxy. A
+  refusal of `onRequest` (`401`, `403`, `429`) waits for the end of the form too, and so does one past `maxBodySize`,
+  whose rest is read and dropped unparsed.
+- A file is read into memory up to its `maxSize`, and its type is told by its bytes, never by its name or the type the
+  client gave.
+- An image goes through `processImage()` of `#core/image`: decoded under the caps of `config.upload.image`, turned
+  upright, scaled down to its profile and encoded again without its metadata, EXIF and GPS included. The original never
+  reaches the disk.
+- A file is stored under a key of its own, a UUIDv7 with the extension of its type (`toStorageKey()`). The name the
+  client gave is kept nowhere.
+- A field the route does not name, and a file input with nothing chosen, are read and dropped.
+
+A form is refused once it has been read, and the files it stored are removed:
+
+- `422 VALIDATION_ERROR`, with an entry per field and check, `columnValue: null` and an operator of
+  `src/enums/file-check.js`. `maxSize`, `maxFiles` and `totalMaxSize` give their limit in `operatorValue`, `mime` the
+  types of the field, `image` `null` (the decoder refuses the file) and `maxPixels` the pixel limit that applied. A text
+  `null` beside a file counts as one of its files. These come before the validation of the text, which runs once the
+  files pass.
+- `413 PAYLOAD_TOO_LARGE_ERROR`: text over the `bodyLimit` of the route (16 KB by default), the names of the fields
+  counted in, more parts than `maxParts`, or a form past `maxBodySize`.
+- `503 SERVICE_UNAVAILABLE_ERROR` with `Retry-After`: `maxActiveFiles` files are at work in the process.
+- `400 BAD_REQUEST_ERROR`: a body the parser cannot read. A failure of the storage or of the decoder is a `500` with an
+  alert.
+
+`src/plugins/190.static.js` serves the files at `GET /upload/:key` (the `publicPath` of `config.upload.storage`), with no
+auth and no limiter. They are cached as `immutable` for `maxAge`, since a key never changes its content. Only an image
+the app has encoded is shown in place; any other file is offered to save. Every file goes with `nosniff`,
+`X-Robots-Tag: noindex` and `Cross-Origin-Resource-Policy: cross-origin`, and nothing lists the folder.
+
+### 4. The handler
+
+```js
+export async function patchMe(request, reply) {
+  const user = await commitUploadedFiles(request, () => updateOwnProfile({
+    userId: request.user.id,
+    input: request.body,
+    avatar: request.uploadedFiles?.avatar,
+  }));
+
+  return reply.ok(user);
+}
+```
+
+- `request.uploadedFiles` holds the stored files by field: `{ key, url, mime, size }`, with `width` and `height` for an
+  image, and a list of them for `max` above 1. It is `{}` for a form without files and `null` for JSON. The body never
+  holds a file, at most `null` in its place.
+- `commitUploadedFiles(request, run)` runs the service and keeps the files once it has committed: they belong to the row
+  then, and a failure of the serializer after it keeps them. Any other failure of the request (a status of 400 or above)
+  removes them in `onSend` or `onResponse`, unless the connection to the database was lost while a write was on its way
+  (`isOutcomeUnknown()` of `#core/db/error.js`): the row may name them, and an orphan file costs less than a row that
+  names a removed one. `keepUploadedFiles(request)` is the bare step, for a handler that commits in its own way.
+
+### 5. The service
+
+- The new file is an argument of its own (`avatar`), and its key joins the patch: a form with a file alone is a change,
+  not `409 NO_CHANGES`. The input only removes, with `null`; a string there is a `TypeError`.
+- The key it replaces is read under the lock of the row (`lockAccount()` gives `avatarKey`): of two changes at once, the
+  later one removes the file of the earlier.
+- The replaced file, and the file of a deleted row, are removed once the transaction has committed. `updateOwnProfile()`
+  calls this when the key has changed, `removeLocked()` for both deletions:
+
+```js
+// Once the row names it no more: a rollback keeps the row and the file as they were.
+async function removeAvatarFile(avatarKey) {
+  if (avatarKey === null) {
+    return false;
+  }
+
+  return afterCommit(() => getStorage().delete(avatarKey));
+}
+```
+
+- The repository writes the key and gives the URL: a row it reads maps `avatarKey` to `getStorage().url(avatarKey)`, or
+  to `null`. A list does the same through `toUserList()`, which the members of a group share.
+
+### 6. The tests
+
+- A form is built by hand, byte by byte, with `tests/helper/multipart.js`: `textPart(name, value)`,
+  `filePart(name, bytes, { filename, type })` and `withForm(request, parts)` for `inject()`. An image is made by the test
+  with sharp, `await createImage(64, 48).png().toBuffer()`, never committed as a file.
+- Nothing is stored into the repository. `createTestConfig()` points the storage at `PROCESS_UPLOAD_ROOT`, a folder of
+  the test process under the temporary folder of the system, and a test file that stores removes it:
+  `after(() => removeTestUploads())`. `createUploadSection()` is an upload section whose root is a folder of its own
+  under `PROCESS_UPLOAD_ROOT`, and `openUploadApp(t, testDb)` opens a route app on the database with one:
+  `listStored(root)` then lists what the test stored. `createTestConfig({ upload: { storage } })` replaces the whole
+  storage section: spread `createUploadConfig().storage` into a root of your own.
+- Prove each promise of the field: the same change as JSON and as a form; a string in place of the file is `422`;
+  `null` removes the file and a missing field keeps it; the replaced file and that of a deleted row are gone; the stored
+  image has no EXIF; a program renamed `a.png` is `422` of `mime`, a file over `maxSize` `422` of `maxSize`; the form of
+  a guest is `401` and a form whose text is refused `422`. Each refusal leaves no file in the root.
+  `tests/unit/routes/users.test.js` and `tests/integration/routes/users.test.js` do it for the avatar. The parser
+  itself, broken bodies over a socket included, is tested in `tests/unit/plugins/multipart.test.js` and
+  `tests/unit/core/upload/index.test.js`.

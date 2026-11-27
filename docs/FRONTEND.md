@@ -1,8 +1,8 @@
 # Frontend contract
 
 What a browser frontend needs to know to talk to this backend: how a person signs in, how the session lives, how to read
-an answer. The frontend is served from the same site as the API (`https://<APP_HOST>`, the API under `/api`); a frontend
-on another origin is not supported out of the box.
+an answer, how to send a file. The frontend is served from the same site as the API (`https://<APP_HOST>`, the API
+under `/api`); a frontend on another origin is not supported out of the box.
 
 ## Answers
 
@@ -192,11 +192,12 @@ function isGranted(scopes, code) {
 ## Profile and users
 
 - `GET /api/v1/users/me` gives the profile: `id`, `email`, `emailVerifiedAt`, `firstName`, `lastName`, `locale`,
-  `timezone`, `status`, `createdAt`, `updatedAt`.
-- `PATCH /api/v1/users/me` changes `firstName` and `lastName`: a key that is missing keeps its value, `null` clears it,
-  an empty body answers `409 NO_CHANGES`. A name is one word of letters of any script, with a hyphen or an apostrophe
-  inside it, up to 40 characters; another answers `422` on that field with `operator: 'format'` and
-  `operatorValue: 'person-name'`, or with `operator: 'maxLength'` over 100 characters. The email is not changed here.
+  `timezone`, `avatarUrl`, `status`, `createdAt`, `updatedAt`.
+- `PATCH /api/v1/users/me` changes `firstName`, `lastName` and the avatar, as JSON or as a form (see Files): a key that
+  is missing keeps its value, `null` clears it, an empty body answers `409 NO_CHANGES`. A name is one word of letters of
+  any script, with a hyphen or an apostrophe inside it, up to 40 characters; another answers `422` on that field with
+  `operator: 'format'` and `operatorValue: 'person-name'`, or with `operator: 'maxLength'` over 100 characters. The
+  email is not changed here.
 - `DELETE /api/v1/users/me` deletes the account for good and ends every session. Its `204` clears the session cookies
   and the markers, unless the request came with `Authorization: Bearer`; then go to sign-in. The last active member of
   the admin group gets `409 GROUP_PROTECTED`: another member must stay. Whoever signs in again gets a new, empty account.
@@ -212,6 +213,88 @@ function isGranted(scopes, code) {
   identity holds such an address while the account has none, counts as holding full access.
   The last active member of the admin group cannot be blocked or deleted: `409 GROUP_PROTECTED`.
 
+## Files
+
+A route that takes files reads its body as JSON or as `multipart/form-data` of the same fields; for now that is
+`PATCH /api/v1/users/me` with `avatar`. Any other route answers a form with `415 UNSUPPORTED_MEDIA_TYPE_ERROR`, and a
+path with no route with `404`, as it answers JSON.
+
+```js
+const form = new FormData();
+
+form.append('firstName', 'Anna');
+form.append('avatar', fileInput.files[0]);
+
+// No Content-Type: the browser writes it with the boundary of the form. PATCH in capitals: fetch() upper-cases
+// DELETE, GET, HEAD, OPTIONS, POST and PUT, never PATCH.
+const response = await fetch('/api/v1/users/me', { method: 'PATCH', body: form });
+```
+
+- **Never set the `Content-Type` of a form yourself**: without the boundary the browser writes into it, the body cannot
+  be read (`400 BAD_REQUEST_ERROR`).
+- **The fields of a form are those of the JSON**, as text: numbers and booleans are read from it as from a query, and a
+  name given twice is a list. A field of several files repeats its name, once per file.
+- **The text `null` is `null`** in a field that takes `null`: `form.append('avatar', 'null')` removes the avatar, as
+  `{ "avatar": null }` does, and the text `null` clears a name the same way. In a field that does not take `null` it
+  stays the text, and a number or a boolean answers `422` on it, as on `null` of JSON. An empty text of a number field is
+  no value, as in a query. A field that is not there keeps its value, the file too, and so does a file input with nothing
+  chosen, which `new FormData(formElement)` sends as an empty file without a name.
+- **A file goes as a file only.** A string in a file field, the URL of the file or any other, answers `422`
+  (`operator: 'type'` in JSON, `'const'` in a form): the server never takes a file by its name.
+
+### Choosing a file
+
+```html
+<input type="file" name="avatar" accept="image/jpeg,image/png,image/webp">
+```
+
+- JPEG first: Safari turns a HEIC photo into the first type of the list. No spaces: an Android WebView splits the list
+  on commas without trimming.
+- The type is told by the bytes of the file, never by its name or by the type the browser gives it: a program renamed
+  `photo.png` is still refused.
+- The avatar is one file of up to 5 MB, a megabyte being 1024 × 1024 bytes. The server reads a form to its end before it
+  answers, a refused file too: check `file.size` before sending. A form over 12 MB in all is answered `413` once it has
+  arrived, and the whole request must arrive within 2 minutes.
+- The server turns the image upright, scales it down to at most 512 pixels on its longest side and stores it as WebP,
+  without its EXIF and so without the place a photo was taken. A larger photo may be scaled down in the page before it
+  is sent.
+- Swagger (`/docs` in dev mode) describes each file field of a route: its types and its size.
+
+### When a file is refused
+
+`422 VALIDATION_ERROR` names the file field in `column`, with `columnValue: null`. `operator` tells what is wrong, and
+`operatorValue` its limit:
+
+| `operator` | `operatorValue` | Meaning | What to show |
+|---|---|---|---|
+| `maxSize` | the most bytes of a file | the file is larger | "The file is too large: up to 5 MB" |
+| `mime` | the types the field takes | the bytes are of none of them | "Choose a JPEG, PNG or WebP image" |
+| `image` | `null` | the server cannot read the image: it is damaged, cut short, or not what its first bytes claim | "This image cannot be read: choose another one" |
+| `maxPixels` | the most pixels | the image has more | "The image is too large: choose a smaller one" |
+| `maxFiles` | the most files of the field, or of the form | more files than that; a text `null` beside a file counts as one | a fault of the page: send one file or `null` per field |
+| `totalMaxSize` | the most bytes of all the files of a form | the files are larger together | "The files are too large together" |
+
+- **The files are checked first**, while the form is read, and its text after them: a `422` with an error of a file
+  holds no error of the text, which may come once the file passes.
+- `413 PAYLOAD_TOO_LARGE_ERROR`: the text of the form is over 16 KB, the names of its fields counted in, the form has
+  more than 50 fields and files together, or it is over 12 MB in all. A proxy in front of the API may answer `413` by itself, without our envelope, to a body over its own limit:
+  show the size message there too.
+- `503 SERVICE_UNAVAILABLE_ERROR` with `Retry-After`: the server is busy with other uploads. It answers once the whole
+  form has arrived; send it again after `Retry-After` seconds.
+- A refused form stores nothing: send it whole again.
+
+### Showing the avatar
+
+`avatarUrl` of a user (in `GET` and `PATCH` of `/api/v1/users/me`, in `GET /api/v1/users/:id` and in the rows of the
+lists of users and of members) is the full address of the file, under `/upload/` of the backend, or `null` without one.
+
+- An address never changes its content: a new avatar comes at a new address, and a browser may keep the file for a year
+  (`immutable`). Show the `avatarUrl` of the latest answer: a query to bust a cache is never needed.
+- The file is served with `Cross-Origin-Resource-Policy: cross-origin`, so a page of another origin may show it in an
+  `<img>`. It needs no cookie or token: whoever has the address gets the file.
+- A sign-in or a link through a provider that has a picture (Google, Telegram) copies it into an empty avatar when it
+  can; it never replaces one.
+
 ## Development
 
 - **Dev sign-in.** With `APP_MODE=dev` the backend has `POST /api/v1/auth/login-dev` with `{ "email": "anna@example.com" }`:
@@ -220,7 +303,8 @@ function isGranted(scopes, code) {
   (`Authorization: Bearer <token>`). It answers only requests that come from this machine; to anything else it is a
   missing route.
 - **Dev proxy.** A dev server that proxies `/api` must pass on the address of the browser and keep its `Host`, or every
-  device that reaches the dev server would count as this machine:
+  device that reaches the dev server would count as this machine. `avatarUrl` is built on `APP_PROTOCOL` and `APP_HOST`:
+  when they name the dev server, it proxies `/upload` as well.
 
   ```js
   // vite.config.js
@@ -228,6 +312,7 @@ function isGranted(scopes, code) {
     server: {
       proxy: {
         '/api': { target: 'http://127.0.0.1:4173', xfwd: true, changeOrigin: false },
+        '/upload': { target: 'http://127.0.0.1:4173', changeOrigin: false },
       },
     },
   };

@@ -1,9 +1,11 @@
 import {
   EMAIL_MAX_LENGTH,
   REDIRECT_PATH_MAX_LENGTH,
+  URL_MAX_LENGTH,
   ipInCidr,
   isCidr,
   isEmail,
+  isHostname,
   isLoopbackAddress,
   isLoopbackHostname,
   isPhone,
@@ -351,6 +353,32 @@ describe('isLoopbackHostname', () => {
   });
 });
 
+describe('isHostname', () => {
+  test('takes a host as the hostname of a URL writes it: a name in lower case and punycode, localhost and an IPv4 address', () => {
+    assertAll(isHostname, ['googleusercontent.com', 't.me', 'cdn.example.com', 'xn--80ak6aa92e.example', 'localhost', '127.0.0.1'], true);
+  });
+
+  test('refuses what a URL would write otherwise or not take as a host: upper case, Unicode, a port, a path, credentials, a scheme, a space, a short IPv4 form, an IPv6 address', () => {
+    assertAll(isHostname, [
+      'Cdn.Example.com',
+      'приклад.example',
+      'cdn.example.com:443',
+      'cdn.example.com/avatars',
+      'anna@cdn.example.com',
+      'https://cdn.example.com',
+      'cdn example.com',
+      '127.1',
+      '[::1]',
+      '::1',
+      '',
+    ], false);
+  });
+
+  test('refuses what is not a string, even when its text form is a host', () => {
+    assertAll(isHostname, NOT_STRINGS, false);
+  });
+});
+
 describe('isPrivateAddress', () => {
   // [first address, last address, the address before the block, the address after it]
   const IPV4_BLOCKS = [
@@ -465,6 +493,12 @@ describe('isWebUrl', () => {
     ['https://user:pass@hooks.example.com/x', 'https://user@hooks.example.com/x', 'https://:pass@hooks.example.com/x', 'ftp://example.com/x', 'mailto:anna@example.com', 'file:///etc/passwd', '//example.com/x', 'not a url', '', null, 42, new URL('https://example.com')].forEach((value) => {
       assert.equal(isWebUrl(value), false, String(value));
     });
+  });
+});
+
+describe('URL_MAX_LENGTH', () => {
+  test('is 2048, the longest address that browsers, proxies and CDNs all take', () => {
+    assert.equal(URL_MAX_LENGTH, 2048);
   });
 });
 

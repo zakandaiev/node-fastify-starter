@@ -1,5 +1,6 @@
 import { endAuthCookies } from '#core/auth/cookie.js';
 import { createSchema } from '#core/schema/create-schema.js';
+import { commitUploadedFiles } from '#core/upload/index.js';
 import { ERROR_CODE } from '#enums/error-code.js';
 import { HTTP_STATUS } from '#enums/http-status.js';
 import { USER_FIELDS, USER_LIST_FIELDS } from '#modules/users/users.repository.js';
@@ -79,7 +80,7 @@ export const deleteUserSchema = createSchema(userSchema)
   .meta({
     tags: TAGS,
     summary: 'Delete a user',
-    description: `${MANAGER_RULE}. ${ADMIN_GROUP_RULE}. The user goes with their sign-in identities, memberships and sessions. A deletion is no ban: the person may sign in again as a new user, a block keeps them out`,
+    description: `${MANAGER_RULE}. ${ADMIN_GROUP_RULE}. The user goes with their sign-in identities, memberships and sessions, and the file of their avatar once the deletion is committed. A deletion is no ban: the person may sign in again as a new user, a block keeps them out`,
   })
   .params(['id'])
   .response(HTTP_STATUS.NO_CONTENT)
@@ -133,14 +134,20 @@ export const getMeSchema = createSchema(userSchema)
   .build();
 
 export async function patchMe(request, reply) {
-  return reply.ok(await updateOwnProfile({ userId: request.user.id, input: request.body }));
+  const user = await commitUploadedFiles(request, () => updateOwnProfile({
+    userId: request.user.id,
+    input: request.body,
+    avatar: request.uploadedFiles?.avatar,
+  }));
+
+  return reply.ok(user);
 }
 
 export const patchMeSchema = createSchema(userSchema)
   .meta({
     tags: TAGS,
     summary: 'Change one\'s own profile',
-    description: 'The names. The email is not changed here: an address nobody has confirmed would keep its owner out',
+    description: 'The names and the avatar, as JSON or as multipart/form-data of the same fields. The avatar is a file of the form, an image the server encodes again without its metadata; null removes it, as the text null of a form does, and a body without the field leaves it. The file a change replaces is removed once the change is committed. The email is not changed here: an address nobody has confirmed would keep its owner out',
   })
   .body([...PROFILE_BODY_FIELDS], { isPatch: true })
   .response(HTTP_STATUS.OK, { data: [...USER_FIELDS] })
@@ -160,7 +167,7 @@ export const deleteMeSchema = createSchema(userSchema)
   .meta({
     tags: TAGS,
     summary: 'Delete one\'s own account',
-    description: `${ADMIN_GROUP_RULE}. One transaction ends every session, deletes the user with their sign-in identities and memberships, and records the deletion; then the cookies of the session are cleared, unless the request came with a Bearer token`,
+    description: `${ADMIN_GROUP_RULE}. One transaction ends every session, deletes the user with their sign-in identities and memberships, and records the deletion; then the file of the avatar is removed, and the cookies of the session are cleared, unless the request came with a Bearer token`,
   })
   .response(HTTP_STATUS.NO_CONTENT)
   .response(HTTP_STATUS.CONFLICT, { codes: [ERROR_CODE.GROUP_PROTECTED] })

@@ -1,12 +1,16 @@
 import { cutAddressTail, normalizeEmail, normalizePhone } from '#utils/string.js';
-import { isString, toString } from '#utils/type.js';
+import { isNonEmptyString, isString, toString } from '#utils/type.js';
 import { BlockList, isIP } from 'node:net';
 
 export const EMAIL_MAX_LENGTH = 254;
 // Minimal on purpose: the real filter is the delivery of a message. A label cannot hold a dot, so the match is linear.
 const EMAIL_REGEXP = /^[^\s@\p{Cc}]+@[^\s@.\p{Cc}]+(?:\.[^\s@.\p{Cc}]+)+$/v;
 
+// The longest address that browsers, proxies and CDNs all take.
+export const URL_MAX_LENGTH = 2048;
+
 const WEB_PROTOCOLS = Object.freeze(['http:', 'https:']);
+const HOSTNAME_PROTOCOL = 'https:';
 
 export const REDIRECT_PATH_MAX_LENGTH = 512;
 // Browsers read "/\evil.com" as "//evil.com" and drop tabs and line breaks before that,
@@ -211,6 +215,18 @@ export function toHostAddress(hostname) {
 // A hostname of this machine for any resolver: "localhost" or a loopback address.
 export function isLoopbackHostname(hostname) {
   return hostname === LOCALHOST || isLoopbackAddress(toHostAddress(hostname));
+}
+
+// A host as the hostname of a URL writes it, in lower case and punycode: the form the host of an address is compared
+// in. No IPv6 address passes, a URL keeps it in brackets.
+export function isHostname(value) {
+  if (!isNonEmptyString(value)) {
+    return false;
+  }
+
+  const address = `${HOSTNAME_PROTOCOL}//${value}`;
+
+  return URL.canParse(address) && toHostAddress(new URL(address).hostname) === value;
 }
 
 export function isPrivateAddress(address) {

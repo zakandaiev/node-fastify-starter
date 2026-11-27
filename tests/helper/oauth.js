@@ -352,6 +352,20 @@ export async function createMockProvider(t, fields = {}) {
   };
 }
 
+// The host of the pictures of a provider, on 127.0.0.1:0: "answer" writes each response, and every request is recorded
+// as it comes. The fetch reaches it when the record names 127.0.0.1 among its pictureHosts and the app lets it through
+// config.http.external.allowedPrivateNetworks.
+export async function createPictureServer(t, answer) {
+  const requests = [];
+  const url = await listen(t, (request, response) => {
+    requests.push({ method: request.method, path: request.url, headers: request.headers });
+    request.resume();
+    answer(request, response);
+  });
+
+  return { url, requests };
+}
+
 function toStartUrl(fastify, mock, { redirect, link }) {
   const query = new URLSearchParams();
 

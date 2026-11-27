@@ -1,6 +1,8 @@
 import { createConfig } from '#config/index.js';
 import { createOauthConfig, toCredentialEnvNames } from '#config/oauth.js';
+import { listPictureUrls } from '#core/auth/oauth/provider.js';
 import { CLIENT_AUTHENTICATION } from '#enums/client-authentication.js';
+import { IMAGE_PROFILE } from '#enums/image-profile.js';
 import { createTestConfig, createTestEnv } from '#root/tests/helper/config.js';
 import { isDeepFrozen } from '#root/tests/helper/object.js';
 import { convertStringToMs, convertStringToSeconds } from '#utils/date.js';
@@ -10,6 +12,10 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
 const MINUTE_SECONDS = 60;
+const PICTURE_TIMEOUT_MS = 5000;
+
+const GOOGLE_PICTURE = 'https://lh3.googleusercontent.com/a/ACg8ocJ4mVqTnXk2bW9pLr7sYd0fHe3uZa1cQo5iGj8tEw6xNy';
+const TELEGRAM_PICTURE = 'https://t.me/i/userpic/320/anna_kovalenko.jpg';
 const OPENID_SCOPE = 'openid';
 const HTTPS_PROTOCOL = 'https:';
 
@@ -28,7 +34,10 @@ const GOOGLE = freezeDeep({
     isEmailVerified: 'email_verified',
     firstName: ['given_name', 'name'],
     lastName: 'family_name',
+    picture: 'picture',
   },
+  pictureHosts: ['googleusercontent.com'],
+  pictureSize: { pattern: '=s\\d+(?=(?:-[a-z0-9]+)*$)', replacement: '=s{size}' },
   clientId: null,
   clientSecret: null,
 });
@@ -46,7 +55,9 @@ const TELEGRAM = freezeDeep({
     subject: 'id',
     firstName: ['given_name', 'name'],
     lastName: 'family_name',
+    picture: 'picture',
   },
+  pictureHosts: ['t.me', 'telesco.pe'],
   clientId: null,
   clientSecret: null,
 });
@@ -119,6 +130,32 @@ describe('config.oauth', () => {
 
     assert.equal(convertStringToSeconds(oauth.stateTtl), 10 * MINUTE_SECONDS);
     assert.ok(convertStringToMs(oauth.timeout) > 0, oauth.timeout);
+  });
+
+  test('gives the copy of a picture five seconds, the most a sign-in waits for it', () => {
+    const { oauth } = createConfig(createTestEnv());
+
+    assert.equal(convertStringToMs(oauth.pictureTimeout), PICTURE_TIMEOUT_MS);
+  });
+
+  test('asks Google for its picture at the size of the avatar: "=s96-c" at the end of the address becomes "=s512-c", and an address without that option stays alone', () => {
+    const { oauth, upload } = createConfig(createTestEnv());
+    const size = upload.image.profiles[IMAGE_PROFILE.AVATAR].maxSize;
+    const [google, telegram] = oauth.providers;
+    const resized = [
+      [`${GOOGLE_PICTURE}=s96-c`, `${GOOGLE_PICTURE}=s512-c`],
+      [`${GOOGLE_PICTURE}=s96`, `${GOOGLE_PICTURE}=s512`],
+      [`${GOOGLE_PICTURE}=s96-c-k-no`, `${GOOGLE_PICTURE}=s512-c-k-no`],
+    ];
+    const kept = [
+      GOOGLE_PICTURE,
+      `${GOOGLE_PICTURE}=w96-h96`,
+      'https://lh3.googleusercontent.com/-XdUIqdMkCWA/AAAAAAAAAAI/AAAAAAAAAAA/4252rscbv5M/s96-c/photo.jpg',
+    ];
+
+    resized.forEach(([pictureUrl, sized]) => assert.deepEqual(listPictureUrls(google, { pictureUrl, size }), [sized, pictureUrl], pictureUrl));
+    kept.forEach((pictureUrl) => assert.deepEqual(listPictureUrls(google, { pictureUrl, size }), [pictureUrl], pictureUrl));
+    assert.deepEqual(listPictureUrls(telegram, { pictureUrl: TELEGRAM_PICTURE, size }), [TELEGRAM_PICTURE]);
   });
 
   test('ends a sign-in on paths of the site: a failure inside the pages of signing in, a success outside them', () => {

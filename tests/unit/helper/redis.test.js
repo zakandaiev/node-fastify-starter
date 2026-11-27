@@ -5,6 +5,7 @@ import {
   createKeyPrefix,
   createTcpProxy,
   REDIS_DOWN_ENV,
+  toRespBulk,
   toScanPattern,
 } from '#root/tests/helper/redis.js';
 import { uuidVersion } from '#utils/id.js';
@@ -37,6 +38,12 @@ function connectTo(port) {
   return new Redis({
     host: '127.0.0.1', port, lazyConnect: true, maxRetriesPerRequest: 0, retryStrategy: () => null,
   });
+}
+
+function answerWithKey(args) {
+  return args[0] === 'get'
+    ? toRespBulk(args[1])
+    : null;
 }
 
 describe('Redis helper', () => {
@@ -89,9 +96,7 @@ describe('Redis helper', () => {
   });
 
   test('a frozen proxy holds the bytes and passes them on in order once thawed; kill() drops its connections', async (t) => {
-    const fake = await createFakeRedis(t, (args) => (args[0] === 'get'
-      ? `$${args[1].length}\r\n${args[1]}\r\n`
-      : null));
+    const fake = await createFakeRedis(t, answerWithKey);
     const proxy = await createTcpProxy(t, { host: '127.0.0.1', port: fake.port });
     const client = connectTo(proxy.port);
 
@@ -119,5 +124,20 @@ describe('Redis helper', () => {
     assert.equal(await client.get('second'), 'second');
     assert.equal(proxy.countConnections(), 1);
     assert.equal(proxy.kill(), 2);
+  });
+
+  test('an armed proxy passes on the next chunk its predicate picks and cuts that connection before a byte of the answer comes back, once', async (t) => {
+    const fake = await createFakeRedis(t, answerWithKey);
+    const proxy = await createTcpProxy(t, { host: '127.0.0.1', port: fake.port });
+    const [cut, kept] = [connectTo(proxy.port), connectTo(proxy.port)];
+
+    t.after(() => [cut, kept].forEach((client) => client.disconnect()));
+    await Promise.all([cut.connect(), kept.connect()]);
+    proxy.cutAnswerTo((bytes) => bytes.includes('lost'));
+
+    assert.equal(await cut.get('passed'), 'passed');
+    await assert.rejects(cut.get('lost'), /Connection is closed/);
+    assert.deepEqual(fake.commands.at(-1), ['get', 'lost']);
+    assert.equal(await kept.get('lost'), 'lost');
   });
 });

@@ -5,6 +5,7 @@ import {
   verifyRefreshToken,
 } from '#core/auth/token.js';
 import { convertStringToMs, isPositiveDuration } from '#utils/date.js';
+import { findUnknownKey } from '#utils/object.js';
 import {
   isFunction,
   isNonNegativeInteger,
@@ -91,7 +92,7 @@ export function assertRouteLimit(limit, name = 'security.rateLimit') {
     throw new TypeError(`${name} requires ${ROUTE_LIMIT_FORM}`);
   }
 
-  const unknownKey = Object.keys(limit).find((key) => !ROUTE_LIMIT_KEYS.includes(key));
+  const unknownKey = findUnknownKey(limit, ROUTE_LIMIT_KEYS);
 
   if (unknownKey !== undefined) {
     throw new TypeError(`${name} names "${unknownKey}", which no limiter reads: it takes ${ROUTE_LIMIT_KEYS.join(', ')}`);

@@ -241,6 +241,28 @@ export function killSession(pool, id, { isQueryOnly = false } = {}) {
   return pool.readRows(`KILL ${isQueryOnly ? 'QUERY ' : ''}${Number(id)}`);
 }
 
+const PACKET_LENGTH_BYTES = 3;
+const COMMAND_SEQUENCE = 0;
+const COM_QUERY = 0x03;
+
+// mysql2 writes a packet at once, and the next command only after the answer: a relay of the tests reads a statement as
+// one chunk of three bytes of the length of the payload, the sequence 0 that opens a command, COM_QUERY and the text.
+function toQueryPacket(sql) {
+  const payload = Buffer.from([COM_QUERY, ...Buffer.from(sql)]);
+  const header = Buffer.alloc(PACKET_LENGTH_BYTES + 1);
+
+  header.writeUIntLE(payload.length, 0, PACKET_LENGTH_BYTES);
+  header.writeUInt8(COMMAND_SEQUENCE, PACKET_LENGTH_BYTES);
+
+  return Buffer.concat([header, payload]);
+}
+
+const COMMIT_PACKET = toQueryPacket('COMMIT');
+
+export function isCommitPacket(bytes) {
+  return COMMIT_PACKET.equals(bytes);
+}
+
 // The databases "verify" builds are named after the database of the test file: files run side by side on one
 // server, and each must be able to tell its own from those of the others.
 function toReferencePrefix(name) {

@@ -29,6 +29,7 @@ describe('createContext', () => {
     assert.equal(context.redis, null);
     assert.equal(context.cacheRedis, null);
     assert.equal(context.jwt, null);
+    assert.equal(context.storage, null);
     assert.equal(context.requestId, null);
     assert.equal(context.transaction, null);
   });
@@ -51,6 +52,7 @@ describe('createContext', () => {
     const redis = {};
     const cacheRedis = {};
     const jwt = {};
+    const storage = {};
     const context = createContext({
       config: {},
       log,
@@ -58,12 +60,24 @@ describe('createContext', () => {
       redis,
       cacheRedis,
       jwt,
+      storage,
     });
 
     assert.equal(context.db, db);
     assert.equal(context.redis, redis);
     assert.equal(context.cacheRedis, cacheRedis);
     assert.equal(context.jwt, jwt);
+    assert.equal(context.storage, storage);
+  });
+
+  test('keeps the services of the context it is made from: a plugin adds its own to those before it', () => {
+    const storage = {};
+    const app = createContext({ config: {}, log, storage });
+    const request = createContext({ ...app, requestId: '019a0000-0000-7000-8000-000000000000' });
+
+    assert.equal(request.storage, storage);
+    assert.equal(request.config, app.config);
+    assert.equal(createContext({ ...request, transaction: {} }).storage, storage);
   });
 });
 

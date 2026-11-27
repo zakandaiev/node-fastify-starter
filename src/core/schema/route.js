@@ -2,13 +2,17 @@ import { assertScopeRequirement } from '#core/authz/match.js';
 import { AppError } from '#core/error/index.js';
 import { assertRouteLimit } from '#core/rate-limit/index.js';
 import { isJsonField, rememberSourceSchema } from '#core/schema/docs.js';
+import { withFileFields } from '#core/schema/files.js';
 import { guardRouteSchema } from '#core/schema/finite.js';
 import { gateRouteSchema } from '#core/schema/gate.js';
 import { REQUEST_PARTS } from '#core/schema/walk.js';
+import { FILE_OPTIONS, readFileOptions } from '#core/upload/options.js';
 import { ERROR_CODE } from '#enums/error-code.js';
+import { HTTP_METHOD } from '#enums/http-method.js';
 import { HTTP_STATUS } from '#enums/http-status.js';
 import { MEDIA_TYPE } from '#enums/media-type.js';
 import { toMimeEssence } from '#utils/mime.js';
+import { findUnknownKey } from '#utils/object.js';
 import {
   formatSchemaPointer,
   mapSchema,
@@ -57,11 +61,14 @@ const ROUTE_HOOK_NAMES = Object.freeze([
   'onRequestAbort',
 ]);
 
-// Put on requests by the auth plugin, the guard of scopes and the limiter alone. A scope opened before such a plugin has
-// none, whatever it decorates itself.
+// Put on requests by the auth plugin, the guard of scopes, the limiter and the multipart plugin alone. A scope opened
+// before such a plugin has none, whatever it decorates itself.
 export const AUTH_DECORATOR = Symbol('auth');
 export const SCOPES_DECORATOR = Symbol('scopes');
 export const RATE_LIMIT_DECORATOR = Symbol('rate limit');
+export const FILES_DECORATOR = Symbol('files');
+
+const FILE_METHODS = Object.freeze([HTTP_METHOD.POST, HTTP_METHOD.PUT, HTTP_METHOD.PATCH]);
 
 // A key no guard reads, such as a misspelt "scope", would leave the route to every user who signs in.
 const SECURITY_KEYS = Object.freeze(['auth', 'scopes', 'rateLimit']);
@@ -390,7 +397,7 @@ function assertScopes(fastify, routeOptions) {
 }
 
 function assertSecurityKeys(routeOptions) {
-  const unknown = Object.keys(routeOptions.security).find((key) => !SECURITY_KEYS.includes(key));
+  const unknown = findUnknownKey(routeOptions.security, SECURITY_KEYS);
 
   if (unknown !== undefined) {
     throw new Error(`${formatRoute(routeOptions)} names security.${unknown}, which no guard reads: security takes ${SECURITY_KEYS.join(', ')}`);
@@ -455,9 +462,52 @@ function copyRouteHooks(routeOptions) {
   return true;
 }
 
+function assertFileMethods(routeOptions) {
+  if (![routeOptions.method].flat().every((method) => FILE_METHODS.includes(method))) {
+    throw new Error(`${formatRoute(routeOptions)} has "files" and a method no form is sent with: files come with ${FILE_METHODS.join(', ')}`);
+  }
+}
+
+function readRouteFiles(routeOptions, upload) {
+  const schema = routeOptions.schema ?? {};
+
+  try {
+    const options = readFileOptions(routeOptions.files, upload);
+
+    return {
+      options,
+      schema: withFileFields(schema, options),
+      source: withFileFields(schema, options, { isDocumented: true }),
+    };
+  } catch (error) {
+    throw new Error(`${formatRoute(routeOptions)}: ${error.message}`, { cause: error });
+  }
+}
+
+// The multipart plugin reads the files by the options in the config of the route. What checks a body after this sees the
+// one with the file fields as any other.
+function expandFiles(fastify, routeOptions, upload) {
+  if (routeOptions.files === undefined) {
+    return null;
+  }
+
+  assertFileMethods(routeOptions);
+
+  const { options, schema, source } = readRouteFiles(routeOptions, upload);
+
+  if (fastify?.hasRequestDecorator(FILES_DECORATOR) === false) {
+    throw new Error(`${formatRoute(routeOptions)} has "files" and is out of reach of the multipart plugin, which reads the files of what is declared after it, in scopes opened after it`);
+  }
+
+  routeOptions.config = { ...routeOptions.config, [FILE_OPTIONS]: options };
+  routeOptions.schema = schema;
+
+  return source;
+}
+
 // Synchronous: Fastify ignores the promise of an async onRoute hook, and the route would go live unchecked.
 // The schema is replaced, never changed in place: the HEAD twin of a GET route gets the original options again.
-export function createRouteHook({ apiPrefix, healthPrefix } = {}) {
+export function createRouteHook({ apiPrefix, healthPrefix } = {}, { upload } = {}) {
   const prefixes = [apiPrefix, healthPrefix];
 
   if (!prefixes.every((prefix) => PREFIX_REGEXP.test(prefix))) {
@@ -468,8 +518,10 @@ export function createRouteHook({ apiPrefix, healthPrefix } = {}) {
     copyRouteHooks(routeOptions);
     assertGuard(this, routeOptions);
 
+    const fileSource = expandFiles(this, routeOptions, upload);
+
     if (isObject(routeOptions.schema)) {
-      const source = routeOptions.schema;
+      const source = fileSource ?? routeOptions.schema;
 
       assertSynchronous(routeOptions);
       routeOptions.schema = rememberSourceSchema(prepareRouteSchema(routeOptions), source);

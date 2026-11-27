@@ -19,7 +19,7 @@ import { UPSTREAM_FAILURE } from '#enums/upstream-failure.js';
 import { assertDurations, fromUnixSeconds, isFuture } from '#utils/date.js';
 import { decodeBase64Url, encodeFormValue, isBase64Url } from '#utils/encoding.js';
 import { sha256 } from '#utils/hash.js';
-import { getPath } from '#utils/object.js';
+import { findUnknownKey, getPath } from '#utils/object.js';
 import { toValidPersonName } from '#utils/person.js';
 import { randomToken } from '#utils/random.js';
 import {
@@ -29,14 +29,17 @@ import {
   isNonNegativeInteger,
   isNumber,
   isObject,
+  isPositiveInteger,
   isString,
   parseJsonObject,
 } from '#utils/type.js';
 import {
+  isHostname,
   isLoopbackHostname,
   isSafeRedirectPath,
   isWebUrl,
   toValidEmail,
+  URL_MAX_LENGTH,
 } from '#utils/validate.js';
 
 // The routes of a provider are /<id> and /<id>/callback beside these: a provider of such an id would take a route's place.
@@ -62,11 +65,14 @@ const OPENID_SCOPE = 'openid';
 const SCOPE_SEPARATOR = ' ';
 const HTTPS_PROTOCOL = 'https:';
 
-const ONE_NAME_CLAIMS = Object.freeze(['email', 'isEmailVerified']);
+const ONE_NAME_CLAIMS = Object.freeze(['email', 'isEmailVerified', 'picture']);
 const NAME_CLAIMS = Object.freeze(['firstName', 'lastName']);
 const CLAIM_KEYS = Object.freeze(['subject', ...ONE_NAME_CLAIMS, ...NAME_CLAIMS]);
 
-const DURATION_KEYS = Object.freeze(['stateTtl', 'timeout']);
+const PICTURE_SIZE_KEYS = Object.freeze(['pattern', 'replacement']);
+const SIZE_PLACEHOLDER = '{size}';
+
+const DURATION_KEYS = Object.freeze(['stateTtl', 'timeout', 'pictureTimeout']);
 const PATH_KEYS = Object.freeze(['successPath', 'failurePath', 'signInSection']);
 
 const RESPONSE_TYPE = 'code';
@@ -108,6 +114,7 @@ const CHECK = Object.freeze({
 
 const AUTHORIZATION_SIGNATURE = 'createAuthorization(provider, { redirectUri })';
 const EXCHANGE_SIGNATURE = 'exchangeCode(provider, { code, verifier, redirectUri })';
+const PICTURE_URLS_SIGNATURE = 'listPictureUrls(provider, { pictureUrl, size })';
 
 function describeProvider(provider, index) {
   return isString(provider?.id)
@@ -125,7 +132,8 @@ function assertId(id, label) {
   }
 }
 
-// The id_token is trusted for coming from the token endpoint over TLS: plain http is for a provider on this machine.
+// The id_token is trusted for coming from the token endpoint over TLS, and the picture is copied from what its address
+// gives: plain http is for a provider on this machine.
 function isTrustedEndpoint(value) {
   if (!isWebUrl(value)) {
     return false;
@@ -161,7 +169,58 @@ function assertClaims(claims, label) {
     && NAME_CLAIMS.every((key) => isOptional(claims[key], isNameClaims));
 
   if (!isValid) {
-    throw new TypeError(`${label} requires claims of the keys ${CLAIM_KEYS.join(', ')}: subject, email and isEmailVerified each the name of one claim, firstName and lastName a name or a list of names`);
+    throw new TypeError(`${label} requires claims of the keys ${CLAIM_KEYS.join(', ')}: subject, email, isEmailVerified and picture each the name of one claim, firstName and lastName a name or a list of names`);
+  }
+}
+
+// The address of the picture comes from the provider: it and each of its redirects must stay on these hosts.
+function assertPictureHosts({ claims, pictureHosts }, label) {
+  const isPictureRead = claims.picture !== undefined;
+
+  if (!isPictureRead && pictureHosts !== undefined) {
+    throw new TypeError(`${label} names pictureHosts without claims.picture: no picture would be fetched from them`);
+  }
+
+  if (isPictureRead && !(isNonEmptyArray(pictureHosts) && pictureHosts.every((host) => isHostname(host)))) {
+    throw new TypeError(`${label} requires pictureHosts beside claims.picture: a list of the hosts its picture may come from, each in lower case and without a port`);
+  }
+}
+
+function compilePattern(source) {
+  try {
+    return new RegExp(source);
+  } catch {
+    return null;
+  }
+}
+
+function assertSizeRule(rule, label) {
+  if (!isObject(rule)) {
+    throw new TypeError(`${label} requires pictureSize to be a plain object of ${PICTURE_SIZE_KEYS.join(' and ')}`);
+  }
+
+  const unknownKey = findUnknownKey(rule, PICTURE_SIZE_KEYS);
+
+  if (unknownKey !== undefined) {
+    throw new TypeError(`${label} names "${unknownKey}" in pictureSize, which nothing reads: it takes ${PICTURE_SIZE_KEYS.join(', ')}`);
+  }
+
+  if (!isNonEmptyString(rule.pattern) || compilePattern(rule.pattern) === null) {
+    throw new TypeError(`${label} requires pictureSize.pattern to be the source of a RegExp: a text that compiles, not empty`);
+  }
+
+  if (!isString(rule.replacement) || !rule.replacement.includes(SIZE_PLACEHOLDER)) {
+    throw new TypeError(`${label} requires pictureSize.replacement to be a text with "${SIZE_PLACEHOLDER}" where the size goes`);
+  }
+}
+
+function assertPictureSize({ claims, pictureSize }, label) {
+  if (pictureSize !== undefined && claims.picture === undefined) {
+    throw new TypeError(`${label} names pictureSize without claims.picture: there is no address of a picture to resize`);
+  }
+
+  if (pictureSize !== undefined) {
+    assertSizeRule(pictureSize, label);
   }
 }
 
@@ -220,6 +279,8 @@ function assertProvider(provider, label) {
   }
 
   assertClaims(provider.claims, label);
+  assertPictureHosts(provider, label);
+  assertPictureSize(provider, label);
   assertAuthorizationParams(provider, label);
   assertCredentials(provider, label);
 }
@@ -509,6 +570,32 @@ function readName(claims, names) {
     .find((name) => name !== null) ?? null;
 }
 
+export function toValidPictureUrl(value) {
+  return isString(value) && value.length <= URL_MAX_LENGTH && isTrustedEndpoint(value)
+    ? value
+    : null;
+}
+
+export function listPictureUrls(provider, { pictureUrl, size } = {}) {
+  if (!isObject(provider) || toValidPictureUrl(pictureUrl) === null || !isPositiveInteger(size)) {
+    throw new TypeError(`${PICTURE_URLS_SIGNATURE} requires the record of a provider, the address of the picture its profile gives and the size in pixels`);
+  }
+
+  if (provider.pictureSize === undefined) {
+    return [pictureUrl];
+  }
+
+  const { pattern, replacement } = provider.pictureSize;
+  const sizedReplacement = replacement.replaceAll(SIZE_PLACEHOLDER, String(size));
+
+  // A function, not the text: "$&" or "$1" in a text given to replace() is a pattern.
+  const resized = pictureUrl.replace(new RegExp(pattern), () => sizedReplacement);
+
+  return resized === pictureUrl || toValidPictureUrl(resized) === null
+    ? [pictureUrl]
+    : [resized, pictureUrl];
+}
+
 // The claims are kept as they came, for the profile of the identity.
 export function readProviderProfile(provider, claims) {
   if (!isObject(provider?.claims) || !isObject(claims)) {
@@ -524,6 +611,7 @@ export function readProviderProfile(provider, claims) {
     isEmailVerified: email !== null && (isVerified === true || isVerified === 'true'),
     firstName: readName(claims, provider.claims.firstName),
     lastName: readName(claims, provider.claims.lastName),
+    pictureUrl: toValidPictureUrl(readClaim(claims, provider.claims.picture)),
     claims,
   };
 }

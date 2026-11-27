@@ -1,4 +1,6 @@
 import { writeAudit } from '#core/audit/index.js';
+import { toValidPictureUrl } from '#core/auth/oauth/provider.js';
+import { copyProviderPicture } from '#core/auth/picture.js';
 import { createSession, SESSION_TRANSACTION } from '#core/auth/session.js';
 import {
   ACCOUNT_FIELDS,
@@ -57,10 +59,14 @@ const RACE_INDEXES = Object.freeze([UNIQUE_INDEX.USERS_EMAIL, UNIQUE_INDEX.USER_
 const RACE_MESSAGE = 'A sign-in is run again: another one has written the same identity or email first';
 const NO_ADMIN_GROUP_MESSAGE = 'A listed email is not granted the admin group: there is no such group, the seed of the groups has not been applied';
 
-function assertProvider(providerId, signature) {
-  if (!getContext().config.oauth.providers.some((provider) => provider.id === providerId)) {
+function readProvider(providerId, signature) {
+  const provider = getContext().config.oauth.providers.find((record) => record.id === providerId);
+
+  if (provider === undefined) {
     throw new TypeError(`${signature} requires the id of a provider of config.oauth`);
   }
+
+  return provider;
 }
 
 function assertClient(client, signature) {
@@ -69,8 +75,9 @@ function assertClient(client, signature) {
   }
 }
 
-// Normalized once more where it is written, whoever mapped it: a user holds a valid name or none, and an email in the
-// form it is searched by. The claims become JSON here, before any statement: a value JSON cannot take fails first.
+// Normalized once more where it is written, whoever mapped it: a user holds a valid name or none, an email in the form
+// it is searched by, and an avatar copied from an address over TLS alone. The claims become JSON here, before any
+// statement: a value JSON cannot take fails first.
 function readProfile(profile, signature) {
   const isProfile = isObject(profile)
     && isNonEmptyString(profile.subject)
@@ -89,6 +96,7 @@ function readProfile(profile, signature) {
     isEmailVerified: email !== null && profile.isEmailVerified,
     firstName: toValidPersonName(profile.firstName),
     lastName: toValidPersonName(profile.lastName),
+    pictureUrl: toValidPictureUrl(profile.pictureUrl),
     claimsJson: JSON.stringify(toJsonTree(profile.claims)),
   };
 }
@@ -355,6 +363,20 @@ async function findAccount(flow) {
     : mergeByEmail(owner, flow);
 }
 
+// After the commit, never inside it: the picture comes over the network. Like a name, it fills an empty avatar alone,
+// and a provider whose record names no hosts of pictures gives none.
+async function fillAvatar(user, { provider, pictureUrl }) {
+  if (user.avatarKey !== null || pictureUrl === null || provider.pictureHosts === undefined) {
+    return user;
+  }
+
+  const avatarKey = await copyProviderPicture({ userId: user.id, provider, pictureUrl });
+
+  return avatarKey === null
+    ? user
+    : { ...user, avatarKey };
+}
+
 // An email the provider has not verified stays on the identity: it neither finds an account nor reaches one.
 export async function signInWithProvider({
   providerId,
@@ -364,23 +386,27 @@ export async function signInWithProvider({
 } = {}) {
   const signature = 'signInWithProvider({ providerId, profile, client, request })';
 
-  assertProvider(providerId, signature);
+  const provider = readProvider(providerId, signature);
+
   assertClient(client, signature);
 
   const mapped = readProfile(profile, signature);
-
-  return runInAccount(async () => {
-    const user = await findAccount({
+  const { user, issued } = await runInAccount(async () => {
+    const found = await findAccount({
       providerId,
       profile: mapped,
       now: nowUtc(),
       request,
     });
 
-    await grantListedAdmin(user, request);
+    await grantListedAdmin(found, request);
 
-    return createSession({ userId: user.id, client });
+    return { user: found, issued: await createSession({ userId: found.id, client }) };
   });
+
+  await fillAvatar(user, { provider, pictureUrl: mapped.pictureUrl });
+
+  return issued;
 }
 
 // Several identities of one provider may belong to one user: each is an account of its own there.
@@ -412,11 +438,10 @@ export async function linkProvider({
   const signature = 'linkProvider({ userId, providerId, profile, request })';
 
   assertUuid(userId, signature, 'a user');
-  assertProvider(providerId, signature);
 
+  const provider = readProvider(providerId, signature);
   const mapped = readProfile(profile, signature);
-
-  return runInAccount(async () => {
+  const linked = await runInAccount(async () => {
     const flow = {
       providerId,
       profile: mapped,
@@ -433,6 +458,8 @@ export async function linkProvider({
 
     return filled;
   });
+
+  return fillAvatar(linked, { provider, pictureUrl: mapped.pictureUrl });
 }
 
 // The sign-in of dev mode: it trusts its caller with the email, which nothing proves here. A user that is not there

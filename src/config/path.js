@@ -11,6 +11,7 @@ export const absPath = Object.freeze({
   plugin: nodePath.join(ROOT, 'src/plugins'),
   route: nodePath.join(ROOT, 'src/routes'),
   migration: nodePath.join(ROOT, 'migrations'),
+  public: nodePath.join(ROOT, 'public'),
   upload: nodePath.join(ROOT, 'upload'),
 });
 

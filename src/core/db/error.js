@@ -437,6 +437,15 @@ export function isTransactionTimeout(error) {
   return findDbError(error)?.code === TRANSACTION_TIMEOUT_CODE;
 }
 
+// A connection lost on the way may have carried a write that landed, a COMMIT or a statement outside a transaction: what
+// the call was told it failed to write may be written. One that never opened sent nothing, though the driver calls that
+// fatal too, and one lost inside an open transaction took it with it (marked by core/db/transaction.js).
+export function isOutcomeUnknown(error) {
+  const dbError = findDbError(error);
+
+  return dbError?.isFatal === true && dbError.isConnectFailure !== true && dbError.isRolledBack !== true;
+}
+
 export function isMissingTable(error) {
   return findDbError(error)?.errno === ERRNO.NO_SUCH_TABLE;
 }

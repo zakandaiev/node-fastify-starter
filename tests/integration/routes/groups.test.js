@@ -1,5 +1,6 @@
 import { PAGINATION } from '#config/pagination.js';
 import { invalidateCacheTables } from '#core/cache/index.js';
+import { toStorageKey } from '#core/storage/key.js';
 import { GROUP_SLUG } from '#enums/group.js';
 import { HEADER } from '#enums/header.js';
 import { HTTP_STATUS } from '#enums/http-status.js';
@@ -145,6 +146,9 @@ const INVALID_BODIES = Object.freeze([
   [{ scopes: [SCOPE.USERS_READ, SCOPE.USERS_READ] }, [['scopes', 'uniqueItems']]],
 ]);
 
+// A key that names no file: the URL the API makes of it needs none.
+const AVATAR_EXTENSION = 'webp';
+
 const PEOPLE = Object.freeze([
   Object.freeze({
     firstName: 'Anna',
@@ -155,6 +159,7 @@ const PEOPLE = Object.freeze([
   Object.freeze({
     firstName: 'Oleh',
     lastName: 'Bondar',
+    avatarKey: toStorageKey(AVATAR_EXTENSION),
     status: USER_STATUS.BLOCKED,
     createdAt: '2026-11-12T08:00:00.000Z',
   }),
@@ -293,15 +298,24 @@ async function runEveryRoute(fastify, root, scopes) {
   return mapSeries(listEveryRoute(group.id, userId), (request) => send(fastify, actor, request));
 }
 
-// A user with a profile, made at the moment the test names: the members list shows these fields of a user.
-async function createPerson(fastify, { createdAt, ...profile }) {
+// A user with a profile, made at the moment the test names: the members list shows these fields of a user, the key of
+// the avatar as the URL the storage makes of it.
+async function createPerson(fastify, { createdAt, avatarKey = null, ...profile }) {
   const email = `${profile.firstName.toLowerCase()}-${uuidv7()}@example.com`;
-  const id = await insertUser(fastify, { ...profile, email, createdAt: toDate(createdAt) });
+  const id = await insertUser(fastify, {
+    ...profile,
+    email,
+    avatarKey,
+    createdAt: toDate(createdAt),
+  });
 
   return {
     id,
     email,
     ...profile,
+    avatarUrl: avatarKey === null
+      ? null
+      : fastify.storage.url(avatarKey),
     createdAt,
   };
 }
@@ -990,7 +1004,7 @@ describe('the system group admin', { skip: testRedis.skip || testDb.skip }, () =
 describe('the members of a group', { skip: testRedis.skip || testDb.skip }, () => {
   before(() => migrateAndSeed(testDb));
 
-  test('lists the members with the fields of a user and no other, by the filters and the sort of the users, a page at a time; an unknown group is 404', async (t) => {
+  test('lists the members with the fields of a user and no other, the avatar as the URL of its file or null, by the filters and the sort of the users, a page at a time; an unknown group is 404', async (t) => {
     const fastify = await openRouteApp(t, testDb);
     const root = await signInAs(fastify, [SCOPE_ALL]);
     const reader = await signInAs(fastify, [SCOPE.GROUPS_READ, SCOPE.USERS_READ]);

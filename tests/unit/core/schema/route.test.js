@@ -1,17 +1,21 @@
 import { createRateLimitConfig } from '#config/rate-limit.js';
+import { createUploadConfig } from '#config/upload.js';
 import {
   dropSchemaMarkers,
   isJsonField,
   readDocumentedSchema,
   rememberSourceSchema,
 } from '#core/schema/docs.js';
+import { withFileFields } from '#core/schema/files.js';
 import {
   assertRouteContract,
   AUTH_DECORATOR,
   createRouteHook,
+  FILES_DECORATOR,
   RATE_LIMIT_DECORATOR,
   SCOPES_DECORATOR,
 } from '#core/schema/route.js';
+import { FILE_OPTIONS, readFileOptions } from '#core/upload/options.js';
 import { SCOPE, SCOPE_ALL } from '#enums/scope.js';
 import { pingSchema } from '#root/src/routes/v1/system/controller.js';
 import { buildTestApp, readRequestId } from '#root/tests/helper/app.js';
@@ -1054,6 +1058,146 @@ describe('createRouteHook: the hook lists of a route', () => {
       listRun(['frozen', 'GET /api/v1/items/frozen']),
       listRun(['shared', 'HEAD /api/v1/items/open']),
     ]);
+  });
+});
+
+describe('createRouteHook: files', () => {
+  const UPLOAD = createUploadConfig();
+  const FILES = freezeDeep({ fields: { avatar: { maxSize: '5MB', mime: ['image/png'], image: 'avatar' } } });
+  const ITEM_BODY = freezeDeep({ type: 'object', properties: { name: { type: 'string', maxLength: 20 } }, additionalProperties: false });
+  const MEDIA_TYPES = ['application/json', 'multipart/form-data'];
+  const OUT_OF_PLUGIN_REACH = 'has "files" and is out of reach of the multipart plugin, which reads the files of what is declared after it, in scopes opened after it';
+  const NO_FORM_METHOD = 'has "files" and a method no form is sent with: files come with POST, PUT, PATCH';
+
+  function createFileRoute(overrides = {}) {
+    return createRoute({
+      method: 'PATCH',
+      schema: { body: ITEM_BODY, response: { 200: successEnvelope(createItem()) } },
+      files: FILES,
+      ...overrides,
+    });
+  }
+
+  function createAppBehindMultipart(t) {
+    const fastify = Fastify();
+
+    t.after(() => fastify.close());
+    fastify.addHook('onRoute', createRouteHook(PREFIXES, { upload: UPLOAD }));
+    fastify.decorateRequest(FILES_DECORATOR, null);
+
+    return fastify;
+  }
+
+  test('the hook reads the files of a route into its config under a key no author writes, beside the config of its author', () => {
+    function failureLocation() {
+      return '/failed';
+    }
+
+    const routeOptions = createFileRoute({ config: { failureLocation } });
+
+    createRouteHook(PREFIXES, { upload: UPLOAD })(routeOptions);
+
+    assert.deepEqual(routeOptions.config, { failureLocation, [FILE_OPTIONS]: readFileOptions(FILES, UPLOAD) });
+  });
+
+  test('the hook gives the body of the route both forms with the file fields, checks them as any body, and documents the file as binary', () => {
+    const routeOptions = createFileRoute();
+    const options = readFileOptions(FILES, UPLOAD);
+
+    createRouteHook(PREFIXES, { upload: UPLOAD })(routeOptions);
+
+    assert.deepEqual(Object.keys(routeOptions.schema.body.content), MEDIA_TYPES);
+    assert.deepEqual(routeOptions.schema.body.content['multipart/form-data'].schema.properties.avatar, { const: null });
+    assert.deepEqual(readDocumentedSchema(routeOptions.schema).body, withFileFields({ body: ITEM_BODY }, options, { isDocumented: true }).body);
+    assert.equal(readDocumentedSchema(routeOptions.schema).body.content['multipart/form-data'].schema.properties.avatar.format, 'binary');
+    assert.equal(routeOptions.preValidation.length, 1);
+  });
+
+  test('the hook gives a route with files and no schema a body of the files alone, and leaves a route without files as it was', () => {
+    const bare = { method: 'POST', url: '/items', files: FILES };
+    const plain = { method: 'POST', url: '/items', config: { isPlain: true } };
+    const checkRoute = createRouteHook(PREFIXES, { upload: UPLOAD });
+
+    checkRoute(bare);
+    checkRoute(plain);
+
+    assert.deepEqual(readDocumentedSchema(bare.schema).body, withFileFields({}, readFileOptions(FILES, UPLOAD), { isDocumented: true }).body);
+    assert.deepEqual(plain, { method: 'POST', url: '/items', config: { isPlain: true } });
+  });
+
+  test('the hook refuses files on a route of a method no form is sent with, and names it with every method', () => {
+    const checkRoute = createRouteHook(PREFIXES, { upload: UPLOAD });
+
+    [['GET'], ['DELETE'], ['HEAD'], ['OPTIONS'], ['POST', 'GET'], ['PUT', 'DELETE']].forEach((methods) => {
+      const method = methods.length === 1 ? methods[0] : methods;
+
+      assert.throws(() => checkRoute(createFileRoute({ method, url: '/items' })), {
+        name: 'Error',
+        message: `Route ${methods.join(',')} /items ${NO_FORM_METHOD}`,
+      }, methods.join(','));
+    });
+    ['POST', 'PUT', 'PATCH', ['POST', 'PUT', 'PATCH']].forEach((method) => {
+      assert.doesNotThrow(() => checkRoute(createFileRoute({ method })), String(method));
+    });
+  });
+
+  test('the hook refuses the files readFileOptions refuses and a body withFileFields refuses, names the route and keeps the TypeError as the cause', () => {
+    const checkRoute = createRouteHook(PREFIXES, { upload: UPLOAD });
+    const refused = [
+      [{ files: null }, '"files" requires an object such as { fields: { avatar: { maxSize: "5MB", mime: ["image/png"], image: "avatar" } } }'],
+      [{ files: { fields: {} } }, '"files" requires fields, a map of the file fields of the body'],
+      [{ files: { fields: { avatar: { ...FILES.fields.avatar, maxSize: '11MB' } } } }, '"files.fields.avatar" has maxSize above config.upload.maxFileSize, 10 MB: the parser would cut the file there'],
+      [{ schema: { body: { ...ITEM_BODY, properties: { avatar: { type: 'string', maxLength: 64 } } } } }, '"body" names "avatar", a field of "files": a file field is described by "files" alone'],
+    ];
+
+    refused.forEach(([overrides, message]) => {
+      assert.throws(() => checkRoute(createFileRoute(overrides)), (error) => {
+        assert.equal(error.name, 'Error', message);
+        assert.equal(error.message, `Route PATCH /api/v1/items: ${message}`);
+        assert.equal(error.cause.name, 'TypeError', message);
+        assert.equal(error.cause.message, message);
+
+        return true;
+      });
+    });
+  });
+
+  test('the hook created without the upload section of the config refuses every route with files, and names it', () => {
+    assert.throws(() => createRouteHook(PREFIXES)(createFileRoute()), {
+      name: 'Error',
+      message: 'Route PATCH /api/v1/items: readFileOptions(files, uploadConfig) requires config.upload with its image profiles',
+    });
+  });
+
+  test('the hook refuses a route with files on an instance the multipart plugin has not reached, under a prefix or not, names it with every method, and takes it behind the plugin', (t) => {
+    const outside = Fastify();
+    const behind = createAppBehindMultipart(t);
+    const { schema } = createFileRoute();
+
+    t.after(() => outside.close());
+    outside.addHook('onRoute', createRouteHook(PREFIXES, { upload: UPLOAD }));
+
+    assert.throws(() => outside.patch('/api/v1/items', { schema, security: PUBLIC, files: FILES }, readRow), {
+      name: 'Error',
+      message: `Route PATCH /api/v1/items ${OUT_OF_PLUGIN_REACH}`,
+    });
+    assert.throws(() => outside.route({
+      method: ['PUT', 'PATCH'], url: '/items', files: FILES, handler: readRow,
+    }), { name: 'Error', message: `Route PUT,PATCH /items ${OUT_OF_PLUGIN_REACH}` });
+    assert.equal(outside.hasRoute({ method: 'PATCH', url: '/api/v1/items' }), false);
+
+    behind.patch('/api/v1/items', { schema, security: PUBLIC, files: FILES }, readRow);
+    behind.post('/items', { files: FILES }, readRow);
+
+    assert.deepEqual([behind.hasRoute({ method: 'PATCH', url: '/api/v1/items' }), behind.hasRoute({ method: 'POST', url: '/items' })], [true, true]);
+  });
+
+  test('the hook called without an instance looks for no multipart plugin: it still reads the files', () => {
+    const routeOptions = createFileRoute();
+
+    createRouteHook(PREFIXES, { upload: UPLOAD })(routeOptions);
+
+    assert.ok(Object.hasOwn(routeOptions.config, FILE_OPTIONS));
   });
 });
 

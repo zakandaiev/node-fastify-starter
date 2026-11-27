@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
-const storage = new AsyncLocalStorage();
+const contextStorage = new AsyncLocalStorage();
 
 export function createContext({
   config,
@@ -9,6 +9,7 @@ export function createContext({
   redis = null,
   cacheRedis = null,
   jwt = null,
+  storage = null,
   requestId = null,
   transaction = null,
 } = {}) {
@@ -27,6 +28,7 @@ export function createContext({
     redis,
     cacheRedis,
     jwt,
+    storage,
     requestId,
     transaction,
   });
@@ -41,11 +43,11 @@ export function runInContext(context, fn) {
     throw new TypeError('runInContext(context, fn) requires a function');
   }
 
-  return storage.run(context, fn);
+  return contextStorage.run(context, fn);
 }
 
 export function getContext() {
-  const context = storage.getStore();
+  const context = contextStorage.getStore();
 
   if (!context) {
     throw new Error('No active context: wrap the call in runInContext(context, fn)');
@@ -56,7 +58,7 @@ export function getContext() {
 
 // For code that also runs where no context is, such as a listener of a socket event: null there.
 export function findContext() {
-  return storage.getStore() ?? null;
+  return contextStorage.getStore() ?? null;
 }
 
 // A socket keeps the context it was opened in for every event it ever emits, reconnects included:
@@ -66,5 +68,5 @@ export function runOutsideContext(fn) {
     throw new TypeError('runOutsideContext(fn) requires a function');
   }
 
-  return storage.exit(fn);
+  return contextStorage.exit(fn);
 }

@@ -9,6 +9,7 @@ import { USER_STATUS } from '#enums/user-status.js';
 import { createTestDb, RETRY_MESSAGE, waitForBlockedSessions } from '#root/tests/helper/db.js';
 import { DEV_ENV } from '#root/tests/helper/guard.js';
 import { findLogLines } from '#root/tests/helper/log.js';
+import { createImage, listStored, removeTestUploads } from '#root/tests/helper/multipart.js';
 import { createTestRedis } from '#root/tests/helper/redis.js';
 import {
   assertForbidden,
@@ -31,6 +32,7 @@ import {
   migrateAndSeed,
   openLoggedRouteApp,
   openRouteApp,
+  openUploadApp,
   patchUserRequest,
   postLoginDev,
   readMemberIds,
@@ -40,6 +42,7 @@ import {
   setAdminMembers,
   signInAs,
   unblockRequest,
+  uploadAvatar,
 } from '#root/tests/helper/route.js';
 import {
   AUTH_COOKIES,
@@ -64,10 +67,21 @@ import { toDate } from '#utils/date.js';
 import { uuidv7 } from '#utils/id.js';
 import { mapValues } from '#utils/object.js';
 import assert from 'node:assert/strict';
-import { before, describe, test } from 'node:test';
+import {
+  after,
+  before,
+  describe,
+  test,
+} from 'node:test';
 
 const testRedis = await createTestRedis();
 const testDb = await createTestDb();
+
+after(() => removeTestUploads());
+
+const PHOTO_WIDTH = 64;
+const PHOTO_HEIGHT = 48;
+const PHOTO = await createImage(PHOTO_WIDTH, PHOTO_HEIGHT).png().toBuffer();
 
 const PROVIDER_ID = 'google';
 const ROOT_PATH = '/';
@@ -397,6 +411,17 @@ describe('DELETE /api/v1/users/:id', { skip: testRedis.skip || testDb.skip }, ()
     })]);
     assertNotFound(await send(fastify, manager, deleteUserRequest(target.userId)));
   });
+
+  test('removes the file of the avatar of the user once the deletion is committed, and leaves the avatar of another user alone', async (t) => {
+    const { fastify, root } = await openUploadApp(t, testDb);
+    const manager = await signInAs(fastify, [SCOPE.USERS_MANAGE]);
+    const [target, other] = await mapSeries(['target', 'other'], () => signIn(fastify));
+    const [targetKey, otherKey] = await mapSeries([target, other], (device) => uploadAvatar(fastify, device, PHOTO));
+
+    assert.deepEqual((await listStored(root)).toSorted(), [targetKey, otherKey].toSorted());
+    assertNoContent(await send(fastify, manager, deleteUserRequest(target.userId)));
+    assert.deepEqual(await listStored(root), [otherKey]);
+  });
 });
 
 describe('DELETE /api/v1/users/me', { skip: testRedis.skip || testDb.skip }, () => {
@@ -442,6 +467,19 @@ describe('DELETE /api/v1/users/me', { skip: testRedis.skip || testDb.skip }, () 
     assertRevoked(await send(fastify, device, getMeRequest()));
     assert.deepEqual(await countRowsOf(fastify, browser.userId), [1, 0, 0, 1, 0]);
     assert.equal((await fastify.inject({ ...getMeRequest(), cookies: browser.accessCookie })).statusCode, 200);
+  });
+
+  test('removes the file of the avatar once the deletion is committed, while a deletion refused with 409 GROUP_PROTECTED keeps the user and their file', async (t) => {
+    const { fastify, root } = await openUploadApp(t, testDb);
+    const [leaving, last] = await mapSeries(['leaving', 'last'], () => signIn(fastify));
+    const [leavingKey, lastKey] = await mapSeries([leaving, last], (device) => uploadAvatar(fastify, device, PHOTO));
+
+    await setAdminMembers(fastify, [last.userId]);
+
+    assertProtected(await send(fastify, last, deleteMeRequest()));
+    assert.deepEqual((await listStored(root)).toSorted(), [leavingKey, lastKey].toSorted());
+    assertNoContent(await send(fastify, leaving, deleteMeRequest()));
+    assert.deepEqual(await listStored(root), [lastKey]);
   });
 });
 

@@ -21,7 +21,14 @@ const PROVIDERS = freezeDeep([
       isEmailVerified: 'email_verified',
       firstName: ['given_name', 'name'],
       lastName: 'family_name',
+      picture: 'picture',
     },
+    // What the address of the picture and each of its redirects may name, a host with its subdomains.
+    pictureHosts: ['googleusercontent.com'],
+
+    // The claim names a picture of 96 pixels, "=s96-c" at the end of its address: the copy asks for the size of the
+    // avatar first, and for the address of the claim when that fails.
+    pictureSize: { pattern: /=s\d+(?=(?:-[a-z0-9]+)*$)/.source, replacement: '=s{size}' },
   },
   {
     id: 'telegram',
@@ -38,7 +45,9 @@ const PROVIDERS = freezeDeep([
       subject: 'id',
       firstName: ['given_name', 'name'],
       lastName: 'family_name',
+      picture: 'picture',
     },
+    pictureHosts: ['t.me', 'telesco.pe'],
   },
 ]);
 
@@ -71,6 +80,9 @@ export function createOauthConfig(env) {
 
     // A call of the token endpoint, which the browser waits for on the callback.
     timeout: '10s',
+
+    // The most a sign-in waits for the picture it copies to an empty avatar, after the session is made.
+    pictureTimeout: '5s',
 
     // Paths of the site: where a sign-in ends without a target of its own, and where a failed one is told of.
     successPath: '/',

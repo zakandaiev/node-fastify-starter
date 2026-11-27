@@ -222,6 +222,11 @@ function readLocation(response, target) {
     : null;
 }
 
+// What came over TLS goes on over TLS: a hop over plain http would let anyone on the way swap the bytes.
+function isDowngrade(target, location) {
+  return target.protocol === HTTPS_PROTOCOL && new URL(location).protocol !== HTTPS_PROTOCOL;
+}
+
 async function readResponse(response, options, signal) {
   const status = response.statusCode;
   const contentType = toMimeEssence(response.headers[HEADER.CONTENT_TYPE]);
@@ -265,7 +270,7 @@ async function fetchHop(url, options, signal, redirectCount) {
     throw refuse(UPSTREAM_FAILURE.TOO_MANY_REDIRECTS, { status: response.statusCode });
   }
 
-  if (!location) {
+  if (!location || isDowngrade(target, location)) {
     throw refuse(UPSTREAM_FAILURE.INVALID_URL, { status: response.statusCode });
   }
 

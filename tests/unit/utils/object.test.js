@@ -2,6 +2,7 @@ import {
   compact,
   deepMerge,
   diff,
+  findUnknownKey,
   freezeDeep,
   getPath,
   mapKeys,
@@ -197,6 +198,32 @@ describe('omit', () => {
   test('rejects keys that are not an array of strings or numbers: an undefined key would keep the field it was meant to drop', () => {
     NOT_KEY_LISTS.forEach((keys) => {
       assert.throws(() => omit({ id: 1 }, keys), { name: 'TypeError', message: /^omit\(object, keys\) requires/ });
+    });
+  });
+});
+
+describe('findUnknownKey', () => {
+  test('gives the first own key the list does not name, and undefined when it names them all', () => {
+    assert.equal(findUnknownKey({
+      max: 1, window: '1m', maxx: 2, other: 3,
+    }, ['max', 'window']), 'maxx');
+    assert.equal(findUnknownKey({ max: 1 }, ['max', 'window']), undefined);
+    assert.equal(findUnknownKey({}, []), undefined);
+  });
+
+  test('takes a numeric key as its string form and never reads an inherited key', () => {
+    assert.equal(findUnknownKey({ 1: 'one' }, [1]), undefined);
+    assert.equal(findUnknownKey(Object.assign(Object.create(null), { id: 1 }), ['id']), undefined);
+    assert.equal(findUnknownKey(JSON.parse(POLLUTED_JSON[0]), []), '__proto__');
+    assert.equal(findUnknownKey({ id: 1 }, ['id', 'constructor']), undefined);
+  });
+
+  test('rejects a source that is not a plain object and keys that are not an array of strings or numbers', () => {
+    NOT_PLAIN_OBJECTS.forEach((source) => {
+      assert.throws(() => findUnknownKey(source, ['id']), { name: 'TypeError', message: /^findUnknownKey\(object, keys\) requires/ });
+    });
+    NOT_KEY_LISTS.forEach((keys) => {
+      assert.throws(() => findUnknownKey({ id: 1 }, keys), { name: 'TypeError', message: /^findUnknownKey\(object, keys\) requires/ });
     });
   });
 });

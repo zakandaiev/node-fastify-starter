@@ -936,7 +936,7 @@ describe('a session and the services behind it', { skip: testRedis.skip || testD
     const proxy = await createTcpProxy(t, getServiceAddress('mariadb'));
     const { fastify } = await openApp(t, {
       isRedisUp: false,
-      env: { APP_DATABASE_HOST: LOOPBACK, APP_DATABASE_PORT: String(proxy.port) },
+      env: proxy.databaseEnv,
       auth: { readTimeout: SHORT_READ },
     });
     const { userId, refreshCookie, accessCookie: cookies } = await signIn(fastify);

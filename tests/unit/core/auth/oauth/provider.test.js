@@ -5,8 +5,10 @@ import {
   exchangeCode,
   findEnabledProvider,
   listEnabledProviders,
+  listPictureUrls,
   readProviderProfile,
   RESERVED_ROUTE_NAMES,
+  toValidPictureUrl,
 } from '#core/auth/oauth/provider.js';
 import { createContext, runInContext } from '#core/context/index.js';
 import { AppError } from '#core/error/index.js';
@@ -34,6 +36,7 @@ import { toTimestamp, toUnixSeconds } from '#utils/date.js';
 import { encodeBase64Url, isBase64Url } from '#utils/encoding.js';
 import { sha256 } from '#utils/hash.js';
 import { freezeDeep, pick } from '#utils/object.js';
+import { URL_MAX_LENGTH } from '#utils/validate.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
@@ -81,12 +84,20 @@ const RECORD = freezeDeep({
 
 const ENABLED_RECORD = freezeDeep({ ...RECORD, clientId: 'corp-client', clientSecret: 'corp-secret' });
 
+const PICTURE_HOSTS = Object.freeze(['cdn.corp.example.com']);
+const PICTURE_CLAIMS = Object.freeze({ subject: 'sub', picture: 'picture' });
+const SIZE_RULE = Object.freeze({ pattern: 'size-\\d+', replacement: 'size-{size}' });
+
 function withProviders(...providers) {
   return { ...createTestConfig().oauth, providers };
 }
 
 function withRecord(overrides) {
   return withProviders({ ...RECORD, ...overrides });
+}
+
+function withPictureSize(pictureSize) {
+  return withRecord({ claims: PICTURE_CLAIMS, pictureHosts: PICTURE_HOSTS, pictureSize });
 }
 
 function assertRefused(cases, message) {
@@ -245,7 +256,7 @@ describe('assertOauthConfig: the record of a provider', () => {
     assertRefused(['client_secret_jwt', 'basic', undefined].map((clientAuthentication) => withRecord({ clientAuthentication })), /requires clientAuthentication to be one of: client_secret_post, client_secret_basic$/);
   });
 
-  test('takes claims of one name for subject, email and isEmailVerified, and a name or a list of names for the names', () => {
+  test('takes claims of one name for subject, email, isEmailVerified and picture, and a name or a list of names for the names', () => {
     const claims = [
       { subject: 'sub' },
       { subject: 'id', firstName: 'given_name' },
@@ -255,10 +266,11 @@ describe('assertOauthConfig: the record of a provider', () => {
         isEmailVerified: 'email_verified',
         firstName: ['given_name', 'name'],
         lastName: ['family_name'],
+        picture: 'picture',
       },
     ];
 
-    assertTaken(claims.map((value) => withRecord({ claims: value })));
+    assertTaken(claims.map((value) => withRecord({ claims: value, ...(value.picture && { pictureHosts: PICTURE_HOSTS }) })));
   });
 
   test('refuses any other claims, a key of another name included: its claim would go unread without a word', () => {
@@ -269,13 +281,79 @@ describe('assertOauthConfig: the record of a provider', () => {
       { subject: ['sub'] },
       { subject: 'sub', email: ['email'] },
       { subject: 'sub', isEmailVerified: '' },
+      { subject: 'sub', picture: ['picture'] },
+      { subject: 'sub', picture: '' },
       { subject: 'sub', firstName: [] },
       { subject: 'sub', firstName: ['given_name', ''] },
       { subject: 'sub', lastName: 42 },
       { subject: 'sub', emailVerified: 'email_verified' },
+      { subject: 'sub', avatar: 'picture' },
     ];
 
-    assertRefused(claims.map((value) => withRecord({ claims: value })), /requires claims of the keys subject, email, isEmailVerified, firstName, lastName/);
+    assertRefused(claims.map((value) => withRecord({ claims: value, pictureHosts: PICTURE_HOSTS })), /requires claims of the keys subject, email, isEmailVerified, picture, firstName, lastName: subject, email, isEmailVerified and picture each the name of one claim/);
+  });
+
+  test('takes pictureHosts beside claims.picture: hostnames as a URL writes them, an address of this machine among them', () => {
+    const lists = [['googleusercontent.com'], ['t.me', 'telesco.pe'], ['127.0.0.1'], ['localhost'], ['xn--80ak6aa92e.example']];
+
+    assertTaken(lists.map((pictureHosts) => withRecord({ claims: PICTURE_CLAIMS, pictureHosts })));
+  });
+
+  test('refuses claims.picture without pictureHosts, and pictureHosts that are no list of hostnames in the form a URL writes them', () => {
+    const lists = [
+      undefined,
+      null,
+      [],
+      'cdn.corp.example.com',
+      [''],
+      [42],
+      ['Cdn.Corp.Example.com'],
+      ['cdn.corp.example.com:443'],
+      ['cdn.corp.example.com/avatars'],
+      ['https://cdn.corp.example.com'],
+      ['anna@cdn.corp.example.com'],
+      ['cdn corp.example.com'],
+      ['[::1]'],
+      ['cdn.corp.example.com', ''],
+    ];
+
+    assertRefused(lists.map((pictureHosts) => withRecord({ claims: PICTURE_CLAIMS, pictureHosts })), /requires pictureHosts beside claims\.picture: a list of the hosts its picture may come from, each in lower case and without a port$/);
+  });
+
+  test('refuses pictureHosts without claims.picture: no picture would be fetched from them', () => {
+    assertRefused([withRecord({ pictureHosts: PICTURE_HOSTS })], /^config\.oauth provider "corp" names pictureHosts without claims\.picture: no picture would be fetched from them$/);
+  });
+
+  test('takes pictureSize beside claims.picture: a pattern that compiles and a replacement with {size}, a "$" in it included', () => {
+    const rules = [
+      SIZE_RULE,
+      { pattern: '=s\\d+(?=(?:-[a-z0-9]+)*$)', replacement: '=s{size}' },
+      { pattern: 'w\\d+-h\\d+', replacement: 'w{size}-h{size}' },
+      { pattern: 'size', replacement: '$&-{size}-$1' },
+    ];
+
+    assertTaken(rules.map((pictureSize) => withPictureSize(pictureSize)));
+  });
+
+  test('refuses pictureSize without claims.picture: there is no address of a picture to resize', () => {
+    assertRefused([withRecord({ pictureSize: SIZE_RULE })], /^config\.oauth provider "corp" names pictureSize without claims\.picture: there is no address of a picture to resize$/);
+  });
+
+  test('refuses a pictureSize that is no plain object, and one that names a key it does not read', () => {
+    assertRefused([null, 'size-{size}', [SIZE_RULE], 42].map((pictureSize) => withPictureSize(pictureSize)), /^config\.oauth provider "corp" requires pictureSize to be a plain object of pattern and replacement$/);
+    assertRefused([withPictureSize({ ...SIZE_RULE, flags: 'i' })], /^config\.oauth provider "corp" names "flags" in pictureSize, which nothing reads: it takes pattern, replacement$/);
+  });
+
+  test('refuses a pattern that is no text, an empty one and one that does not compile', () => {
+    const patterns = [undefined, null, 42, /size-\d+/, '', '(', 'size-[0-9', '*', 'a{2,1}'];
+
+    assertRefused(patterns.map((pattern) => withPictureSize({ ...SIZE_RULE, pattern })), /^config\.oauth provider "corp" requires pictureSize\.pattern to be the source of a RegExp: a text that compiles, not empty$/);
+  });
+
+  test('refuses a replacement without {size}, where the size goes', () => {
+    const replacements = [undefined, null, 512, '', 'size-512', 'size-$1', '{SIZE}', '{ size }'];
+
+    assertRefused(replacements.map((replacement) => withPictureSize({ ...SIZE_RULE, replacement })), /^config\.oauth provider "corp" requires pictureSize\.replacement to be a text with "\{size\}" where the size goes$/);
   });
 
   test('refuses authorizationParams that are not a plain object of strings, or that name a parameter the flow sets', () => {
@@ -306,7 +384,9 @@ describe('assertOauthConfig: the section', () => {
     const { oauth } = createTestConfig();
 
     assert.throws(() => assertOauthConfig({ ...oauth, stateTtl: '10 minutes' }), /convertStringToMs\(value\) requires a number with a unit/);
-    assert.throws(() => assertOauthConfig({ ...oauth, timeout: '0s' }), { name: 'TypeError', message: 'config.oauth requires stateTtl, timeout to be above zero' });
+    ['timeout', 'pictureTimeout'].forEach((key) => {
+      assert.throws(() => assertOauthConfig({ ...oauth, [key]: '0s' }), { name: 'TypeError', message: 'config.oauth requires stateTtl, timeout, pictureTimeout to be above zero' }, key);
+    });
   });
 
   test('refuses a path of the sign-in that isSafeRedirectPath refuses, and a success path inside the pages of signing in and out', () => {
@@ -740,9 +820,15 @@ describe('readProviderProfile: the subject', () => {
 describe('readProviderProfile: the rest of it', () => {
   const PROVIDER = createOauthConfig({}).providers[0];
   const SUBJECT = { sub: 'subject-4' };
+  const PICTURE_HOST = 'lh3.googleusercontent.com';
+  const PICTURE_ORIGIN = `https://${PICTURE_HOST}`;
 
   function readProfile(claims) {
     return readProviderProfile(PROVIDER, { ...SUBJECT, ...claims });
+  }
+
+  function readPicture(picture) {
+    return readProfile({ picture }).pictureUrl;
   }
 
   test('reads an email in its normal form, and null for a value that is not one', () => {
@@ -774,6 +860,47 @@ describe('readProviderProfile: the rest of it', () => {
     assert.equal(readProfile({ given_name: 'Anna', name: 'Borys' }).firstName, 'Anna');
   });
 
+  // The hosts of the record are checked by the fetch, at the address and at each redirect.
+  test('reads the address of the picture over https, or over http to a host of this machine, up to the 2048 characters of a URL', () => {
+    const path = '/a/';
+    const longest = `${PICTURE_ORIGIN}${path}${'a'.repeat(URL_MAX_LENGTH - PICTURE_ORIGIN.length - path.length)}`;
+    const addresses = [
+      `${PICTURE_ORIGIN}/a/ACg8ocK=s96-c`,
+      'https://t.me/i/userpic/320/anna.jpg',
+      'https://other.example.com/photo.png',
+      'http://127.0.0.1:8080/photo.png',
+      'http://localhost/photo.png',
+      longest,
+    ];
+
+    assert.equal(longest.length, URL_MAX_LENGTH);
+    addresses.forEach((picture) => assert.deepEqual([readPicture(picture), toValidPictureUrl(picture)], [picture, picture], picture));
+  });
+
+  test('reads null for any other address of the picture: http elsewhere, another scheme, credentials, a longer one, and what is not an address', () => {
+    const values = [
+      'http://lh3.googleusercontent.com/a/photo.png',
+      'http://10.0.0.5/photo.png',
+      'ftp://lh3.googleusercontent.com/a/photo.png',
+      'data:image/png;base64,iVBORw0KGgo=',
+      `https://anna:secret@${PICTURE_HOST}/a/photo.png`,
+      `${PICTURE_HOST}/a/photo.png`,
+      `${PICTURE_ORIGIN}/${'a'.repeat(URL_MAX_LENGTH)}`,
+      '',
+      42,
+      null,
+      [`${PICTURE_ORIGIN}/a/photo.png`],
+      { href: `${PICTURE_ORIGIN}/a/photo.png` },
+    ];
+
+    values.forEach((picture) => assert.deepEqual([readPicture(picture), toValidPictureUrl(picture)], [null, null], JSON.stringify(picture)));
+  });
+
+  test('reads no picture from a provider whose record names no claim of it, nor from claims without one', () => {
+    assert.equal(readProviderProfile(RECORD, { sub: 'subject-5', picture: `${PICTURE_ORIGIN}/a/photo.png` }).pictureUrl, null);
+    assert.equal(readProfile({}).pictureUrl, null);
+  });
+
   test('reads no email from a provider whose record names none, and keeps the claims as they came', () => {
     const telegram = createOauthConfig({}).providers[1];
     const claims = {
@@ -790,6 +917,7 @@ describe('readProviderProfile: the rest of it', () => {
       isEmailVerified: false,
       firstName: 'Anna',
       lastName: null,
+      pictureUrl: null,
       claims: null,
     });
     assert.equal(profile.claims, claims);
@@ -799,5 +927,63 @@ describe('readProviderProfile: the rest of it', () => {
     [[null, SUBJECT], [PROVIDER, null], [PROVIDER, [SUBJECT]], [{}, SUBJECT]].forEach(([provider, claims]) => {
       assert.throws(() => readProviderProfile(provider, claims), { name: 'TypeError', message: /^readProviderProfile\(provider, claims\) requires/ });
     });
+  });
+});
+
+describe('listPictureUrls', () => {
+  const SIZED_RECORD = freezeDeep({
+    ...RECORD,
+    claims: PICTURE_CLAIMS,
+    pictureHosts: PICTURE_HOSTS,
+    pictureSize: SIZE_RULE,
+  });
+  const PICTURE_URL = 'https://cdn.corp.example.com/avatars/size-96/anna.png';
+  const SIZE = 512;
+
+  function listWith(pictureSize, pictureUrl = PICTURE_URL) {
+    return listPictureUrls({ ...SIZED_RECORD, pictureSize }, { pictureUrl, size: SIZE });
+  }
+
+  test('gives the address the rule of the record writes for the size first, and then the address of the claim', () => {
+    assert.deepEqual(listPictureUrls(SIZED_RECORD, { pictureUrl: PICTURE_URL, size: SIZE }), ['https://cdn.corp.example.com/avatars/size-512/anna.png', PICTURE_URL]);
+  });
+
+  test('gives the address of the claim alone for a record without a rule, and for an address its rule leaves as it is', () => {
+    const unsized = 'https://cdn.corp.example.com/avatars/anna.png';
+    const sized = 'https://cdn.corp.example.com/avatars/size-512/anna.png';
+
+    assert.deepEqual(listPictureUrls(RECORD, { pictureUrl: PICTURE_URL, size: SIZE }), [PICTURE_URL]);
+    assert.deepEqual([listWith(SIZE_RULE, unsized), listWith(SIZE_RULE, sized)], [[unsized], [sized]]);
+  });
+
+  test('writes the replacement as it is, "$&" and "$1" included, with the size in place of every {size}', () => {
+    assert.deepEqual(listWith({ pattern: 'size-(\\d+)', replacement: '$&-$1-{size}x{size}' }), ['https://cdn.corp.example.com/avatars/$&-$1-512x512/anna.png', PICTURE_URL]);
+  });
+
+  test('leaves out a resized address that the address of a claim could not be: http to another host, credentials, one over the length of a URL', () => {
+    const rules = [
+      { pattern: '^https://', replacement: 'http://{size}.' },
+      { pattern: '^https://', replacement: 'https://anna:{size}@' },
+      { pattern: 'size-\\d+', replacement: `${'x'.repeat(URL_MAX_LENGTH)}{size}` },
+    ];
+
+    rules.forEach((pictureSize) => assert.deepEqual(listWith(pictureSize), [PICTURE_URL], pictureSize.replacement.slice(0, 16)));
+  });
+
+  test('requires the record of a provider, an address toValidPictureUrl takes and a size in whole pixels', () => {
+    const cases = [
+      [null, { pictureUrl: PICTURE_URL, size: SIZE }],
+      [SIZED_RECORD, { pictureUrl: 'http://cdn.corp.example.com/avatars/size-96/anna.png', size: SIZE }],
+      [SIZED_RECORD, { size: SIZE }],
+      ...[0, 1.5, '512', undefined].map((size) => [SIZED_RECORD, { pictureUrl: PICTURE_URL, size }]),
+    ];
+
+    cases.forEach(([provider, options]) => {
+      assert.throws(() => listPictureUrls(provider, options), {
+        name: 'TypeError',
+        message: 'listPictureUrls(provider, { pictureUrl, size }) requires the record of a provider, the address of the picture its profile gives and the size in pixels',
+      }, JSON.stringify(options));
+    });
+    assert.throws(() => listPictureUrls(SIZED_RECORD), TypeError);
   });
 });

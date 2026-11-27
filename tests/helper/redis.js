@@ -271,14 +271,43 @@ function trackSocket(proxy, socket) {
   return socket;
 }
 
+function takeCut(proxy, bytes) {
+  if (!proxy.pickCut?.(bytes)) {
+    return false;
+  }
+
+  proxy.pickCut = null;
+
+  return true;
+}
+
+// The cut waits for the first byte of the answer, not a moment after the request: by then the server has done what the
+// chunk asked for.
 function joinThroughProxy(proxy, client, target) {
   const upstream = trackSocket(proxy, net.connect(target));
+  let isCut = false;
+
+  function cut() {
+    client.destroy();
+    upstream.destroy();
+  }
 
   trackSocket(proxy, client);
-  client.on('data', (bytes) => upstream.write(bytes));
-  upstream.on('data', (bytes) => client.write(bytes));
+  client.on('data', (bytes) => {
+    isCut = isCut || takeCut(proxy, bytes);
+    upstream.write(bytes);
+  });
+  upstream.on('data', (bytes) => (isCut
+    ? cut()
+    : client.write(bytes)));
   client.once('close', () => upstream.destroy());
   upstream.once('close', () => client.destroy());
+
+  return true;
+}
+
+function armCut(proxy, pickCut) {
+  proxy.pickCut = pickCut;
 
   return true;
 }
@@ -301,9 +330,10 @@ function setFrozen(proxy, isFrozen) {
 }
 
 // A server that hangs, which a closed port cannot stand for: frozen, the proxy holds the bytes as TCP does and passes
-// them on in order once thawed, and a connection torn down meanwhile takes what it held with it.
+// them on in order once thawed, and a connection torn down meanwhile takes what it held with it. Armed by
+// cutAnswerTo(pickCut), it loses the answer to the next chunk of a client the predicate picks, with that connection.
 export async function createTcpProxy(t, target) {
-  const proxy = { isFrozen: false, sockets: new Set() };
+  const proxy = { isFrozen: false, sockets: new Set(), pickCut: null };
   const server = net.createServer((client) => joinThroughProxy(proxy, client, target));
 
   t.after(() => {
@@ -319,9 +349,11 @@ export async function createTcpProxy(t, target) {
   return {
     port,
     env: Object.freeze({ APP_REDIS_HOST: LOOPBACK, APP_REDIS_PORT: String(port) }),
+    databaseEnv: Object.freeze({ APP_DATABASE_HOST: LOOPBACK, APP_DATABASE_PORT: String(port) }),
     freeze: () => setFrozen(proxy, true),
     thaw: () => setFrozen(proxy, false),
     kill: () => killProxied(proxy),
+    cutAnswerTo: (pickCut) => armCut(proxy, pickCut),
     countConnections: () => proxy.sockets.size / 2,
   };
 }

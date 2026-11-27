@@ -1,5 +1,5 @@
 import { createContext, runInContext } from '#core/context/index.js';
-import { DbError } from '#core/db/error.js';
+import { DbError, isOutcomeUnknown } from '#core/db/error.js';
 import {
   afterCommit,
   findTransaction,
@@ -202,6 +202,18 @@ describe('withTransaction: a driver that fails', () => {
 
     assert.deepEqual(driver.calls, ['begin', 'commit', 'rollback', 'release']);
     assert.deepEqual(calls, []);
+  });
+
+  test('tells a connection lost at the start or inside the transaction, which wrote nothing, from one lost with its COMMIT, which may have landed', async () => {
+    const [atBegin, inside, atCommit] = ['begin', 'SAVEPOINT sp_1', 'commit'].map(() => new DbError('Connection lost', { isFatal: true }));
+    const errors = await Promise.all([
+      rejectionOf(runWith(createStubDriver({ begin: atBegin }), () => withTransaction(() => 'never'))),
+      rejectionOf(runWith(createStubDriver({ 'SAVEPOINT sp_1': inside }), () => withTransaction(() => withTransaction(() => 'never')))),
+      rejectionOf(runWith(createStubDriver({ commit: atCommit }), () => withTransaction(() => 'done'))),
+    ]);
+
+    assert.deepEqual(errors, [atBegin, inside, atCommit]);
+    assert.deepEqual(errors.map((error) => isOutcomeUnknown(error)), [false, false, true]);
   });
 });
 

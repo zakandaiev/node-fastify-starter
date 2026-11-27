@@ -9,10 +9,12 @@ import { createTestConfig } from '#root/tests/helper/config.js';
 import { createLogSink, findLogLines, LOG_LEVEL } from '#root/tests/helper/log.js';
 import { createRawServer, readByteByByte } from '#root/tests/helper/net.js';
 import { getFreePort } from '#root/tests/helper/process.js';
+import { createCertificate, trustCertificate } from '#root/tests/helper/tls.js';
 import assert from 'node:assert/strict';
 import { lookup as dnsLookup } from 'node:dns/promises';
 import { once } from 'node:events';
 import http from 'node:http';
+import https from 'node:https';
 import net from 'node:net';
 import { describe, test } from 'node:test';
 
@@ -55,6 +57,8 @@ const UNRESOLVABLE_SITE = `${'a'.repeat(64)}.test`;
 // The content type of a TLS record that carries a handshake, the first byte a client sends.
 const TLS_HANDSHAKE_RECORD = 0x16;
 
+const CERTIFICATE = createCertificate(LOOPBACK);
+
 function openContext({ networks = [LOOPBACK_NETWORK], external = {} } = {}) {
   const sink = createLogSink();
   const config = createTestConfig({
@@ -74,17 +78,26 @@ function fetchFrom(run, url, options = {}) {
   return run(() => fetchExternal(url, { service: SERVICE, ...ALLOWED, ...options }));
 }
 
-// A local upstream: "answer" writes each response as node:http lets it, and every request is recorded once read.
-async function createUpstream(t, answer) {
+// A local upstream: "answer" writes each response as node:http lets it, and every request is recorded once read. With
+// "secure", the key and the certificate of a TLS server, it is an https one.
+async function createUpstream(t, answer, { secure = null } = {}) {
   const requests = [];
   const sockets = new Set();
-  const server = http.createServer((request, response) => {
+
+  function handle(request, response) {
     request.resume();
     request.on('end', () => {
       requests.push({ method: request.method, path: request.url, headers: request.headers });
       answer(request, response);
     });
-  });
+  }
+
+  const server = secure
+    ? https.createServer(secure, handle)
+    : http.createServer(handle);
+  const protocol = secure
+    ? 'https'
+    : 'http';
 
   server.on('connection', (socket) => {
     sockets.add(socket);
@@ -101,7 +114,7 @@ async function createUpstream(t, answer) {
 
   const { port } = server.address();
 
-  return { url: `http://${LOOPBACK}:${port}`, port, requests };
+  return { url: `${protocol}://${LOOPBACK}:${port}`, port, requests };
 }
 
 function answerPng(request, response) {
@@ -477,6 +490,34 @@ describe('fetchExternal: redirects', () => {
 
     assert.equal(result.url, `${upstream.url}/avatars/final.png`);
     assert.deepEqual(upstream.requests.map(({ path }) => path), ['/avatars/start', '/avatars/final.png']);
+  });
+
+  test('follows a redirect from https to https', async (t) => {
+    const { run } = openContext();
+
+    trustCertificate(t, CERTIFICATE.cert);
+
+    const upstream = await createUpstream(t, (request, response) => (request.url === '/start'
+      ? redirect(response, `${upstream.url}/final.png`)
+      : answerPng(request, response)), { secure: CERTIFICATE });
+    const result = await fetchFrom(run, `${upstream.url}/start`);
+
+    assert.equal(result.url, `${upstream.url}/final.png`);
+    assert.deepEqual(result.bytes, PNG);
+  });
+
+  test('refuses a redirect from https to plain http with "invalid-url": the http address gets no request', async (t) => {
+    const { run } = openContext();
+
+    trustCertificate(t, CERTIFICATE.cert);
+
+    const plain = await createUpstream(t, answerPng);
+    const upstream = await createUpstream(t, (request, response) => redirect(response, `${plain.url}/swapped.png`), { secure: CERTIFICATE });
+    const error = await rejectionOf(fetchFrom(run, `${upstream.url}/avatars/1.png`));
+
+    assert.equal(assertUpstreamFailure(error, 'invalid-url').status, 302);
+    assert.equal(upstream.requests.length, 1);
+    assert.deepEqual(plain.requests, []);
   });
 
   test('refuses a redirect without a Location with "invalid-url"', async (t) => {

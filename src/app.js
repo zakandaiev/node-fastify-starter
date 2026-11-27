@@ -83,7 +83,7 @@ export async function buildApp({ config } = {}) {
   assertDurations(config.app, DURATION_KEYS, 'config.app');
 
   // Created before the instance: a prefix it refuses must not leave an open instance behind.
-  const checkRoute = createRouteHook(config.app);
+  const checkRoute = createRouteHook(config.app, { upload: config.upload });
   const fastify = createFastify(config);
 
   fastify.decorate('config', config);

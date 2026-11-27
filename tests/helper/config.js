@@ -1,7 +1,10 @@
 import { parseEnv, readEnv } from '#config/env.js';
 import { createConfig } from '#config/index.js';
+import { createUploadConfig } from '#config/upload.js';
 import { uuidv7 } from '#utils/id.js';
 import { freezeDeep } from '#utils/object.js';
+import { tmpdir } from 'node:os';
+import nodePath from 'node:path';
 
 // Addresses of the local wdt modules; a real environment (.env, CI) overrides them.
 const SERVICE_ENV = Object.freeze({
@@ -28,6 +31,10 @@ export const TEST_ENV = Object.freeze({
 export const REDIS_TEST_PREFIX = 'nfs-test:';
 export const PROCESS_KEY_PREFIX = `${REDIS_TEST_PREFIX}${uuidv7()}:`;
 
+// The files a test stores never land in the repository: they go to a folder of the test file's own process under the
+// temporary folder, which nothing creates before the first file stored there.
+export const PROCESS_UPLOAD_ROOT = nodePath.join(tmpdir(), `nfs-test-upload-${uuidv7()}`);
+
 // A test that waits for a lock nobody lets go must fail in seconds, not hold its file for the minutes of the app.
 const TEST_CONFIG = Object.freeze({
   logger: { level: 'silent', isPretty: false },
@@ -38,6 +45,7 @@ const TEST_CONFIG = Object.freeze({
     transactionTimeout: '10s',
   },
   redis: { keyPrefix: PROCESS_KEY_PREFIX },
+  upload: { storage: { ...createUploadConfig().storage, root: PROCESS_UPLOAD_ROOT } },
 });
 
 function readServiceEnv() {

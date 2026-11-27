@@ -4,6 +4,7 @@ import {
   ISO_DATE_TIME_MAX_LENGTH,
   addToDate,
   assertDurations,
+  convertMsToString,
   convertMsToWholeSeconds,
   convertStringToMs,
   convertStringToSeconds,
@@ -47,6 +48,7 @@ const HOUR_MS = 3600000;
 
 const LONG = 200000;
 const INSTANT_MS = 1000;
+const ROUND_TRIP_MS = 100000;
 
 const NO_BREAK_SPACE = String.fromCharCode(0xA0);
 const ARABIC_TEN = String.fromCharCode(0x661, 0x660);
@@ -944,6 +946,29 @@ describe('convertMsToWholeSeconds', () => {
       assert.throws(() => convertMsToWholeSeconds(value), {
         name: 'TypeError',
         message: 'convertMsToWholeSeconds(milliseconds) requires a finite number of milliseconds',
+      }, String(value));
+    });
+  });
+});
+
+describe('convertMsToString', () => {
+  test('writes whole milliseconds as seconds, with a fraction where they are not whole', () => {
+    [[0, '0s'], [-0, '0s'], [1, '0.001s'], [457, '0.457s'], [1000, '1s'], [4321, '4.321s'], [90061001, '90061.001s']].forEach(([milliseconds, duration]) => {
+      assert.equal(convertMsToString(milliseconds), duration, String(milliseconds));
+    });
+  });
+
+  test('writes what convertStringToMs reads back as the same milliseconds', () => {
+    const milliseconds = [...Array.from({ length: ROUND_TRIP_MS }, (unused, index) => index), HOUR_MS + 1, MOMENT_MS];
+
+    assert.deepEqual(milliseconds.filter((value) => convertStringToMs(convertMsToString(value)) !== value), []);
+  });
+
+  test('throws on what is no whole number of milliseconds, or one below zero', () => {
+    [-1, 1.5, Number.NaN, Infinity, 2 ** 53, '1000', '1s', null, undefined].forEach((value) => {
+      assert.throws(() => convertMsToString(value), {
+        name: 'TypeError',
+        message: 'convertMsToString(milliseconds) requires a whole number of milliseconds, not below zero',
       }, String(value));
     });
   });

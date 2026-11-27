@@ -2,7 +2,7 @@ import { insertReturning, updateReturning } from '#core/db/index.js';
 import { createQuery } from '#core/db/query.js';
 import { TABLE } from '#enums/table.js';
 import { USER_STATUS } from '#enums/user-status.js';
-import { USER_LIST_COLUMNS } from '#modules/users/users.repository.js';
+import { toUserList, USER_LIST_COLUMNS } from '#modules/users/users.repository.js';
 import * as groupSchema from '#schemas/entity/group.js';
 import * as userSchema from '#schemas/entity/user.js';
 import { groupBy } from '#utils/array.js';
@@ -172,7 +172,7 @@ export async function findMembers(groupId, payload) {
     .cache({ tables: [TABLE.USERS, TABLE.USER_GROUPS] })
     .execute();
 
-  return query.getAll();
+  return toUserList(query.getAll());
 }
 
 export async function countActiveMembers(groupId) {

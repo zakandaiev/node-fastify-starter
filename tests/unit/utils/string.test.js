@@ -1,4 +1,5 @@
 import {
+  convertStringToBytes,
   cutAddressTail,
   cutAddressTails,
   escapeHtml,
@@ -13,6 +14,7 @@ import {
 } from '#utils/string.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
+import { inspect } from 'node:util';
 
 const HOSTILE_REPEATS = 100000;
 const TIME_LIMIT_MS = 1000;
@@ -88,6 +90,9 @@ const HOSTILE_HTML = [
   ['whitespace only', ' \n'.repeat(HOSTILE_REPEATS), ''],
 ];
 
+const SIZE_FORMAT_REFUSAL = 'convertStringToBytes(value) requires a non-negative number with a unit B, KB, MB, GB or TB, such as "5MB" or "1.5 GB"';
+const SIZE_RANGE_REFUSAL = 'convertStringToBytes(value) requires a size of at most Number.MAX_SAFE_INTEGER bytes';
+
 const LIKE_TOKEN_REGEXP = /\\(.)|[%_]|[^\\%_]+/gsu;
 const LIKE_WILDCARDS = new Map([['%', '.*'], ['_', '.']]);
 
@@ -103,6 +108,12 @@ function likeToRegExp(pattern) {
   const source = pattern.replace(LIKE_TOKEN_REGEXP, (match, escaped) => LIKE_WILDCARDS.get(match) ?? escapeRegExp(escaped ?? match));
 
   return new RegExp(`^${source}$`, 'su');
+}
+
+function assertSizeRefused(values, refusal = SIZE_FORMAT_REFUSAL) {
+  values.forEach((value) => {
+    assert.throws(() => convertStringToBytes(value), { name: 'TypeError', message: `${refusal}: received ${inspect(value)}` }, inspect(value));
+  });
 }
 
 describe('escapeHtml', () => {
@@ -811,6 +822,61 @@ describe('formatBytes', () => {
     [-1, 1.5, 101, Number.NaN, Infinity, '1', null].forEach((decimals) => {
       assert.throws(() => formatBytes(1536, decimals), { name: 'RangeError', message: /^formatBytes\(/ });
     });
+  });
+});
+
+describe('convertStringToBytes', () => {
+  test('converts a number with a unit into bytes, in the 1024-based units of formatBytes()', () => {
+    [
+      ['0B', 0],
+      ['100B', 100],
+      ['512KB', 512 * 1024],
+      ['5MB', 5 * 1024 ** 2],
+      ['1GB', 1024 ** 3],
+      ['2TB', 2 * 1024 ** 4],
+    ].forEach(([value, bytes]) => assert.equal(convertStringToBytes(value), bytes, value));
+  });
+
+  test('takes one space between the number and the unit, as formatBytes() writes it', () => {
+    assert.equal(convertStringToBytes('5 MB'), 5 * 1024 ** 2);
+    assert.equal(convertStringToBytes('1.5 GB'), 1.5 * 1024 ** 3);
+  });
+
+  test('takes a fraction and rounds the size down to whole bytes', () => {
+    [['1.5MB', 1572864], ['0.5KB', 512], ['1.5B', 1], ['0.1KB', 102], ['0.3MB', 314572], ['0.0009765625KB', 1]].forEach(([value, bytes]) => {
+      assert.equal(convertStringToBytes(value), bytes, value);
+    });
+  });
+
+  test('reads a size up to Number.MAX_SAFE_INTEGER bytes', () => {
+    assert.equal(convertStringToBytes('9007199254740991B'), Number.MAX_SAFE_INTEGER);
+    assert.equal(convertStringToBytes('8191 TB'), 8191 * 1024 ** 4);
+  });
+
+  test('reads back what formatBytes() writes, and formatBytes() writes back what it reads', () => {
+    [0, 1, 1023, 1024, 1536, 5 * 1024 ** 2, 1.5 * 1024 ** 3, 1024 ** 4, 1024 ** 5].forEach((bytes) => {
+      assert.equal(convertStringToBytes(formatBytes(bytes)), bytes, String(bytes));
+    });
+    [['5MB', '5 MB'], ['0B', '0 B'], ['1023B', '1023 B'], ['1.5KB', '1.5 KB'], ['1GB', '1 GB'], ['1 TB', '1 TB']].forEach(([value, formatted]) => {
+      assert.equal(formatBytes(convertStringToBytes(value)), formatted, value);
+    });
+  });
+
+  test('takes the units exactly as formatBytes() writes them, and nothing around the number and the unit', () => {
+    assertSizeRefused(['5mb', '5Mb', '5kB', '5kb', '5K', '5KiB', '5PB', '5', 'MB', '5 MB ', ' 5MB', '5  MB', '5\tMB', '5 MB', '5 M B']);
+  });
+
+  test('takes a non-negative decimal number only', () => {
+    assertSizeRefused(['-5MB', '-0B', '+5MB', '.5MB', '5.MB', '1e3B', '1,5MB', '1_000B', '0x10B', 'NaNMB', 'Infinity MB']);
+  });
+
+  test('takes a string only: a list with a size in it is no size', () => {
+    assertSizeRefused(['', 5, 5242880, Number.NaN, Infinity, null, undefined, true, 10n, ['5MB'], { size: '5MB' }]);
+  });
+
+  test('refuses a size past Number.MAX_SAFE_INTEGER bytes, the largest one formatBytes() writes among them', () => {
+    assert.equal(formatBytes(Number.MAX_SAFE_INTEGER), '8192 TB');
+    assertSizeRefused(['9007199254740992B', '8192TB', '8192 TB', `${'9'.repeat(400)}B`], SIZE_RANGE_REFUSAL);
   });
 });
 

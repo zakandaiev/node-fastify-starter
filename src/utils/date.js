@@ -1,4 +1,5 @@
 import {
+  isNonNegativeInteger,
   isNumber,
   isNumberInRange,
   isString,
@@ -205,6 +206,14 @@ export function convertMsToWholeSeconds(milliseconds) {
 
 export function convertStringToWholeSeconds(value) {
   return convertMsToWholeSeconds(toDurationMs(value, WHOLE_SECONDS_SIGNATURE));
+}
+
+export function convertMsToString(milliseconds) {
+  if (!isNonNegativeInteger(milliseconds)) {
+    throw new TypeError('convertMsToString(milliseconds) requires a whole number of milliseconds, not below zero');
+  }
+
+  return `${milliseconds / MS_IN_SECOND}s`;
 }
 
 // For a value that is checked rather than read: false, not an error, for one nobody can read.

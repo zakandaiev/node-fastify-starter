@@ -32,7 +32,8 @@ const KEY_SEPARATOR = ':';
 const PROFILE_SQL = `
   UPDATE users
   SET email = :email, email_verified_at = :emailVerifiedAt, first_name = :firstName, last_name = :lastName, locale = :locale,
-    timezone = :timezone, created_at = COALESCE(:createdAt, created_at), updated_at = COALESCE(:updatedAt, updated_at)
+    timezone = :timezone, avatar_key = :avatarKey, created_at = COALESCE(:createdAt, created_at),
+    updated_at = COALESCE(:updatedAt, updated_at)
   WHERE id = :id
 `;
 const IDENTITY_SQL = `
@@ -213,7 +214,8 @@ export async function grantScopes(fastify, userId, scopes, { isSuperadmin = fals
   return groupId;
 }
 
-// The row of createUser() with these columns of a profile written over it.
+// The row of createUser() with these columns of a profile written over it. An avatar key names no file: the URL the API
+// makes of it needs none.
 export async function insertUser(fastify, {
   email = null,
   emailVerifiedAt = null,
@@ -221,6 +223,7 @@ export async function insertUser(fastify, {
   lastName = null,
   locale = null,
   timezone = null,
+  avatarKey = null,
   status = USER_STATUS.ACTIVE,
   createdAt = null,
   updatedAt = null,
@@ -235,6 +238,7 @@ export async function insertUser(fastify, {
     lastName,
     locale,
     timezone,
+    avatarKey,
     createdAt,
     updatedAt,
   });
@@ -318,6 +322,7 @@ export function profileOf({
   isEmailVerified = false,
   firstName = null,
   lastName = null,
+  pictureUrl = null,
   claims = {},
 } = {}) {
   return {
@@ -326,6 +331,7 @@ export function profileOf({
     isEmailVerified,
     firstName,
     lastName,
+    pictureUrl,
     claims: { sub: subject, ...claims },
   };
 }

@@ -2,6 +2,8 @@ import { freezeDeep } from '#utils/object.js';
 import {
   formatSchemaPointer,
   hasOnlyTypes,
+  isBlankNumberText,
+  isNullableSchema,
   isNumericSchema,
   mapSchema,
   readSchemaTypes,
@@ -385,5 +387,38 @@ describe('isNumericSchema', () => {
 
   test('requires a schema object', () => {
     assert.throws(() => isNumericSchema(null), { name: 'TypeError', message: /requires a schema object/ });
+  });
+});
+
+describe('isNullableSchema', () => {
+  test('is true for null among the types, as the const or in the enum: a nullable field and the file field of a form', () => {
+    [{ type: 'null' }, { type: ['string', 'null'] }, { const: null }, { enum: ['a', null] }, { type: ['string', 'null'], enum: ['a', null] }].forEach((schema) => {
+      assert.equal(isNullableSchema(schema), true, JSON.stringify(schema));
+    });
+  });
+
+  test('is false for a schema that names no null, and for what is no schema', () => {
+    [{ type: 'integer' }, { type: ['string', 'number'] }, { const: 'null' }, { enum: ['a', 'null'] }, { items: { type: 'null' } }, {}, undefined, null, 'null'].forEach((schema) => {
+      assert.equal(isNullableSchema(schema), false, JSON.stringify(schema));
+    });
+  });
+});
+
+describe('isBlankNumberText', () => {
+  const BLANKS = ['', ' ', '\t', '\n', '\u00A0', '  \r\n  '];
+
+  test('is true for blank text of a number or an integer, and of an item of a list of them, which AJV would coerce to 0', () => {
+    [{ type: 'integer' }, { type: ['number', 'null'] }, { type: 'array', items: { type: 'integer' } }].forEach((schema) => {
+      BLANKS.forEach((value) => assert.equal(isBlankNumberText(schema, value), true, `${JSON.stringify(schema)} ${JSON.stringify(value)}`));
+    });
+  });
+
+  test('is false for text with a character, for what is no text, and for a field of no numbers or of no schema', () => {
+    ['0', ' 1 ', 'x', null, 0, undefined].forEach((value) => {
+      assert.equal(isBlankNumberText({ type: 'integer' }, value), false, JSON.stringify(value));
+    });
+    [{ type: 'string' }, { type: 'boolean' }, { type: 'array', items: { type: 'string' } }, {}, undefined, null].forEach((schema) => {
+      assert.equal(isBlankNumberText(schema, ' '), false, JSON.stringify(schema));
+    });
   });
 });

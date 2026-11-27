@@ -1,13 +1,28 @@
 import { PAGINATION } from '#config/pagination.js';
 import { invalidateCacheTables } from '#core/cache/index.js';
+import { IMAGE_INPUT_TYPES } from '#core/image/profile.js';
+import { isStorageKey, toStorageKey } from '#core/storage/key.js';
+import { FILE_CHECK } from '#enums/file-check.js';
 import { HTTP_STATUS } from '#enums/http-status.js';
+import { IMAGE_PROFILE } from '#enums/image-profile.js';
 import { SCHEMA_FORMAT } from '#enums/schema-format.js';
 import { SCOPE, SCOPE_ALL } from '#enums/scope.js';
 import { TABLE } from '#enums/table.js';
 import { USER_STATUS } from '#enums/user-status.js';
-import { createTestDb } from '#root/tests/helper/db.js';
+import {
+  createTestDb,
+  findSessionId,
+  isCommitPacket,
+  killSession,
+} from '#root/tests/helper/db.js';
 import { DEV_ENV, readSpec } from '#root/tests/helper/guard.js';
-import { createTestRedis } from '#root/tests/helper/redis.js';
+import {
+  createImage,
+  listStored,
+  removeTestUploads,
+  textPart,
+} from '#root/tests/helper/multipart.js';
+import { createTcpProxy, createTestRedis } from '#root/tests/helper/redis.js';
 import {
   assertChallenged,
   assertError,
@@ -17,6 +32,7 @@ import {
   assertOk,
   assertTaken,
   assertUnauthenticated,
+  avatarPart,
   blockByHand,
   blockRequest,
   deleteMeRequest,
@@ -27,11 +43,14 @@ import {
   getUserRequest,
   getUsersRequest,
   LONG_AGO,
-  ME_URL,
   migrateAndSeed,
   openRouteApp,
+  openUploadApp,
+  patchMeFormRequest,
+  patchMeRequest,
   patchUserRequest,
   readAnsweredConflicts,
+  readAvatarKey,
   readDocumentedConflicts,
   readFailures,
   readStatuses,
@@ -39,8 +58,11 @@ import {
   setAdminMembers,
   signInAs,
   unblockRequest,
+  uploadAvatar,
   USERS_URL,
+  ME_URL,
 } from '#root/tests/helper/route.js';
+import { getServiceAddress } from '#root/tests/helper/service.js';
 import {
   createUser,
   insertUser,
@@ -59,18 +81,31 @@ import { uuidv7 } from '#utils/id.js';
 import { pick } from '#utils/object.js';
 import { PERSON_NAME_MAX_LENGTH } from '#utils/person.js';
 import { toJsonTree } from '#utils/serialize.js';
+import { convertStringToBytes } from '#utils/string.js';
 import assert from 'node:assert/strict';
-import { before, describe, test } from 'node:test';
+import { existsSync } from 'node:fs';
+import {
+  after,
+  before,
+  describe,
+  test,
+} from 'node:test';
+import sharp from 'sharp';
 
 const testRedis = await createTestRedis();
 const testDb = await createTestDb();
+
+after(() => removeTestUploads());
 
 const UPDATE_ACTION = 'user.update';
 
 const VERIFIED_AT = '2026-02-01T00:00:00.000Z';
 
-// A row of a list of users; one user alone is answered with every column of the table.
-const LIST_FIELDS = Object.freeze(['id', 'email', 'firstName', 'lastName', 'status', 'createdAt']);
+// A row of a list of users; one user alone is answered with every column of the table, the avatar as its URL.
+const LIST_FIELDS = Object.freeze(['id', 'email', 'firstName', 'lastName', 'avatarUrl', 'status', 'createdAt']);
+
+// The avatar keys of the users the reads make name no file: the URL the API makes of a key needs none.
+const AVATAR_EXTENSION = 'webp';
 
 const EMOJI = String.fromCodePoint(0x1F642);
 // U+1D54D, a capital V of a mathematical font: a name keeps the plain letter.
@@ -99,6 +134,7 @@ const PEOPLE = Object.freeze([
   Object.freeze({
     firstName: 'Anna',
     lastName: 'Kovalenko',
+    avatarKey: toStorageKey(AVATAR_EXTENSION),
     status: USER_STATUS.BLOCKED,
     createdAt: TWIN_MOMENT,
   }),
@@ -136,6 +172,34 @@ const VERIFIED_PROFILE = Object.freeze({
   timezone: 'Europe/Kyiv',
 });
 
+// A photo of a phone with the place it was taken at, a picture of a page and a program renamed into an image.
+const KB = 1024;
+const PHOTO_WIDTH = 1024;
+const PHOTO_HEIGHT = 768;
+const PNG_WIDTH = 64;
+const PNG_HEIGHT = 48;
+const EXIF = Object.freeze({
+  IFD0: { Copyright: 'Somebody', ImageDescription: 'A street at night' },
+  IFD3: {
+    GPSLatitudeRef: 'N',
+    GPSLatitude: '50/1 27/1 1/1',
+    GPSLongitudeRef: 'E',
+    GPSLongitude: '30/1 31/1 2/1',
+  },
+});
+const PHOTO = await createImage(PHOTO_WIDTH, PHOTO_HEIGHT).jpeg().withExif(EXIF).toBuffer();
+const PNG = await createImage(PNG_WIDTH, PNG_HEIGHT).png().toBuffer();
+const PROGRAM = Buffer.concat([Buffer.from('MZ'), Buffer.alloc(KB)]);
+
+// maxSize of the avatar of PATCH /me.
+const AVATAR_MAX_SIZE = convertStringToBytes('5MB');
+const OVERSIZED = Buffer.alloc(AVATAR_MAX_SIZE + KB, 1);
+
+const STRANGER_KEY = `${uuidv7()}.webp`;
+
+// The statement of lockAccount() a change waits in while another session holds the row of its user.
+const LOCK_USERS_MARK = 'FROM users WHERE id IN';
+
 // The answers to a token of these scopes, "*" for full access: the list, a user, a change of that user.
 const ROUTE_ACCESS = Object.freeze([
   [[], [403, 403, 403]],
@@ -161,6 +225,7 @@ const INVALID_BODIES = Object.freeze([
 const FOREIGN_BODIES = Object.freeze([{}, { status: USER_STATUS.BLOCKED }, { emailVerifiedAt: null }, { locale: 'en' }]);
 
 const USER_ROW_SQL = 'SELECT * FROM users WHERE id = :id';
+const AVATAR_KEY_SQL = 'SELECT avatar_key FROM users WHERE id = :id';
 const RENAME_SQL = 'UPDATE users SET last_name = :lastName WHERE id = :id';
 const DELETE_USER_SQL = 'DELETE FROM users WHERE id = :id';
 const AUDIT_ROWS_SQL = 'SELECT * FROM audit_logs WHERE entity_id = :entityId ORDER BY id';
@@ -173,12 +238,14 @@ function toQuery(params) {
   return `?${new URLSearchParams(params)}`;
 }
 
-function patchMeRequest(payload) {
-  return { method: 'PATCH', url: ME_URL, payload };
+function toAvatarUrl(fastify, avatarKey) {
+  return avatarKey === null
+    ? null
+    : fastify.storage.url(avatarKey);
 }
 
 // A user with every column written as the test names it, and so what the API answers about them.
-async function createProfile(fastify, fields = {}) {
+async function createProfile(fastify, { avatarKey = null, ...fields } = {}) {
   const profile = {
     email: `user-${uuidv7()}@example.com`,
     emailVerifiedAt: null,
@@ -193,23 +260,42 @@ async function createProfile(fastify, fields = {}) {
   };
   const id = await insertUser(fastify, {
     ...profile,
+    avatarKey,
     emailVerifiedAt: toDate(profile.emailVerifiedAt),
     createdAt: toDate(profile.createdAt),
     updatedAt: toDate(profile.updatedAt),
   });
 
-  return { id, ...profile };
+  return { id, ...profile, avatarUrl: toAvatarUrl(fastify, avatarKey) };
 }
 
 async function createListed(fastify, fields) {
   return pick(await createProfile(fastify, fields), LIST_FIELDS);
 }
 
-// The row as the API names its columns and writes its moments.
+// The row as the API names its columns and writes its moments, the key of the avatar as its URL.
 async function readProfile(fastify, id) {
   const [row] = await readAppRows(fastify, USER_ROW_SQL, { id });
+  const { avatarKey, ...user } = toJsonTree(rowToCamel(row));
 
-  return toJsonTree(rowToCamel(row));
+  return { ...user, avatarUrl: toAvatarUrl(fastify, avatarKey) };
+}
+
+async function readAvatarKeyOf(fastify, id) {
+  const [row] = await readAppRows(fastify, AVATAR_KEY_SQL, { id });
+
+  return row.avatar_key;
+}
+
+async function readStoredImage(fastify, key) {
+  return sharp(await fastify.storage.get(key)).metadata();
+}
+
+// A user who signs in with the profile the test names: their device and what the API answers about them.
+async function signInProfile(fastify, fields = VERIFIED_PROFILE) {
+  const user = await createProfile(fastify, fields);
+
+  return { user, device: await signIn(fastify, { userId: user.id }) };
 }
 
 async function changeUser(fastify, actor, id, fields) {
@@ -279,7 +365,7 @@ describe('the guard of /api/v1/users', { skip: testRedis.skip || testDb.skip }, 
 describe('GET /api/v1/users', { skip: testRedis.skip || testDb.skip }, () => {
   before(() => migrateAndSeed(testDb));
 
-  test('lists the users with the fields of a row of a list and no other: newest first, the later id first of two made at one moment, or by first name, the earlier id first of two that differ in case only; a page at a time, by status, by a range of createdAt that holds both its bounds, and by a part of the first name in any case', async (t) => {
+  test('lists the users with the fields of a row of a list and no other, the avatar as the URL of its file: newest first, the later id first of two made at one moment, or by first name, the earlier id first of two that differ in case only; a page at a time, by status, by a range of createdAt that holds both its bounds, and by a part of the first name in any case', async (t) => {
     const fastify = await openRouteApp(t, testDb);
     const reader = await signInAs(fastify, [SCOPE.USERS_READ]);
     const [lowerOlena, anna, olena, oleh] = await mapSeries(PEOPLE, (person) => createListed(fastify, person));
@@ -373,14 +459,27 @@ describe('GET /api/v1/users/:id', { skip: testRedis.skip || testDb.skip }, () =>
     assertOk(await send(fastify, manager, getUserRequest(user.id)), user);
     refused.forEach((response) => assertNotFound(response));
   });
+
+  test('gives the avatar of a user as the URL the storage makes of its key, never the key, and null for a user without one', async (t) => {
+    const fastify = await openRouteApp(t, testDb);
+    const reader = await signInAs(fastify, [SCOPE.USERS_READ]);
+    const avatarKey = toStorageKey(AVATAR_EXTENSION);
+    const [pictured, bare] = await mapSeries([{ ...VERIFIED_PROFILE, avatarKey }, VERIFIED_PROFILE], (fields) => createProfile(fastify, fields));
+    const [first, second] = await mapSeries([pictured, bare], (user) => send(fastify, reader, getUserRequest(user.id)));
+
+    assertOk(first, pictured);
+    assertOk(second, bare);
+    assert.deepEqual([pictured.avatarUrl, bare.avatarUrl], [`${fastify.config.app.url}${fastify.config.upload.storage.publicPath}${avatarKey}`, null]);
+    assert.equal(Object.hasOwn(first.json().data, 'avatarKey'), false);
+  });
 });
 
 describe('GET /api/v1/users/me', { skip: testRedis.skip || testDb.skip }, () => {
   before(() => migrateAndSeed(testDb));
 
-  test('gives the user of the token their own profile with every field, to a token of no scope too', async (t) => {
+  test('gives the user of the token their own profile with every field, the URL of the avatar too, to a token of no scope as well', async (t) => {
     const fastify = await openRouteApp(t, testDb);
-    const user = await createProfile(fastify, VERIFIED_PROFILE);
+    const user = await createProfile(fastify, { ...VERIFIED_PROFILE, avatarKey: toStorageKey(AVATAR_EXTENSION) });
     const device = await signIn(fastify, { userId: user.id });
 
     assertOk(await send(fastify, device, getMeRequest()), user);
@@ -561,8 +660,8 @@ describe('PATCH /api/v1/users/me', { skip: testRedis.skip || testDb.skip }, () =
     assertOk(renamed, { ...user, firstName: 'Iryna', updatedAt: renamed.json().data.updatedAt });
   });
 
-  test('refuses with 403 a user blocked outside the API whose token is still alive, and writes nothing', async (t) => {
-    const fastify = await openRouteApp(t, testDb);
+  test('refuses with 403 a user blocked outside the API whose token is still alive, as JSON and as a form with a photo, and writes nothing: no row, and no file in the storage root', async (t) => {
+    const { fastify, root } = await openUploadApp(t, testDb);
     const device = await signInAs(fastify);
 
     await blockByHand(fastify, device.userId);
@@ -570,7 +669,197 @@ describe('PATCH /api/v1/users/me', { skip: testRedis.skip || testDb.skip }, () =
     const stateBefore = await readState(fastify, STATE_TABLES);
 
     assertForbidden(await send(fastify, device, patchMeRequest({ firstName: 'Blocked' })));
+    assertForbidden(await send(fastify, device, patchMeFormRequest([textPart('firstName', 'Blocked'), avatarPart(PNG)])));
     assert.deepEqual(await readState(fastify, STATE_TABLES), stateBefore);
+    assert.deepEqual(await listStored(root), []);
+  });
+});
+
+describe('PATCH /api/v1/users/me with an avatar', { skip: testRedis.skip || testDb.skip }, () => {
+  before(() => migrateAndSeed(testDb));
+
+  test('takes the same change as JSON and as a form, whose text fields are the fields of the JSON and whose text null is null: each answers 200 with the user it leaves', async (t) => {
+    const fastify = await openRouteApp(t, testDb);
+    const [byJson, byForm] = await mapSeries(['json', 'form'], () => signInProfile(fastify));
+    const [json, form] = await mapSeries([
+      [byJson.device, patchMeRequest({ firstName: ' Iryna ', lastName: null })],
+      [byForm.device, patchMeFormRequest([textPart('firstName', ' Iryna '), textPart('lastName', 'null')])],
+    ], ([device, request]) => send(fastify, device, request));
+
+    [[json, byJson.user], [form, byForm.user]].forEach(([response, user]) => {
+      assertOk(response, {
+        ...user,
+        firstName: 'Iryna',
+        lastName: null,
+        updatedAt: response.json().data.updatedAt,
+      });
+    });
+    assert.deepEqual(await readProfile(fastify, byForm.user.id), form.json().data);
+  });
+
+  test('stores the photo of a form, beside a name, as the WebP of the avatar profile, smaller and without its EXIF, and answers with the URL of its file, which GET /me and GET /:id give too: the key is in the row, the original is stored nowhere', async (t) => {
+    const { fastify, root } = await openUploadApp(t, testDb);
+    const { user, device } = await signInProfile(fastify);
+    const reader = await signInAs(fastify, [SCOPE.USERS_READ]);
+    const profile = fastify.config.upload.image.profiles[IMAGE_PROFILE.AVATAR];
+    const response = await send(fastify, device, patchMeFormRequest([textPart('firstName', 'Iryna'), avatarPart(PHOTO, { filename: 'IMG_0001.JPG', type: 'image/jpeg' })]));
+    const { avatarUrl, updatedAt } = response.json().data;
+    const key = readAvatarKey(avatarUrl);
+    const [original, stored] = await Promise.all([sharp(PHOTO).metadata(), readStoredImage(fastify, key)]);
+
+    assertOk(response, {
+      ...user,
+      firstName: 'Iryna',
+      avatarUrl: fastify.storage.url(key),
+      updatedAt,
+    });
+    assert.deepEqual(await listStored(root), [key]);
+    assert.equal(await readAvatarKeyOf(fastify, user.id), key);
+    assert.notEqual(original.exif, undefined);
+    assert.deepEqual([stored.format, stored.width, stored.height, stored.exif], [profile.format, profile.maxSize, profile.maxSize * (PHOTO_HEIGHT / PHOTO_WIDTH), undefined]);
+    assertOk(await send(fastify, device, getMeRequest()), response.json().data);
+    assertOk(await send(fastify, reader, getUserRequest(user.id)), response.json().data);
+  });
+
+  test('replaces the avatar with a PNG sent alone, which is stored as the WebP of its own size, and removes the file of the one before once the change is committed', async (t) => {
+    const { fastify, root } = await openUploadApp(t, testDb);
+    const { user, device } = await signInProfile(fastify);
+    const first = await uploadAvatar(fastify, device, PHOTO);
+    const response = await send(fastify, device, patchMeFormRequest([avatarPart(PNG)]));
+    const second = readAvatarKey(response.json().data.avatarUrl);
+    const stored = await readStoredImage(fastify, second);
+
+    assertOk(response, { ...user, avatarUrl: fastify.storage.url(second), updatedAt: response.json().data.updatedAt });
+    assert.notEqual(second, first);
+    assert.deepEqual(await listStored(root), [second]);
+    assert.deepEqual([stored.format, stored.width, stored.height], [fastify.config.upload.image.profiles[IMAGE_PROFILE.AVATAR].format, PNG_WIDTH, PNG_HEIGHT]);
+    assert.equal(await readAvatarKeyOf(fastify, user.id), second);
+  });
+
+  test('keeps the avatar through a change without the field, and removes it with its file for null, as JSON and as the text null of a form; null without an avatar answers the user as they are and writes nothing', async (t) => {
+    const { fastify, root } = await openUploadApp(t, testDb);
+    const { device } = await signInProfile(fastify);
+    const first = await uploadAvatar(fastify, device, PNG);
+    const renamed = await send(fastify, device, patchMeRequest({ firstName: 'Taras' }));
+
+    assert.equal(renamed.json().data.avatarUrl, fastify.storage.url(first));
+    assert.deepEqual(await listStored(root), [first]);
+
+    const byJson = await send(fastify, device, patchMeRequest({ avatar: null }));
+
+    assertOk(byJson, { ...renamed.json().data, avatarUrl: null, updatedAt: byJson.json().data.updatedAt });
+    assert.deepEqual(await listStored(root), []);
+
+    const second = await uploadAvatar(fastify, device, PNG);
+    const byForm = await send(fastify, device, patchMeFormRequest([textPart('avatar', 'null')]));
+
+    assertOk(byForm, { ...byJson.json().data, avatarUrl: null, updatedAt: byForm.json().data.updatedAt });
+    assert.notEqual(second, first);
+    assert.deepEqual(await listStored(root), []);
+
+    const stateBefore = await readState(fastify, STATE_TABLES);
+
+    assertOk(await send(fastify, device, patchMeRequest({ avatar: null })), byForm.json().data);
+    assert.deepEqual(await readState(fastify, STATE_TABLES), stateBefore);
+  });
+
+  test('answers 422 to a form whose name is none beside a photo: the photo it has stored is removed, and the row stays as it was', async (t) => {
+    const { fastify, root } = await openUploadApp(t, testDb);
+    const { device } = await signInProfile(fastify);
+    const kept = await uploadAvatar(fastify, device, PNG);
+    const stateBefore = await readState(fastify, STATE_TABLES);
+    const response = await send(fastify, device, patchMeFormRequest([textPart('firstName', 'Dr. Olha'), avatarPart(PHOTO)]));
+
+    assert.deepEqual([response.statusCode, readFailures(response)], [422, [['firstName', 'format']]]);
+    assert.deepEqual(await listStored(root), [kept]);
+    assert.deepEqual(await readState(fastify, STATE_TABLES), stateBefore);
+  });
+
+  test('answers 422 to a string in the avatar, which would name a file of somebody else, as JSON and as the text of a form, and writes nothing', async (t) => {
+    const fastify = await openRouteApp(t, testDb);
+    const { device } = await signInProfile(fastify);
+    const stateBefore = await readState(fastify, STATE_TABLES);
+    const [json, form] = await mapSeries([
+      patchMeRequest({ avatar: STRANGER_KEY }),
+      patchMeFormRequest([textPart('avatar', STRANGER_KEY)]),
+    ], (request) => send(fastify, device, request));
+
+    assert.deepEqual([json, form].map((response) => [response.statusCode, response.json().validation]), [
+      [422, [{
+        column: 'avatar', columnValue: STRANGER_KEY, operator: 'type', operatorValue: 'null',
+      }]],
+      [422, [{
+        column: 'avatar', columnValue: STRANGER_KEY, operator: 'const', operatorValue: null,
+      }]],
+    ]);
+    assert.deepEqual(await readState(fastify, STATE_TABLES), stateBefore);
+  });
+
+  test('answers 422 mime to a program renamed a.png and sent as image/png, and 422 maxSize to a file over 5 MB, with no file on the disk and nothing written', async (t) => {
+    const { fastify, root } = await openUploadApp(t, testDb);
+    const { device } = await signInProfile(fastify);
+    const stateBefore = await readState(fastify, STATE_TABLES);
+    const responses = await mapSeries([
+      avatarPart(PROGRAM, { filename: 'a.png' }),
+      avatarPart(OVERSIZED, { filename: 'big.png' }),
+    ], (part) => send(fastify, device, patchMeFormRequest([part])));
+
+    assert.deepEqual(responses.map((response) => [response.statusCode, response.json().validation]), [
+      [422, [{
+        column: 'avatar', columnValue: null, operator: FILE_CHECK.MIME, operatorValue: IMAGE_INPUT_TYPES,
+      }]],
+      [422, [{
+        column: 'avatar', columnValue: null, operator: FILE_CHECK.MAX_SIZE, operatorValue: AVATAR_MAX_SIZE,
+      }]],
+    ]);
+    assert.deepEqual(await listStored(root), []);
+    assert.deepEqual(await readState(fastify, STATE_TABLES), stateBefore);
+  });
+
+  test('answers 401 to a guest who sends a form with a photo, before the body is parsed: the storage root is never even made, and nothing is written', async (t) => {
+    const { fastify, root } = await openUploadApp(t, testDb);
+    const stateBefore = await readState(fastify, STATE_TABLES);
+
+    assertChallenged(await send(fastify, null, patchMeFormRequest([textPart('firstName', 'Guest'), avatarPart(PHOTO)])));
+    assert.equal(existsSync(root), false);
+    assert.deepEqual(await readState(fastify, STATE_TABLES), stateBefore);
+  });
+
+  test('removes the photo of a change whose connection to the database is lost before the COMMIT, which took the transaction with it: the old photo stays on the row', async (t) => {
+    const keeper = await testDb.openKeeper(t);
+    const { fastify, root } = await openUploadApp(t, testDb);
+    const { user, device } = await signInProfile(fastify);
+    const first = await uploadAvatar(fastify, device, PNG);
+
+    await keeper.holdRow(TABLE.USERS, user.id);
+
+    const answering = send(fastify, device, patchMeFormRequest([avatarPart(PHOTO)]));
+
+    await killSession(testDb, await findSessionId(testDb, LOCK_USERS_MARK));
+
+    const response = await answering;
+
+    await keeper.release();
+
+    assert.equal(response.statusCode, HTTP_STATUS.INTERNAL_SERVER_ERROR, response.body);
+    assert.equal(await readAvatarKeyOf(fastify, user.id), first);
+    assert.deepEqual(await listStored(root), [first]);
+  });
+
+  test('keeps both photos when the COMMIT of a change lands and its answer never comes back: the answer is 500 and the row names the new photo, and the old one stays, since its removal waited for a commit the call was not told of', async (t) => {
+    const proxy = await createTcpProxy(t, getServiceAddress('mariadb'));
+    const { fastify, root } = await openUploadApp(t, testDb, { env: proxy.databaseEnv });
+    const { user, device } = await signInProfile(fastify);
+    const first = await uploadAvatar(fastify, device, PNG);
+
+    proxy.cutAnswerTo(isCommitPacket);
+
+    const response = await send(fastify, device, patchMeFormRequest([avatarPart(PHOTO)]));
+    const second = await readAvatarKeyOf(fastify, user.id);
+
+    assert.equal(response.statusCode, HTTP_STATUS.INTERNAL_SERVER_ERROR, response.body);
+    assert.ok(isStorageKey(second) && second !== first, `${first}, ${second}`);
+    assert.deepEqual((await listStored(root)).toSorted(), [first, second].toSorted());
   });
 });
 

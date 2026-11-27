@@ -7,6 +7,7 @@ import { errorBody, readRequestId, successBody } from '#root/tests/helper/app.js
 import { SMALL_POOL } from '#root/tests/helper/db.js';
 import { BEARER, listOperations, NO_STORE } from '#root/tests/helper/guard.js';
 import { bindMigrator } from '#root/tests/helper/migration.js';
+import { createUploadSection, filePart, withForm } from '#root/tests/helper/multipart.js';
 import {
   connectAppRedis,
   createUser,
@@ -61,6 +62,13 @@ export async function openRouteApp(t, testDb, sections = {}) {
   return fastify;
 }
 
+// An app of openRouteApp() with a storage root of its own: what the test stores is all that root holds.
+export async function openUploadApp(t, testDb, sections = {}) {
+  const fastify = await openRouteApp(t, testDb, { ...sections, upload: createUploadSection() });
+
+  return { fastify, root: fastify.config.upload.storage.root };
+}
+
 export async function openLoggedRouteApp(t, testDb, { db, ...options } = {}) {
   const opened = await openLoggedApp(t, testDb, { ...options, db: { ...SMALL_POOL, ...db } });
 
@@ -104,6 +112,33 @@ export function getMeRequest() {
 
 export function deleteMeRequest() {
   return { method: 'DELETE', url: ME_URL };
+}
+
+export function patchMeRequest(payload) {
+  return { method: 'PATCH', url: ME_URL, payload };
+}
+
+export function patchMeFormRequest(parts) {
+  return withForm({ method: 'PATCH', url: ME_URL }, parts);
+}
+
+// The type and the name a client gives a file: the server tells the type by the bytes alone.
+export function avatarPart(bytes, { filename = 'photo.png', type = 'image/png' } = {}) {
+  return filePart('avatar', bytes, { filename, type });
+}
+
+// The key of the file an avatarUrl names: the last segment of its path.
+export function readAvatarKey(avatarUrl) {
+  return new URL(avatarUrl).pathname.split('/').at(-1);
+}
+
+// The avatar of the user of the device, made through PATCH /me from these bytes: the key of the stored file.
+export async function uploadAvatar(fastify, device, bytes) {
+  const response = await send(fastify, device, patchMeFormRequest([avatarPart(bytes)]));
+
+  assert.equal(response.statusCode, HTTP_STATUS.OK, response.body);
+
+  return readAvatarKey(response.json().data.avatarUrl);
 }
 
 export function getUsersRequest(query = '') {

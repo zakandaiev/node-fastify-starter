@@ -4,8 +4,10 @@ import { revokeAllSessions, SESSION_TRANSACTION } from '#core/auth/session.js';
 import { assertOtherUser, lockAccount, lockActorAndUser } from '#core/auth/user.js';
 import { assertActorHolds, readUserScopes } from '#core/authz/scope.js';
 import { buildPatch } from '#core/db/patch.js';
-import { withTransaction } from '#core/db/transaction.js';
+import { afterCommit, withTransaction } from '#core/db/transaction.js';
 import { AppError } from '#core/error/index.js';
+import { getStorage } from '#core/storage/index.js';
+import { isStorageKey } from '#core/storage/key.js';
 import { AUDIT_ACTION } from '#enums/audit-action.js';
 import { ERROR_CODE } from '#enums/error-code.js';
 import { SCOPE, SCOPE_ALL } from '#enums/scope.js';
@@ -13,6 +15,7 @@ import { TABLE } from '#enums/table.js';
 import { USER_STATUS } from '#enums/user-status.js';
 import { assertAdminGroupsKept } from '#modules/groups/groups.service.js';
 import {
+  AVATAR_KEY_FIELD,
   deleteUser,
   findUser,
   findUsers,
@@ -24,16 +27,20 @@ import { nowUtc } from '#utils/date.js';
 import { assertUuid } from '#utils/id.js';
 import { diff, mapValues, pick } from '#utils/object.js';
 import { isValidPersonName, normalizePersonName } from '#utils/person.js';
-import { isString } from '#utils/type.js';
+import { isObject, isString } from '#utils/type.js';
 import { isEmail, toValidEmail } from '#utils/validate.js';
 
 const NAME_FIELDS = Object.freeze(['firstName', 'lastName']);
+
+const AVATAR_FIELD = 'avatar';
+
+const PROFILE_FIELDS = Object.freeze([...NAME_FIELDS, AVATAR_FIELD]);
 
 // The status is no field of a change: a block ends the sessions, a write of the column would not.
 const MANAGED_FIELDS = Object.freeze(['email', ...NAME_FIELDS]);
 
 // A changed email changes its confirmation too.
-const CHANGED_FIELDS = Object.freeze([...MANAGED_FIELDS, 'emailVerifiedAt']);
+const CHANGED_FIELDS = Object.freeze([...MANAGED_FIELDS, 'emailVerifiedAt', AVATAR_KEY_FIELD]);
 
 const MANAGE_REQUIREMENT = Object.freeze([SCOPE.USERS_MANAGE]);
 
@@ -68,8 +75,54 @@ function normalizeField(field, value, signature) {
   return form.normalize(value);
 }
 
+function normalizePatch(patch, signature) {
+  return mapValues(patch, (value, field) => normalizeField(field, value, signature));
+}
+
 function readPatch(input, allowed, signature) {
-  return mapValues(buildPatch(input, { allowed }), (value, field) => normalizeField(field, value, signature));
+  return normalizePatch(buildPatch(input, { allowed }), signature);
+}
+
+// The input only removes the avatar: a key there would let a caller name a file of somebody else. A new avatar is the
+// file the request has stored, which counts as a field of the change.
+function withAvatar(input, avatar, signature) {
+  if (!isObject(input)) {
+    return input;
+  }
+
+  const removal = input[AVATAR_FIELD];
+
+  if (removal !== undefined && removal !== null) {
+    throw new TypeError(`${signature} requires avatar of the input to be null: a new avatar is a file of request.uploadedFiles`);
+  }
+
+  if (avatar === undefined) {
+    return input;
+  }
+
+  if (!isStorageKey(avatar?.key) || removal !== undefined) {
+    throw new TypeError(`${signature} requires avatar to be a stored file of request.uploadedFiles, and no avatar in the input beside it`);
+  }
+
+  return { ...input, [AVATAR_FIELD]: avatar.key };
+}
+
+function readProfilePatch(input, avatar, signature) {
+  const { [AVATAR_FIELD]: avatarKey, ...names } = buildPatch(withAvatar(input, avatar, signature), { allowed: PROFILE_FIELDS });
+  const patch = normalizePatch(names, signature);
+
+  return avatarKey === undefined
+    ? patch
+    : { ...patch, [AVATAR_KEY_FIELD]: avatarKey };
+}
+
+// Once the row names it no more: a rollback keeps the row and the file as they were.
+async function removeAvatarFile(avatarKey) {
+  if (avatarKey === null) {
+    return false;
+  }
+
+  return afterCommit(() => getStorage().delete(avatarKey));
 }
 
 // The manager who sets an address answers for it: a sign-in through a provider that confirms the same address signs
@@ -237,6 +290,7 @@ async function removeLocked(user, { actorId, request }) {
     meta: { groupIds },
     request,
   });
+  await removeAvatarFile(user.avatarKey);
 
   return true;
 }
@@ -267,21 +321,31 @@ export async function readOwnProfile(userId) {
   return user;
 }
 
-export async function updateOwnProfile({ userId, input } = {}) {
-  const signature = 'updateOwnProfile({ userId, input })';
+// The key a new avatar replaces is read under the lock of the row: of two changes at once, the later one removes the file
+// of the earlier, which a read before the lock would leave behind.
+export async function updateOwnProfile({ userId, input, avatar } = {}) {
+  const signature = 'updateOwnProfile({ userId, input, avatar })';
 
   assertUuid(userId, signature, 'a user');
 
-  const patch = readPatch(input, NAME_FIELDS, signature);
+  const patch = readProfilePatch(input, avatar, signature);
 
   return withTransaction(async () => {
     const user = await lockAccount(userId);
     const after = applyPatch(user, patch);
     const fields = readChangedFields(user, after);
 
-    return fields.length
-      ? updateUserFields(userId, pick(after, fields))
-      : findUser(userId);
+    if (!fields.length) {
+      return findUser(userId);
+    }
+
+    const updated = await updateUserFields(userId, pick(after, fields));
+
+    if (fields.includes(AVATAR_KEY_FIELD)) {
+      await removeAvatarFile(user.avatarKey);
+    }
+
+    return updated;
   }, SESSION_TRANSACTION);
 }
 

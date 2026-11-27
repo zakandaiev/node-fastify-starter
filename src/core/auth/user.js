@@ -8,7 +8,8 @@ import { camelToSnakeKey } from '#utils/case.js';
 import { assertUuid, isUuid } from '#utils/id.js';
 import { isNonEmptyArray } from '#utils/type.js';
 
-export const ACCOUNT_FIELDS = Object.freeze(['id', 'email', 'emailVerifiedAt', 'firstName', 'lastName', 'status']);
+// The key of the avatar too: a change of it removes the file the locked row names.
+export const ACCOUNT_FIELDS = Object.freeze(['id', 'email', 'emailVerifiedAt', 'firstName', 'lastName', 'avatarKey', 'status']);
 const ACCOUNT_COLUMNS = ACCOUNT_FIELDS.map((field) => camelToSnakeKey(field)).join(', ');
 
 // In the order of the key: two flows that lock the same users take them one after another and never cross.

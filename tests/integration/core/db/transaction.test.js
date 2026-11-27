@@ -22,8 +22,6 @@ import { setImmediate as nextLoop, setTimeout as sleep } from 'node:timers/promi
 // A call that must settle and does not is a test that never ends: the limit turns it into a failure.
 const HANG_TIMEOUT_MS = 5000;
 
-const LOOPBACK = '127.0.0.1';
-
 const testDb = await createTestDb();
 const { db, run } = testDb;
 
@@ -1348,7 +1346,7 @@ describe('withTransaction: the deadline and COMMIT', { skip: testDb.skip }, () =
   test('does not cover COMMIT: one the server answers after the deadline is waited for, and its callbacks run', { timeout: HANG_TIMEOUT_MS }, async (t) => {
     const proxy = await createTcpProxy(t, getServiceAddress('mariadb'));
     const slow = testDb.open({
-      env: { APP_DATABASE_HOST: LOOPBACK, APP_DATABASE_PORT: String(proxy.port) },
+      env: proxy.databaseEnv,
       db: { lockWaitTimeout: '0.1s', transactionTimeout: '0.4s', connectionLimit: 1 },
     }, t);
     const calls = [];

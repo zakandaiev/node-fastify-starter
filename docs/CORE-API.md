@@ -121,7 +121,13 @@
 - `async exchangeCode(provider, { code, verifier, redirectUri } = {})`
 - `findEnabledProvider(oauthConfig, id)`
 - `listEnabledProviders(oauthConfig)`
+- `listPictureUrls(provider, { pictureUrl, size } = {})`
 - `readProviderProfile(provider, claims)`
+- `toValidPictureUrl(value)`
+
+## #core/auth/picture.js
+
+- `async copyProviderPicture({ userId, provider, pictureUrl } = {})`
 
 ## #core/auth/read.js
 
@@ -206,7 +212,7 @@
 
 ## #core/context/index.js
 
-- `createContext({ config, log, db = null, redis = null, cacheRedis = null, jwt = null, requestId = null, transaction = null } = {})`
+- `createContext({ config, log, db = null, redis = null, cacheRedis = null, jwt = null, storage = null, requestId = null, transaction = null } = {})`
 - `findContext()`
 - `getContext()`
 - `runInContext(context, fn)`
@@ -238,6 +244,7 @@
 - `isLockConflict(error)`
 - `isLockWaitTimeout(error)`
 - `isMissingTable(error)`
+- `isOutcomeUnknown(error)`
 - `isTransactionTimeout(error)`
 - `maskDbErrorValues(text)`
 - `toDbError(error, { isScript = false, isConnectFailure = false } = {})`
@@ -403,6 +410,24 @@
 - `readTimeout(value, fallback, signature)`
 - `toUpstreamAppError(upstreamError)`
 
+## #core/image/header.js
+
+- `hasTooManyJpegScans(bytes, maxScans)`
+- `readDecodeBytesPerPixel(metadata, bytes)`
+
+## #core/image/index.js
+
+- `isImageQueueIdle()`
+- `async processImage(bytes, profileName)`
+
+## #core/image/profile.js
+
+- `IMAGE_DEFAULT_QUALITY`
+- `IMAGE_INPUT_TYPES`
+- `IMAGE_OUTPUT_FORMATS`
+- `assertImageConfig(imageConfig)`
+- `assertImageProfile(profile, label = 'assertImageProfile(profile)')`
+
 ## #core/logger/index.js
 
 - `createLogger({ level, isPretty = false, stream } = {})`
@@ -450,6 +475,10 @@
 - `readDocumentedSchema(routeSchema)`
 - `rememberSourceSchema(routeSchema, source)`
 
+## #core/schema/files.js
+
+- `withFileFields(routeSchema, fileOptions, { isDocumented = false } = {})`
+
 ## #core/schema/finite.js
 
 - `addFiniteGuards(schema)`
@@ -464,10 +493,11 @@
 ## #core/schema/route.js
 
 - `AUTH_DECORATOR`
+- `FILES_DECORATOR`
 - `RATE_LIMIT_DECORATOR`
 - `SCOPES_DECORATOR`
 - `assertRouteContract(routeOptions)`
-- `createRouteHook({ apiPrefix, healthPrefix } = {})`
+- `createRouteHook({ apiPrefix, healthPrefix } = {}, { upload } = {})`
 
 ## #core/schema/unique.js
 
@@ -483,6 +513,37 @@
 - `BODY_PART`
 - `REQUEST_PARTS`
 - `mapRequestSchemas(routeSchema, transform)`
+
+## #core/storage/index.js
+
+- `createStorage(storageConfig, { baseUrl } = {})`
+- `getStorage()`
+
+## #core/storage/key.js
+
+- `STORAGE_KEY_MAX_LENGTH`
+- `STORAGE_KEY_REGEXP`
+- `isStorageKey(key)`
+- `toStorageKey(extension)`
+
+## #core/storage/local.js
+
+- `createLocalStorage({ root, publicPath, baseUrl } = {})`
+
+## #core/upload/index.js
+
+- `UPLOAD_STATE`
+- `async commitUploadedFiles(request, run)`
+- `async drainRequest(request)`
+- `keepUploadedFiles(request)`
+- `async readMultipartBody(request, options)`
+- `async removeUploadedFiles(request)`
+
+## #core/upload/options.js
+
+- `FILE_OPTIONS`
+- `assertUploadConfig(uploadConfig)`
+- `readFileOptions(files, uploadConfig)`
 
 ## #utils/array.js
 
@@ -519,6 +580,7 @@
 - `ISO_DATE_TIME_MAX_LENGTH`
 - `addToDate(value, duration)`
 - `assertDurations(section, keys, name)`
+- `convertMsToString(milliseconds)`
 - `convertMsToWholeSeconds(milliseconds)`
 - `convertStringToMs(value)`
 - `convertStringToSeconds(value)`
@@ -586,6 +648,7 @@
 
 ## #utils/mime.js
 
+- `MIME_EXTENSIONS`
 - `MIME_SIGNATURE_BYTES`
 - `MIME_WHITELIST`
 - `detectMime(bytes)`
@@ -597,6 +660,7 @@
 - `compact(value)`
 - `deepMerge(target, ...sources)`
 - `diff(before, after)`
+- `findUnknownKey(object, keys)`
 - `freezeDeep(value)`
 - `getPath(object, path, defaultValue)`
 - `mapKeys(object, toKey)`
@@ -624,6 +688,8 @@
 - `SUBSCHEMA_MAP_KEYWORDS`
 - `formatSchemaPointer(path)`
 - `hasOnlyTypes(schema, types)`
+- `isBlankNumberText(schema, value)`
+- `isNullableSchema(schema)`
 - `isNumericSchema(schema, { isOnly = false } = {})`
 - `mapSchema(schema, visit)`
 - `readSchemaTypes(schema)`
@@ -646,6 +712,7 @@
 
 ## #utils/string.js
 
+- `convertStringToBytes(value)`
 - `cutAddressTail(value, mark = '')`
 - `cutAddressTails(value)`
 - `escapeHtml(value)`
@@ -685,9 +752,11 @@
 - `EMAIL_MAX_LENGTH`
 - `IP_MAX_LENGTH`
 - `REDIRECT_PATH_MAX_LENGTH`
+- `URL_MAX_LENGTH`
 - `ipInCidr(address, cidr)`
 - `isCidr(value)`
 - `isEmail(value)`
+- `isHostname(value)`
 - `isLoopbackAddress(address)`
 - `isLoopbackHostname(hostname)`
 - `isPhone(value)`

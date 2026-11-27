@@ -37,7 +37,6 @@ const testRedis = await createTestRedis();
 const testDb = await createTestDb();
 const { up } = bindMigrator(testDb);
 
-const LOOPBACK = '127.0.0.1';
 const USER_ID = uuidv7();
 
 const INSERT_USER_SQL = 'INSERT INTO users (id) VALUES (:id)';
@@ -119,7 +118,7 @@ function holdAnswers() {
 // The connection is open before the test freezes it: a check that had to open one would wait for that, not for its read.
 async function openProxiedDb(t) {
   const proxy = await createTcpProxy(t, getServiceAddress('mariadb'));
-  const pool = testDb.open({ env: { APP_DATABASE_HOST: LOOPBACK, APP_DATABASE_PORT: String(proxy.port) } }, t);
+  const pool = testDb.open({ env: proxy.databaseEnv }, t);
 
   await pool.db.ping();
 

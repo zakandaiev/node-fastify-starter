@@ -1,11 +1,23 @@
 import { createConfig } from '#config/index.js';
 import { PAGINATION } from '#config/pagination.js';
+import { absPath } from '#config/path.js';
 import { SCHEMA_LIMITS } from '#config/schema.js';
 import packageData from '#root/package.json' with { type: 'json' };
-import { createTestConfig, createTestEnv } from '#root/tests/helper/config.js';
+import { createTestConfig, createTestEnv, PROCESS_UPLOAD_ROOT } from '#root/tests/helper/config.js';
 import { isDeepFrozen } from '#root/tests/helper/object.js';
+import { UUID_LENGTH, uuidVersion } from '#utils/id.js';
 import assert from 'node:assert/strict';
+import { tmpdir } from 'node:os';
+import nodePath from 'node:path';
 import { describe, test } from 'node:test';
+
+const UUID_V7 = 7;
+
+function isInside(directory, path) {
+  const relative = nodePath.relative(directory, path);
+
+  return relative !== '' && !relative.startsWith('..') && !nodePath.isAbsolute(relative);
+}
 
 describe('createConfig', () => {
   test('requires the result of initEnv', () => {
@@ -54,6 +66,14 @@ describe('createConfig', () => {
     [app.apiPrefix, app.healthPrefix].forEach((prefix) => {
       assert.equal(app.docsPrefix === prefix || app.docsPrefix.startsWith(`${prefix}/`), false, prefix);
     });
+  });
+
+  test('serves public/ of the repository in dev mode, a folder a test may point elsewhere', () => {
+    const { app } = createConfig(createTestEnv());
+    const elsewhere = nodePath.join(tmpdir(), 'public');
+
+    assert.equal(app.publicRoot, absPath.public);
+    assert.equal(createTestConfig({ app: { publicRoot: elsewhere } }).app.publicRoot, elsewhere);
   });
 });
 
@@ -112,5 +132,21 @@ describe('createTestConfig', () => {
 
   test('rejects a section the config does not have', () => {
     assert.throws(() => createTestConfig({ unknown: {} }), /no "unknown" section/);
+  });
+
+  test('stores the files of a test in a folder of its own process under the temporary folder, never in the repository', () => {
+    const { storage } = createTestConfig().upload;
+
+    assert.deepEqual(storage, { ...createConfig(createTestEnv()).upload.storage, root: PROCESS_UPLOAD_ROOT });
+    assert.equal(isInside(tmpdir(), PROCESS_UPLOAD_ROOT), true);
+    assert.equal(uuidVersion(PROCESS_UPLOAD_ROOT.slice(-UUID_LENGTH)), UUID_V7);
+    assert.equal(isInside(absPath.root, PROCESS_UPLOAD_ROOT), false);
+  });
+
+  test('keeps that folder when a test changes another value of the upload section', () => {
+    const { upload } = createTestConfig({ upload: { maxActiveFiles: 1 } });
+
+    assert.equal(upload.maxActiveFiles, 1);
+    assert.equal(upload.storage.root, PROCESS_UPLOAD_ROOT);
   });
 });

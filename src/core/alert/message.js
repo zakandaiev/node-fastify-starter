@@ -5,6 +5,7 @@ import { THROTTLE_CLASS } from '#enums/throttle-class.js';
 import { toJsonTree } from '#utils/serialize.js';
 import { cutAddressTail, truncate } from '#utils/string.js';
 import { isNonEmptyString, isString } from '#utils/type.js';
+import { URL_MAX_LENGTH } from '#utils/validate.js';
 
 export const ALERT_BLOCK = Object.freeze({
   APP: 'App',
@@ -22,7 +23,6 @@ const ICONS = Object.freeze({
 
 const TITLE_MAX_LENGTH = 200;
 const USER_AGENT_MAX_LENGTH = 256;
-const URL_MAX_LENGTH = 2048;
 
 // What a request line may name in front of the path.
 const REQUEST_ORIGIN_REGEXP = /^(?:[a-z][a-z\d+.-]*:\/\/)?[^/]*/i;

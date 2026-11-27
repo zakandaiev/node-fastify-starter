@@ -1,5 +1,6 @@
 import {
   isArray,
+  isBlankString,
   isFunction,
   isNonEmptyArray,
   isObject,
@@ -25,6 +26,7 @@ const SUBSCHEMA_KEYWORDS = Object.freeze([
 export const SUBSCHEMA_MAP_KEYWORDS = Object.freeze(['$defs', 'definitions', 'dependencies', 'patternProperties', 'properties']);
 
 const NUMERIC_TYPES = Object.freeze(['number', 'integer']);
+const NULL_TYPE = 'null';
 
 const POINTER_ROOT = '#';
 const POINTER_SEPARATOR = '/';
@@ -56,6 +58,26 @@ export function isNumericSchema(schema, { isOnly = false } = {}) {
   return isOnly
     ? hasOnlyTypes(schema, NUMERIC_TYPES)
     : readSchemaTypes(schema).some(isNumericType);
+}
+
+// Null among its types, as its const or in its enum: what nullable() gives a field, and { const: null } a file field of a
+// form. What is no schema names no null.
+export function isNullableSchema(schema) {
+  if (!isObject(schema)) {
+    return false;
+  }
+
+  return readSchemaTypes(schema).includes(NULL_TYPE)
+    || schema.const === null
+    || (isArray(schema.enum) && schema.enum.includes(null));
+}
+
+// AJV coerces a string of white space to 0 for a number or an integer, an item of a list of them too: such text is no
+// value. isBlankString() trims the same characters ToNumber skips, a no-break space and a line break included.
+export function isBlankNumberText(schema, value) {
+  return isBlankString(value)
+    && isObject(schema)
+    && (isNumericSchema(schema) || (isObject(schema.items) && isNumericSchema(schema.items)));
 }
 
 function walkSchema(schema, visit, path) {

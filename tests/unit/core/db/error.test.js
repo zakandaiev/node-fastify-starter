@@ -8,6 +8,7 @@ import {
   isIdentifier,
   isLockConflict,
   isMissingTable,
+  isOutcomeUnknown,
   isTransactionTimeout,
   maskDbErrorValues,
   toDbError,
@@ -730,6 +731,24 @@ describe('isLockConflict', () => {
     assert.equal(isLockConflict(Object.assign(new Error('x'), { kind: DB_ERROR_KIND.DEADLOCK })), false);
     assert.equal(isLockConflict(createOverloadError()), false);
     assert.equal(isLockConflict(null), false);
+  });
+});
+
+describe('isOutcomeUnknown', () => {
+  test('is true for a lost connection, also behind a 503, and false for one that took its open transaction with it and for a failure the server answered', () => {
+    const lost = toDbError(Object.assign(new Error('Connection lost: The server closed the connection.'), { fatal: true, code: 'PROTOCOL_CONNECTION_LOST' }));
+    const closed = toDbError(createServerError(1153, 'Got a packet bigger than max_allowed_packet bytes', { code: 'ER_NET_PACKET_TOO_LARGE', sqlState: '08S01' }));
+    const deadlock = toDbError(createServerError(1213, 'Deadlock found when trying to get lock', { code: 'ER_LOCK_DEADLOCK', sqlState: '40001' }));
+    const refused = toDbError(Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:3307'), { fatal: true, code: 'ECONNREFUSED' }), { isConnectFailure: true });
+    const rolledBack = Object.assign(toDbError(Object.assign(new Error('Connection lost: The server closed the connection.'), { fatal: true, code: 'PROTOCOL_CONNECTION_LOST' })), { isRolledBack: true });
+
+    assert.deepEqual([isOutcomeUnknown(lost), isOutcomeUnknown(closed)], [true, true]);
+    assert.equal(isOutcomeUnknown(new AppError(ERROR_CODE.SERVICE_UNAVAILABLE_ERROR, { cause: lost })), true);
+    assert.deepEqual([refused.isFatal, rolledBack.isFatal], [true, true]);
+
+    [deadlock, refused, rolledBack, createTransactionTimeoutError(), createOverloadError(), Object.assign(new Error('lost'), { fatal: true, isFatal: true }), null].forEach((error) => {
+      assert.equal(isOutcomeUnknown(error), false);
+    });
   });
 });
 

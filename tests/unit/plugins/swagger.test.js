@@ -1,7 +1,9 @@
 import { MODE } from '#config/env.js';
+import { IMAGE_INPUT_TYPES } from '#core/image/profile.js';
 import { addErrorResponses, createSchema } from '#core/schema/create-schema.js';
 import { ERROR_CODE } from '#enums/error-code.js';
 import { HTTP_STATUS } from '#enums/http-status.js';
+import { IMAGE_PROFILE } from '#enums/image-profile.js';
 import { SCOPE } from '#enums/scope.js';
 import { buildTestApp, readRequestId } from '#root/tests/helper/app.js';
 import { createLogSink, findLogLines, LOG_LEVEL } from '#root/tests/helper/log.js';
@@ -21,6 +23,7 @@ const SPEC_PATH = '/json';
 const PING_URL = '/api/v1/system/ping';
 const HTML_CONTENT_TYPE = 'text/html; charset=utf-8';
 const JSON_MEDIA_TYPE = 'application/json';
+const FORM_MEDIA_TYPE = 'multipart/form-data';
 
 // A path no route of src/routes takes: the same path there would fail these tests on a duplicate route.
 const PROBE_URL = '/api/v1/docs-probe/users';
@@ -312,6 +315,46 @@ describe('swagger plugin', () => {
     assert.deepEqual(Object.keys(open.responses), ['204', '404', '409']);
     assert.deepEqual(Object.keys(scoped.responses), ['204', '401', '403', '404', '409']);
     assert.deepEqual(scoped.responses['409'], conflict);
+  });
+
+  test('documents a route with files with both media types of its body: null in place of a file in JSON, and binary for the file picker in the form', async (t) => {
+    const fastify = await buildModeApp(t, MODE.DEV);
+    const body = { type: 'object', properties: { firstName: userSchema.properties.firstName }, additionalProperties: false };
+    const files = {
+      fields: {
+        avatar: { maxSize: '5MB', mime: IMAGE_INPUT_TYPES, image: IMAGE_PROFILE.AVATAR },
+        scans: { max: 2, maxSize: '1MB', mime: ['application/pdf'] },
+      },
+    };
+
+    fastify.patch(`${PROBE_URL}/:id/files`, { schema: { ...pick(UPDATE_SCHEMA, ['params', 'response']), body }, security: PUBLIC, files }, answerNothing);
+
+    const { paths } = await readSpec(fastify);
+    const { content } = paths[`${PROBE_URL}/{id}/files`].patch.requestBody;
+    const binary = { type: 'string', format: 'binary' };
+
+    assert.deepEqual(Object.keys(content), [JSON_MEDIA_TYPE, FORM_MEDIA_TYPE]);
+    assert.deepEqual(content[JSON_MEDIA_TYPE].schema, {
+      ...body,
+      properties: {
+        ...body.properties,
+        avatar: { type: 'null', description: 'null removes the file; a file itself is sent as multipart/form-data' },
+        scans: { type: 'null', description: 'null removes the files; a file itself is sent as multipart/form-data' },
+      },
+    });
+    assert.deepEqual(content[FORM_MEDIA_TYPE].schema, {
+      ...body,
+      properties: {
+        ...body.properties,
+        avatar: { ...binary, description: 'A file of image/jpeg, image/png, image/webp, of at most 5 MB; the text null removes it' },
+        scans: {
+          type: 'array',
+          items: binary,
+          maxItems: 2,
+          description: 'Up to 2 files of application/pdf, each of at most 1 MB; the text null removes them',
+        },
+      },
+    });
   });
 
   test('keeps the json marker out of a shared schema that a route reaches by $ref', async (t) => {
