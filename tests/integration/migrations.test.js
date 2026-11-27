@@ -8,6 +8,7 @@ import {
   listTableNames,
   REPOSITORY_MIGRATIONS,
   REPOSITORY_SEEDS,
+  REPOSITORY_TABLES,
 } from '#root/tests/helper/migration.js';
 import { parseStrictUtc } from '#utils/date.js';
 import { uuidv7, uuidVersion } from '#utils/id.js';
@@ -17,8 +18,6 @@ import { beforeEach, describe, test } from 'node:test';
 
 const { MACHINE, HUMAN } = COLLATION;
 const { SEED } = MIGRATION_TYPE;
-
-const TABLES = Object.freeze(['users', 'user_identities', 'groups', 'group_scopes', 'user_groups', 'audit_logs', 'sessions']);
 
 // Every text column of these tables: a name and a description are a text for a person, everything else
 // a machine string or a contact.
@@ -69,6 +68,25 @@ const FAR_AWAY = '2099-01-01 00:00:00.000';
 
 const UNIQUE_EMAIL = Object.freeze({ kind: 'unique', constraint: 'uq_users_email' });
 const FAILED_CHECK = Object.freeze({ name: 'DbError', code: 'ER_CONSTRAINT_FAILED' });
+const UNKNOWN_PARENT = Object.freeze({ name: 'DbError', code: 'ER_NO_REFERENCED_ROW_2' });
+
+const ACTOR_MIGRATION = Object.freeze({ id: '0009_audit_logs_actor', name: 'audit_logs_actor' });
+
+// audit_logs.actor_id after 0009, and after its rollback.
+const KEPT_ACTOR = Object.freeze({
+  comment: 'The user who acted, kept once that user is deleted; NULL for the system',
+  indexes: [['PRIMARY', 'id'], ['idx_audit_logs_entity', 'entity_type, entity_id']],
+  foreignKeys: {},
+});
+const CLEARED_ACTOR = Object.freeze({
+  comment: 'The user who acted; NULL for the system, and once that user is deleted',
+  indexes: [['PRIMARY', 'id'], ['idx_audit_logs_actor', 'actor_id'], ['idx_audit_logs_entity', 'entity_type, entity_id']],
+  foreignKeys: {
+    fk_audit_logs_actor: {
+      columns: 'actor_id', references: 'users.id', onUpdate: 'RESTRICT', onDelete: 'SET NULL',
+    },
+  },
+});
 
 const testDb = await createTestDb();
 const { up, down, verify } = bindMigrator(testDb);
@@ -102,6 +120,21 @@ async function createSession(userId, hash) {
   return id;
 }
 
+function deleteUser(id) {
+  return testDb.readRows('DELETE FROM users WHERE id = :id', { id });
+}
+
+// A record of what a user did to their own account: its entity tells the record apart whatever its actor becomes.
+function recordOwnAction(userId) {
+  return testDb.readRows("INSERT INTO audit_logs (actor_id, action, entity_type, entity_id) VALUES (:userId, 'user.update', 'users', :userId)", { userId });
+}
+
+async function readActors() {
+  const rows = await testDb.readRows('SELECT entity_id, actor_id FROM audit_logs');
+
+  return Object.fromEntries(rows.map((row) => [row.entity_id, row.actor_id]));
+}
+
 function readGroups() {
   return testDb.readRows('SELECT slug, name, description, is_superadmin, is_system FROM groups ORDER BY slug');
 }
@@ -116,8 +149,19 @@ function readOwnStructure() {
   return testDb.run(() => readStructure(testDb.name));
 }
 
+// The structure readStructure() keys by name has no prototype: the copy compares with a literal.
+async function readActorColumn() {
+  const { columns, indexes, foreignKeys } = (await readOwnStructure()).tables.audit_logs;
+
+  return {
+    comment: columns.actor_id.comment,
+    indexes: Object.entries(indexes).map(([name, cells]) => [name, cells.columns]).toSorted(),
+    foreignKeys: { ...foreignKeys },
+  };
+}
+
 function readTextCollations({ tables }) {
-  return Object.fromEntries(TABLES.flatMap((table) => Object.entries(tables[table].columns)
+  return Object.fromEntries(REPOSITORY_TABLES.flatMap((table) => Object.entries(tables[table].columns)
     .filter(([, cells]) => cells.collation !== null)
     .map(([column, cells]) => [`${table}.${column}`, cells.collation])));
 }
@@ -131,10 +175,10 @@ describe('the migrations of the repository', { skip: testDb.skip }, () => {
   });
 
   test('build the tables of users and groups, and "verify" finds the database as they make it: every check and foreign key named, every collation allowed', async () => {
-    assert.deepEqual(await listTableNames(testDb), ['_migrations', ...TABLES].toSorted());
+    assert.deepEqual(await listTableNames(testDb), ['_migrations', ...REPOSITORY_TABLES].toSorted());
     assert.deepEqual(await verify(), {
       database: testDb.name,
-      tableCount: TABLES.length,
+      tableCount: REPOSITORY_TABLES.length,
       differences: [],
       notes: [],
     });
@@ -223,6 +267,17 @@ describe('the migrations of the repository', { skip: testDb.skip }, () => {
     assert.deepEqual(await testDb.readRows('SELECT COUNT(*) AS total FROM user_identities WHERE user_id = :first', { first }), [{ total: 2 }]);
   });
 
+  test('keep on an identity whether its provider has confirmed its email: an identity written without the flag has it unconfirmed, and NULL is refused', async () => {
+    const userId = await createUser();
+    const { tables } = await readOwnStructure();
+
+    await testDb.readRows("INSERT INTO user_identities (user_id, provider, provider_user_id, email) VALUES (:userId, 'google', 'sub-1', 'anna@example.com')", { userId });
+
+    assert.deepEqual(pick(tables.user_identities.columns.is_email_verified, ['type', 'nullable', 'default']), { type: 'tinyint(1)', nullable: 'NO', default: '0' });
+    assert.deepEqual(await testDb.readRows('SELECT email, is_email_verified FROM user_identities WHERE user_id = :userId', { userId }), [{ email: 'anna@example.com', is_email_verified: false }]);
+    await assert.rejects(testDb.readRows('UPDATE user_identities SET is_email_verified = NULL WHERE user_id = :userId', { userId }), { name: 'DbError', code: 'ER_BAD_NULL_ERROR' });
+  });
+
   test('delete a user for real with their identities and memberships, and leave a membership they have granted with no one as its granter: the cascade does not move its updated_at', async () => {
     const [admin, member] = await Promise.all([createUser(), createUser()]);
     const group = await createGroup('editors');
@@ -230,7 +285,7 @@ describe('the migrations of the repository', { skip: testDb.skip }, () => {
     await testDb.readRows("INSERT INTO user_identities (user_id, provider, provider_user_id) VALUES (:admin, 'google', 'sub-1')", { admin });
     await testDb.readRows('INSERT INTO user_groups (user_id, group_id, granted_by) VALUES (:admin, :group, NULL), (:member, :group, :admin)', { admin, member, group });
     await testDb.readRows('UPDATE user_groups SET updated_at = :moment', { moment: LONG_AGO });
-    await testDb.readRows('DELETE FROM users WHERE id = :admin', { admin });
+    await deleteUser(admin);
 
     assert.deepEqual(await testDb.readRows('SELECT COUNT(*) AS total FROM user_identities'), [{ total: 0 }]);
     assert.deepEqual(await testDb.readRows('SELECT user_id, group_id, granted_by, updated_at FROM user_groups'), [{
@@ -238,16 +293,44 @@ describe('the migrations of the repository', { skip: testDb.skip }, () => {
     }]);
   });
 
-  test('keep the audit of a deleted user, with no one as its actor: the cascade does not move its updated_at', async () => {
+  test('keep the audit of a deleted user with that user as its actor: the delete leaves the record as it was, its updated_at too', async () => {
     const actor = await createUser();
 
     await testDb.readRows("INSERT INTO audit_logs (actor_id, action, entity_type, entity_id) VALUES (:actor, 'user.block', 'users', :actor)", { actor });
     await testDb.readRows('UPDATE audit_logs SET updated_at = :moment', { moment: LONG_AGO });
-    await testDb.readRows('DELETE FROM users WHERE id = :actor', { actor });
+    await deleteUser(actor);
 
     assert.deepEqual(await testDb.readRows('SELECT actor_id, action, entity_id, updated_at FROM audit_logs'), [{
-      actor_id: null, action: 'user.block', entity_id: actor, updated_at: parseStrictUtc(LONG_AGO_UTC),
+      actor_id: actor, action: 'user.block', entity_id: actor, updated_at: parseStrictUtc(LONG_AGO_UTC),
     }]);
+  });
+
+  test('take the foreign key and the index off the actor of a record in 0009, so that a record keeps an actor who is no user; its rollback sets such an actor to NULL, brings both back as the migrations before it make them, and a later delete clears the actor again', async () => {
+    const [deleted, kept] = await Promise.all([createUser(), createUser()]);
+    const stranger = uuidv7();
+
+    await recordOwnAction(deleted);
+    await recordOwnAction(kept);
+    await recordOwnAction(stranger);
+    await deleteUser(deleted);
+
+    assert.deepEqual(await readActorColumn(), KEPT_ACTOR);
+    assert.deepEqual(await readActors(), { [deleted]: deleted, [kept]: kept, [stranger]: stranger });
+
+    assert.deepEqual(await down({ names: [ACTOR_MIGRATION.name] }), { files: [`${ACTOR_MIGRATION.id}.down.sql`], isDryRun: false });
+    assert.deepEqual(await readActorColumn(), CLEARED_ACTOR);
+    assert.deepEqual(await readActors(), { [deleted]: null, [kept]: kept, [stranger]: null });
+    assert.deepEqual(await verify(), {
+      database: testDb.name,
+      tableCount: REPOSITORY_TABLES.length,
+      differences: [],
+      notes: [`not applied, and so not compared: ${ACTOR_MIGRATION.id}`],
+    });
+
+    await deleteUser(kept);
+
+    assert.deepEqual(await readActors(), { [deleted]: null, [kept]: null, [stranger]: null });
+    await assert.rejects(recordOwnAction(uuidv7()), UNKNOWN_PARENT);
   });
 
   test('make a session live, not of dev mode and active since its sign-in', async () => {
@@ -272,7 +355,7 @@ describe('the migrations of the repository', { skip: testDb.skip }, () => {
     await createSession(deleted, 'aa'.repeat(32));
     await createSession(deleted, 'bb'.repeat(32));
     await createSession(other, 'cc'.repeat(32));
-    await testDb.readRows('DELETE FROM users WHERE id = :deleted', { deleted });
+    await deleteUser(deleted);
 
     assert.deepEqual(await testDb.readRows('SELECT user_id FROM sessions'), [{ user_id: other }]);
   });

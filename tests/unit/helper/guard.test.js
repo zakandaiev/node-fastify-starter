@@ -14,11 +14,10 @@ import {
   NO_STORE,
   readState,
   REVOKED,
-  REVOKED_MARK,
   UNAUTHENTICATED,
   withoutUser,
 } from '#root/tests/helper/guard.js';
-import { readAppRows, readClaims } from '#root/tests/helper/session.js';
+import { readAppRows, readClaims, REVOKED_MARK } from '#root/tests/helper/session.js';
 import { uuidv7, uuidVersion } from '#utils/id.js';
 import { pick } from '#utils/object.js';
 import assert from 'node:assert/strict';

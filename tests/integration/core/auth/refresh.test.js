@@ -23,8 +23,10 @@ import {
   FAST_RECONNECT,
   REDIS_DOWN_ENV,
 } from '#root/tests/helper/redis.js';
+import { assertRevoked } from '#root/tests/helper/route.js';
 import { getServiceAddress } from '#root/tests/helper/service.js';
 import {
+  ALIVE_MARK,
   AUTH_COOKIES,
   connectAppRedis,
   createUser,
@@ -33,10 +35,13 @@ import {
   readAppRows,
   readAuthCookies,
   readClaims,
+  readRegistryMarks,
   readSessionRow,
+  REVOKED_MARK,
   runInApp,
   signIn,
   toBearer,
+  toRegistryKey,
 } from '#root/tests/helper/session.js';
 import { mapSeries } from '#utils/async.js';
 import { convertStringToMs, convertStringToSeconds } from '#utils/date.js';
@@ -193,10 +198,6 @@ function waitForRow(sid, isExpected) {
   }, 'the change of the row');
 }
 
-function toMarkKey(sid) {
-  return `${testRedis.keyPrefix}session:${sid}`;
-}
-
 function readVerbs(sink, response) {
   const requestId = readRequestId(response);
 
@@ -218,10 +219,6 @@ async function readAlerts(fastify, receiver) {
 function assertRefused(response, code, message) {
   assert.equal(response.statusCode, HTTP_STATUS.UNAUTHORIZED);
   assert.deepEqual(response.json(), errorBody(response, code, message));
-}
-
-function assertRevoked(response) {
-  assertRefused(response, 'SESSION_REVOKED', 'Session revoked');
 }
 
 function assertLost(response) {
@@ -624,14 +621,14 @@ describe('refreshSession: a replaced token that comes again', { skip: testDb.ski
       fastify, sid, current, row, response,
     } = await replay(t);
     const ended = await readRow(sid);
-    const ttlMs = await testRedis.admin.pttl(toMarkKey(sid));
+    const ttlMs = await testRedis.admin.pttl(toRegistryKey(testRedis.keyPrefix, sid));
     const accessTtlMs = convertStringToMs(fastify.config.auth.accessTtl);
 
     assertRevoked(response);
     assert.deepEqual(pick(row, ['refresh_token_hash', 'revoked_at']), { refresh_token_hash: sha256(current.refreshToken), revoked_at: null });
     assert.deepEqual(ended, { ...row, revoked_at: ended.revoked_at, updated_at: ended.updated_at });
     assertJustNow(ended.revoked_at);
-    assert.equal(await testRedis.admin.get(toMarkKey(sid)), '0');
+    assert.deepEqual(await readRegistryMarks(testRedis, [sid]), [REVOKED_MARK]);
     assert.ok(ttlMs > accessTtlMs - TTL_SLACK_MS && ttlMs <= accessTtlMs, `${ttlMs} ms`);
   });
 
@@ -1011,7 +1008,7 @@ describe('refreshSession: side by side', { skip: testDb.skip }, () => {
 
     assert.deepEqual(errors.map((error) => error.code), [ERROR_CODE.SESSION_REVOKED, ERROR_CODE.SESSION_REVOKED]);
     assert.equal((await readAudits(sid)).length, 1);
-    assert.equal(await testRedis.admin.get(toMarkKey(sid)), '0');
+    assert.deepEqual(await readRegistryMarks(testRedis, [sid]), [REVOKED_MARK]);
   });
 
   test('a replay beside a rotation of the current token leaves nothing of the session, whichever of them comes first', { timeout: HANG_TIMEOUT_MS }, async (t) => {
@@ -1068,13 +1065,13 @@ describe('refreshSession: Redis', { skip: testDb.skip || testRedis.skip }, () =>
 
     const { sid, issued } = await signIn(fastify);
 
-    await testRedis.admin.del(toMarkKey(sid));
+    await testRedis.admin.del(toRegistryKey(testRedis.keyPrefix, sid));
     await refreshIn(fastify, issued.refreshToken);
 
-    const ttlMs = await testRedis.admin.pttl(toMarkKey(sid));
+    const ttlMs = await testRedis.admin.pttl(toRegistryKey(testRedis.keyPrefix, sid));
     const accessTtlMs = convertStringToMs(fastify.config.auth.accessTtl);
 
-    assert.equal(await testRedis.admin.get(toMarkKey(sid)), '1');
+    assert.deepEqual(await readRegistryMarks(testRedis, [sid]), [ALIVE_MARK]);
     assert.ok(ttlMs > accessTtlMs - TTL_SLACK_MS && ttlMs <= accessTtlMs, `${ttlMs} ms`);
     assert.equal(await testRedis.admin.exists(`${testRedis.keyPrefix}table-version:sessions`), 0);
   });
@@ -1141,7 +1138,7 @@ describe('refreshSession: Redis', { skip: testDb.skip || testRedis.skip }, () =>
     proxy.thaw();
     assertRevoked(await running);
     assert.equal(audits.length, 1);
-    assert.equal(await testRedis.admin.get(toMarkKey(sid)), '0');
+    assert.deepEqual(await readRegistryMarks(testRedis, [sid]), [REVOKED_MARK]);
     assert.deepEqual((await readAlerts(fastify, receiver)).map((alert) => alert.title), [REPLAY_TITLE]);
   });
 
@@ -1173,7 +1170,7 @@ describe('refreshSession: Redis', { skip: testDb.skip || testRedis.skip }, () =>
 
     assertRevoked(await replaying);
     assert.deepEqual(hanging, { isAnswered: false });
-    assert.equal(await testRedis.admin.get(toMarkKey(sid)), '0');
+    assert.deepEqual(await readRegistryMarks(testRedis, [sid]), [REVOKED_MARK]);
   });
 
   test('may hang when a rotation writes its mark: the pair is given all the same', { timeout: HANG_TIMEOUT_MS }, async (t) => {
@@ -1215,7 +1212,7 @@ describe('refreshSession: Redis', { skip: testDb.skip || testRedis.skip }, () =>
     }]);
     assert.deepEqual(pick(await readRow(sid), TOKEN_COLUMNS), pick(row, TOKEN_COLUMNS));
     assert.equal((await getMe(fastify, issued.accessToken)).statusCode, HTTP_STATUS.OK);
-    assert.equal(await testRedis.admin.get(toMarkKey(sid)), '1');
+    assert.deepEqual(await readRegistryMarks(testRedis, [sid]), [ALIVE_MARK]);
 
     const { refreshToken } = await refreshIn(fastify, issued.refreshToken);
 
@@ -1257,7 +1254,7 @@ describe('refreshSession: Redis', { skip: testDb.skip || testRedis.skip }, () =>
     const { sid, issued } = await signIn(fastify);
     const client = { isGone: false };
 
-    await testRedis.admin.del(toMarkKey(sid));
+    await testRedis.admin.del(toRegistryKey(testRedis.keyPrefix, sid));
     await keeper.holdRow(TABLE.SESSIONS, sid);
 
     const running = Promise.allSettled([{ isAbandoned: () => client.isGone }, {}].map((options) => refreshIn(fastify, issued.refreshToken, options)));
@@ -1267,7 +1264,7 @@ describe('refreshSession: Redis', { skip: testDb.skip || testRedis.skip }, () =>
     await keeper.release();
 
     assert.deepEqual((await running).map((result) => toOutcome(result)), [ERROR_CODE.AUTHENTICATION_ERROR, 'rotated']);
-    assert.equal(await testRedis.admin.get(toMarkKey(sid)), '1');
+    assert.deepEqual(await readRegistryMarks(testRedis, [sid]), [ALIVE_MARK]);
   });
 
   test('is not told of a rotation nobody waits for any more: one that hangs does not hold up what takes it back', { timeout: HANG_TIMEOUT_MS }, async (t) => {

@@ -1,13 +1,11 @@
 import { markSessionAlive, markSessionsRevoked } from '#core/auth/registry.js';
 import { issueTokens } from '#core/auth/token.js';
+import { assertActiveUser, lockUsers } from '#core/auth/user.js';
 import { readUserScopes } from '#core/authz/scope.js';
 import { getContext } from '#core/context/index.js';
 import { createQuery } from '#core/db/query.js';
 import { afterCommit, withTransaction } from '#core/db/transaction.js';
-import { AppError } from '#core/error/index.js';
-import { ERROR_CODE } from '#enums/error-code.js';
 import { ISOLATION_LEVEL } from '#enums/isolation-level.js';
-import { USER_STATUS } from '#enums/user-status.js';
 import { nowUtc } from '#utils/date.js';
 import { assertUuid, uuidv7 } from '#utils/id.js';
 
@@ -15,8 +13,6 @@ import { assertUuid, uuidv7 } from '#utils/id.js';
 // the transaction, and every refresh of the user changes one. A transaction around these calls names both, and only the
 // level is checked; it also locks the row of the user before anything that refers to the user.
 export const SESSION_TRANSACTION = Object.freeze({ isolation: ISOLATION_LEVEL.READ_COMMITTED, retry: true });
-
-const LOCK_USER_SQL = 'SELECT status FROM users WHERE id = :userId FOR UPDATE';
 
 const INSERT_SQL = `
   INSERT INTO sessions (id, user_id, refresh_token_hash, expires_at, user_agent, ip, is_dev)
@@ -71,13 +67,9 @@ async function run(sql, binding) {
 // The status is read under the lock: a block that has committed meanwhile refuses the sign-in, and one that waits for
 // this lock will see the session.
 async function lockActiveUser(userId) {
-  const user = (await run(LOCK_USER_SQL, { userId })).fetch();
+  const [user = null] = await lockUsers([userId]);
 
-  if (user?.status !== USER_STATUS.ACTIVE) {
-    throw new AppError(ERROR_CODE.AUTHORIZATION_ERROR);
-  }
-
-  return user;
+  return assertActiveUser(user);
 }
 
 async function revokeByIds(sids) {
@@ -163,7 +155,7 @@ export async function revokeSession({ sid, userId } = {}) {
 }
 
 async function revokeLive(userId, exceptSid) {
-  await run(LOCK_USER_SQL, { userId });
+  await lockUsers([userId]);
 
   const sids = await lockLiveSids(userId, exceptSid);
 

@@ -16,7 +16,7 @@ import {
 } from '#root/tests/helper/alert.js';
 import { successBody } from '#root/tests/helper/app.js';
 import { createTestConfig } from '#root/tests/helper/config.js';
-import { createTestDb } from '#root/tests/helper/db.js';
+import { createTestDb, SMALL_POOL } from '#root/tests/helper/db.js';
 import { findLogLines, LOG_LEVEL } from '#root/tests/helper/log.js';
 import { bindMigrator } from '#root/tests/helper/migration.js';
 import { createMockProvider, REFUSAL_DESCRIPTION, signInThroughProvider } from '#root/tests/helper/oauth.js';
@@ -52,9 +52,6 @@ const EMOJI = String.fromCodePoint(0x1F600);
 // An address of its own for each test: the rows of the file stay for the tests after it.
 const ADMIN_EMAIL = 'first.route@admin.test';
 const ADMIN_ENV = Object.freeze({ APP_ADMIN_EMAILS: ADMIN_EMAIL });
-
-// Few on purpose: the files of the tests share the connections of one server.
-const SMALL_POOL = Object.freeze({ connectionLimit: 2 });
 
 const UPSTREAM_TITLE = 'Upstream service failed';
 const REQUEST_FAILED_MESSAGE = 'Request failed';

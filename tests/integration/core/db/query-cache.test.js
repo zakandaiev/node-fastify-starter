@@ -46,7 +46,6 @@ const USERS_REACH = Object.freeze({
   [TABLE.USERS]: 1,
   [TABLE.USER_IDENTITIES]: 1,
   [TABLE.USER_GROUPS]: 1,
-  [TABLE.AUDIT_LOGS]: 1,
   [TABLE.SESSIONS]: 1,
 });
 const GROUPS_REACH = Object.freeze({ [TABLE.GROUPS]: 1, [TABLE.GROUP_SCOPES]: 1, [TABLE.USER_GROUPS]: 1 });
@@ -270,7 +269,7 @@ describe('createQuery and the cache', { skip: testRedis.skip || testDb.skip }, (
     assert.deepEqual([await readScopes(groupId), await readMemberIds(groupId)], [[], []]);
   });
 
-  test('a cached read of user_identities and one of audit_logs are read again after DELETE FROM users with .cache() of users: rows the cascade deleted and a column SET NULL cleared are not served from the cache', async () => {
+  test('a cached read of user_identities is read again after DELETE FROM users with .cache() of users, and one of audit_logs is not: the rows the cascade deleted are not served from the cache, and the records keep the deleted user as their actor', async () => {
     const marker = nextMarker('person');
     const userId = uuidv7();
     const [firstAudit, secondAudit] = [uuidv7(), uuidv7()];
@@ -299,8 +298,12 @@ describe('createQuery and the cache', { skip: testRedis.skip || testDb.skip }, (
     });
 
     assert.deepEqual(bumps, USERS_REACH);
-    assert.deepEqual([await readIdentityIds(), await readAuditIds()], [[], []]);
-    assert.deepEqual(await testDb.readRows('SELECT actor_id FROM audit_logs WHERE id IN (:ids)', { ids: [firstAudit, secondAudit] }), [{ actor_id: null }, { actor_id: null }]);
+    assert.deepEqual([await readIdentityIds(), await readAuditIds()], [[], [firstAudit]]);
+    assert.deepEqual(await testDb.readRows('SELECT actor_id FROM audit_logs WHERE id IN (:ids)', { ids: [firstAudit, secondAudit] }), [{ actor_id: userId }, { actor_id: userId }]);
+
+    await run(() => invalidateCacheTables([TABLE.AUDIT_LOGS]));
+
+    assert.deepEqual(await readAuditIds(), [firstAudit, secondAudit]);
   });
 
   test('a DELETE FROM groups through createQuery that the server ran and the driver then failed on bumps the tables the foreign keys reach too: what they deleted is not served from the cache', async () => {

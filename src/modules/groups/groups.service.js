@@ -1,15 +1,11 @@
 import { writeAudit } from '#core/audit/index.js';
 import { SESSION_TRANSACTION } from '#core/auth/session.js';
+import { assertOtherUser, lockActorAndUser, lockUsers } from '#core/auth/user.js';
+import { isGrantableScope, readGroupGrants } from '#core/authz/match.js';
 import { grantMembership, revokeMembership } from '#core/authz/membership.js';
-import {
-  isEveryScopeGranted,
-  isGrantableScope,
-  isRequirementMet,
-  readGroupGrants,
-} from '#core/authz/match.js';
-import { readUserScopes } from '#core/authz/scope.js';
+import { assertActorHolds } from '#core/authz/scope.js';
 import { buildPatch } from '#core/db/patch.js';
-import { withTransaction } from '#core/db/transaction.js';
+import { isInTransaction, withTransaction } from '#core/db/transaction.js';
 import { AppError } from '#core/error/index.js';
 import { AUDIT_ACTION } from '#enums/audit-action.js';
 import { ERROR_CODE } from '#enums/error-code.js';
@@ -28,13 +24,15 @@ import {
   insertGroup,
   isMember,
   lockGroup,
-  lockUsers,
+  lockGroups,
   readMemberIds,
+  readProtectedGroupIds,
   removeGroupScopes,
   touchGroup,
   updateGroupFields,
 } from '#modules/groups/groups.repository.js';
-import { assertUuid, uuidv7 } from '#utils/id.js';
+import { mapSeries } from '#utils/async.js';
+import { assertUuid, isUuid, uuidv7 } from '#utils/id.js';
 import { diff, pick } from '#utils/object.js';
 import { isArray, isObject } from '#utils/type.js';
 
@@ -56,20 +54,12 @@ function notFound() {
   return new AppError(ERROR_CODE.NOT_FOUND_ERROR);
 }
 
-// By the database, not by the token: a demoted or blocked manager would act for the life of the token. Holding all a
-// group grants, before and after the change, keeps managing groups from being full access.
-async function assertHeldBy(actor, groups) {
-  const scopes = actor?.status === USER_STATUS.ACTIVE
-    ? await readUserScopes(actor.id)
-    : [];
-  const isAllowed = isRequirementMet(scopes, MANAGE_REQUIREMENT)
-    && groups.every((group) => isEveryScopeGranted(scopes, readGroupGrants(group)));
-
-  if (!isAllowed) {
-    throw new AppError(ERROR_CODE.AUTHORIZATION_ERROR);
-  }
-
-  return true;
+// Holding all a group grants, before and after the change, keeps managing groups from being full access.
+function assertHeldBy(actor, groups) {
+  return assertActorHolds(actor, {
+    requirement: MANAGE_REQUIREMENT,
+    scopes: groups.flatMap((group) => readGroupGrants(group)),
+  });
 }
 
 function assertUnreserved(before, after) {
@@ -93,18 +83,12 @@ function assertUnprotected(before, after) {
   }
 }
 
-function assertOtherUser(actorId, userId) {
-  if (actorId === userId) {
-    throw new AppError(ERROR_CODE.AUTHORIZATION_ERROR);
-  }
-}
-
 function toAudited(group) {
   return { ...pick(group, FIELDS), scopes: group.scopes.toSorted() };
 }
 
-// Each flow locks the row of its actor first, as every flow that touches what refers to a user does: the audit row and
-// granted_by refer to the actor.
+// Each flow locks the row of its actor first, as every flow that touches what refers to a user does: the granted_by of
+// a membership refers to the actor.
 async function lockActor(actorId) {
   const [actor = null] = await lockUsers([actorId]);
 
@@ -293,17 +277,9 @@ export async function listMembers({ groupId, payload } = {}) {
 }
 
 async function lockMembership({ groupId, userId, actorId }) {
-  const users = await lockUsers([actorId, userId]);
+  const { actor, user } = await lockActorAndUser({ actorId, userId });
 
-  if (!users.some((user) => user.id === userId)) {
-    throw notFound();
-  }
-
-  return {
-    actor: users.find((user) => user.id === actorId) ?? null,
-    member: users.find((user) => user.id === userId),
-    group: await lockExistingGroup(groupId),
-  };
+  return { actor, member: user, group: await lockExistingGroup(groupId) };
 }
 
 function assertMembershipCall({ groupId, userId, actorId }, signature) {
@@ -350,6 +326,25 @@ async function assertNotLastAdmin(group, member) {
   if (isLast) {
     throw new AppError(ERROR_CODE.GROUP_PROTECTED);
   }
+
+  return true;
+}
+
+// For a write that takes a user out of the active members of every group at once, a block or a deletion: the rows of
+// the groups it guards are locked before the count and before the write, as removeMember() locks its group, so two
+// such writes count one after another. The caller holds the lock of the row of the user.
+export async function assertAdminGroupsKept(member) {
+  if (!isObject(member) || !isUuid(member.id)) {
+    throw new TypeError('assertAdminGroupsKept(member) requires the locked row of a user { id, status }');
+  }
+
+  if (!isInTransaction()) {
+    throw new Error('assertAdminGroupsKept(member) runs inside withTransaction(), with the write it guards');
+  }
+
+  const groups = await lockGroups(await readProtectedGroupIds(member.id));
+
+  await mapSeries(groups, (group) => assertNotLastAdmin(group, member));
 
   return true;
 }

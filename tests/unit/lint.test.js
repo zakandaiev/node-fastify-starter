@@ -6,7 +6,7 @@ import { ESLint } from 'eslint';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-// The files below do not exist, and both rules read the disk: import/no-cycle crashes on a missing file.
+// Some of the files below do not exist, and both rules read the disk: import/no-cycle crashes on a missing file.
 const eslint = new ESLint({
   cwd: absPath.root,
   overrideConfig: [{ rules: { 'import/no-cycle': 0, 'import/no-unresolved': 0 } }],

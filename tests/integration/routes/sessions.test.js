@@ -1,12 +1,14 @@
 import { HEADER } from '#enums/header.js';
 import { errorBody, successBody } from '#root/tests/helper/app.js';
 import { waitFor } from '#root/tests/helper/async.js';
-import { createTestDb } from '#root/tests/helper/db.js';
+import { createTestDb, SMALL_POOL } from '#root/tests/helper/db.js';
 import { bindMigrator } from '#root/tests/helper/migration.js';
 import { createTestRedis, REDIS_DOWN_ENV } from '#root/tests/helper/redis.js';
+import { assertRevoked } from '#root/tests/helper/route.js';
 import {
   connectAppRedis,
   createUser,
+  LONG_MEMORY,
   readAppRows,
   readSessionRow,
   signIn,
@@ -35,12 +37,6 @@ const MODES = Object.freeze([
 const LOOPBACK = '127.0.0.1';
 const REVOKE_CHANNEL = 'auth:revoke';
 const NO_STORE = 'no-store';
-
-// Few on purpose: the files of the tests share the connections of one server.
-const SMALL_POOL = Object.freeze({ connectionLimit: 2 });
-
-// What a process has found alive it takes for alive longer than any test lasts: it refuses only what it was told of.
-const LONG_MEMORY = Object.freeze({ registryMemoryTtl: '1h' });
 
 const STARTED_AT = '2026-11-01T08:00:00.000Z';
 const FAR_FUTURE = '2099-01-01T00:00:00.000Z';
@@ -134,11 +130,6 @@ async function readStatuses(fastify, devices) {
 
 function readHeaders(response) {
   return [response.headers['cache-control'], response.headers['www-authenticate']];
-}
-
-function assertRevoked(response) {
-  assert.equal(response.statusCode, 401);
-  assert.deepEqual(response.json(), errorBody(response, 'SESSION_REVOKED', 'Session revoked'));
 }
 
 function assertEnded(response, clearedNames) {

@@ -29,8 +29,13 @@ export const REPOSITORY_MIGRATIONS = Object.freeze([
   '0005_user_groups',
   '0006_audit_logs',
   '0007_sessions',
+  '0008_user_identities_email_verified',
+  '0009_audit_logs_actor',
 ]);
 export const REPOSITORY_SEEDS = Object.freeze(['0001_groups']);
+
+// The tables those files make, in the order of the files that create them.
+export const REPOSITORY_TABLES = Object.freeze(['users', 'user_identities', 'groups', 'group_scopes', 'user_groups', 'audit_logs', 'sessions']);
 
 // The words of the migrator that more than one test file compares a message with.
 export const MIGRATION_TEXT = Object.freeze({

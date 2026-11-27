@@ -1,6 +1,7 @@
 import { PAGINATION } from '#config/pagination.js';
 import { createSchema } from '#core/schema/create-schema.js';
 import { FILTER_TYPE } from '#enums/filter-type.js';
+import { SCHEMA_FORMAT } from '#enums/schema-format.js';
 import { SCOPE_ALL, SCOPE_CATALOG } from '#enums/scope.js';
 import { USER_STATUS } from '#enums/user-status.js';
 import { buildTestApp } from '#root/tests/helper/app.js';
@@ -9,6 +10,7 @@ import * as paginationSchema from '#schemas/common/pagination.js';
 import * as groupSchema from '#schemas/entity/group.js';
 import * as userSchema from '#schemas/entity/user.js';
 import { pick } from '#utils/object.js';
+import { PERSON_NAME_MAX_LENGTH } from '#utils/person.js';
 import { isNonEmptyString } from '#utils/type.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
@@ -64,6 +66,32 @@ const BAD_SLUGS = Object.freeze([
   'admin.',
   'admin\n',
   `ukr-${String.fromCharCode(0x043a)}`,
+]);
+
+// The length of the columns first_name and last_name.
+const NAME_COLUMN_LENGTH = 100;
+
+// A character outside the basic plane counts as one: PERSON_NAME_MAX_LENGTH of them are a name, one more is not.
+const FAR_IDEOGRAPH = String.fromCodePoint(0x20BB7);
+const EMOJI = String.fromCodePoint(0x1F600);
+
+const PERSON_NAMES = Object.freeze([
+  "Мар'яна",
+  'Анна-Марія',
+  'Müller',
+  "O'Connor",
+  'Ανδρέας',
+  '山田',
+  'สมชาย',
+  '지민',
+  FAR_IDEOGRAPH.repeat(PERSON_NAME_MAX_LENGTH),
+]);
+const NOT_PERSON_NAMES = Object.freeze([
+  'Dr. X',
+  'Іван2',
+  EMOJI,
+  'a'.repeat(PERSON_NAME_MAX_LENGTH + 1),
+  FAR_IDEOGRAPH.repeat(PERSON_NAME_MAX_LENGTH + 1),
 ]);
 
 const ENTITIES = Object.freeze({ user: userSchema, group: groupSchema });
@@ -205,6 +233,40 @@ describe('entity schemas', () => {
     assert.deepEqual(scopes.items.enum, SCOPE_CODES);
     assert.equal(scopes.items.enum.includes(SCOPE_ALL), false);
     assert.deepEqual([scopes.type, scopes.uniqueItems, scopes.maxItems], ['array', true, SCOPE_CATALOG.length]);
+  });
+
+  test('describe a first and a last name as nullable text in the person-name format, as long as their column', () => {
+    [userSchema.properties.firstName, userSchema.properties.lastName].forEach((field) => {
+      assert.deepEqual([field.type, field.format, field.maxLength], [['string', 'null'], SCHEMA_FORMAT.PERSON_NAME, NAME_COLUMN_LENGTH]);
+    });
+  });
+
+  test('take as a first and a last name one word of letters of any script, with a hyphen or an apostrophe inside it, of up to PERSON_NAME_MAX_LENGTH characters', async (t) => {
+    const responses = await validate(t, userSchema.properties, PERSON_NAMES.map((name) => ({ ...USER, firstName: name, lastName: name })));
+
+    assert.deepEqual(
+      responses.map((response) => [response.statusCode, response.json().firstName, response.json().lastName]),
+      PERSON_NAMES.map((name) => [200, name, name]),
+    );
+  });
+
+  test('refuse as a first and a last name a title with a dot, a word with a digit, an emoji and a word over PERSON_NAME_MAX_LENGTH characters, by the format', async (t) => {
+    const responses = await validate(t, userSchema.properties, NOT_PERSON_NAMES.map((name) => ({ ...USER, firstName: name, lastName: name })));
+
+    assert.deepEqual(
+      responses.map((response) => readFailures(response)),
+      NOT_PERSON_NAMES.map(() => [['firstName', 'format'], ['lastName', 'format']]),
+    );
+  });
+
+  test('still refuse a first and a last name longer than their column by the length alone', async (t) => {
+    const [tooLong] = await validate(t, userSchema.properties, [{
+      ...USER,
+      firstName: 'a'.repeat(NAME_COLUMN_LENGTH + 1),
+      lastName: 'b'.repeat(NAME_COLUMN_LENGTH + 1),
+    }]);
+
+    assert.deepEqual(readFailures(tooLong), [['firstName', 'maxLength'], ['lastName', 'maxLength']]);
   });
 });
 

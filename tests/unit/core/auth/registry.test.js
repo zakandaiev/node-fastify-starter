@@ -24,7 +24,12 @@ import {
   toRespError,
   waitUntilReady,
 } from '#root/tests/helper/redis.js';
-import { listUntold, UNTOLD_MESSAGE, untoldOf } from '#root/tests/helper/session.js';
+import {
+  listUntold,
+  toRegistryKey,
+  UNTOLD_MESSAGE,
+  untoldOf,
+} from '#root/tests/helper/session.js';
 import { mapSeries } from '#utils/async.js';
 import { addToDate, nowUtc, toDate } from '#utils/date.js';
 import { uuidv7 } from '#utils/id.js';
@@ -103,7 +108,7 @@ const IN_TRANSACTION_MESSAGE = 'isSessionAlive(sid) judges by what is committed:
 const LAST_MESSAGE = 'the last message';
 
 function toKey(sid) {
-  return `${PROCESS_KEY_PREFIX}session:${sid}`;
+  return toRegistryKey(PROCESS_KEY_PREFIX, sid);
 }
 
 function readOf(sid) {

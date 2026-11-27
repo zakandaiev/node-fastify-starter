@@ -1,10 +1,8 @@
 import { settleAlerts } from '#core/alert/index.js';
 import { AUDIT_ACTION } from '#enums/audit-action.js';
-import { COOKIE } from '#enums/cookie.js';
 import { GROUP_SLUG } from '#enums/group.js';
 import { HEADER } from '#enums/header.js';
 import { MEDIA_TYPE } from '#enums/media-type.js';
-import { MIGRATION_TYPE } from '#enums/migration-type.js';
 import { SCOPE_ALL } from '#enums/scope.js';
 import { TABLE } from '#enums/table.js';
 import { USER_STATUS } from '#enums/user-status.js';
@@ -14,18 +12,32 @@ import {
   readBlock,
   readTitles,
 } from '#root/tests/helper/alert.js';
-import { errorBody, successBody } from '#root/tests/helper/app.js';
 import { createTestDb } from '#root/tests/helper/db.js';
-import { bindMigrator } from '#root/tests/helper/migration.js';
+import { DEV_ENV, NO_STORE } from '#root/tests/helper/guard.js';
 import { createTestRedis } from '#root/tests/helper/redis.js';
 import {
-  connectAppRedis,
-  openLoggedApp,
+  assertForbidden,
+  assertOk,
+  describeAudit,
+  getSessionRequest,
+  LOGIN_DEV_URL,
+  LOOPBACK,
+  migrateAndSeed,
+  openLoggedRouteApp,
+  postLoginDev,
+  send,
+} from '#root/tests/helper/route.js';
+import {
+  AUTH_COOKIES,
+  insertUser,
+  readAdminId,
   readAppRows,
+  readAudit,
   readClaims,
   toBearer,
 } from '#root/tests/helper/session.js';
-import { uuidv7 } from '#utils/id.js';
+import { mapSeries } from '#utils/async.js';
+import { nowUtc } from '#utils/date.js';
 import { pick } from '#utils/object.js';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
@@ -34,31 +46,17 @@ import { before, describe, test } from 'node:test';
 
 const testRedis = await createTestRedis();
 const testDb = await createTestDb();
-const { up } = bindMigrator(testDb);
 
-const LOGIN_DEV_URL = '/api/v1/auth/login-dev';
-const ME_URL = '/api/v1/auth/me';
-
-const DEV_ENV = Object.freeze({ APP_MODE: 'dev' });
 const ADMIN_EMAIL = 'dev.route.admin@admin.test';
 
-const LOOPBACK = '127.0.0.1';
 const FOREIGN_IP = '203.0.113.7';
-const NO_STORE = 'no-store';
 const ALERT_TITLE = 'Dev sign-in';
 
-const AUTH_NAMES = Object.freeze([COOKIE.ACCESS_TOKEN, COOKIE.HAS_ACCESS, COOKIE.HAS_SESSION, COOKIE.REFRESH_TOKEN]);
 const COOKIE_NAME_REGEXP = /^([^=]+)=/;
 
-// Few on purpose: the files of the tests share the connections of one server.
-const SMALL_POOL = Object.freeze({ connectionLimit: 2 });
-
 const USER_SQL = 'SELECT id, email, email_verified_at, status FROM users WHERE email = :email';
-const INSERT_USER_SQL = 'INSERT INTO users (id, email, email_verified_at, status) VALUES (:id, :email, CURRENT_TIMESTAMP(3), :status)';
 const SESSIONS_SQL = 'SELECT id, ip, is_dev FROM sessions WHERE user_id = :userId';
 const MEMBERSHIPS_SQL = 'SELECT g.slug FROM user_groups ug JOIN groups g ON g.id = ug.group_id WHERE ug.user_id = :userId';
-const SLUG_SQL = 'SELECT id FROM groups WHERE slug = :slug';
-const AUDIT_SQL = 'SELECT actor_id, action, entity_type, entity_id, meta FROM audit_logs WHERE entity_id = :userId';
 const COUNT_SQL = `
   SELECT
     (SELECT COUNT(*) FROM users) AS users,
@@ -69,20 +67,14 @@ const COUNT_SQL = `
 
 // The tables belong to the file, not to its first suite: a test that is run alone by its name needs them too.
 if (!testDb.skip) {
-  before(async () => {
-    await up();
-    await up({ type: MIGRATION_TYPE.SEED });
-  });
+  before(() => migrateAndSeed(testDb));
 }
 
 async function openApp(t, { receiver } = {}) {
-  const { fastify } = await openLoggedApp(t, testDb, {
+  const { fastify } = await openLoggedRouteApp(t, testDb, {
     receiver,
     env: { ...DEV_ENV, APP_ADMIN_EMAILS: ADMIN_EMAIL },
-    db: SMALL_POOL,
   });
-
-  await connectAppRedis(fastify);
 
   return fastify;
 }
@@ -148,12 +140,8 @@ async function postThrough(proxyUrl, email, headers = {}) {
   };
 }
 
-function postLoginDev(fastify, email) {
-  return fastify.inject({ method: 'POST', url: LOGIN_DEV_URL, payload: { email } });
-}
-
 function getMeByBearer(fastify, accessToken) {
-  return fastify.inject({ url: ME_URL, headers: toBearer(accessToken) });
+  return send(fastify, { bearer: toBearer(accessToken) }, getSessionRequest());
 }
 
 async function readUser(fastify, email) {
@@ -179,12 +167,12 @@ describe('POST /api/v1/auth/login-dev', { skip: testRedis.skip || testDb.skip },
 
     await settleAlerts(fastify.redis);
 
-    assert.deepEqual(pick(answer, ['status', 'cacheControl', 'cookieNames']), { status: 200, cacheControl: NO_STORE, cookieNames: AUTH_NAMES.toSorted() });
+    assert.deepEqual(pick(answer, ['status', 'cacheControl', 'cookieNames']), { status: 200, cacheControl: NO_STORE, cookieNames: AUTH_COOKIES.toSorted() });
     assert.deepEqual(Object.keys(answer.body.data), ['id', 'scopes', 'accessToken']);
     assert.deepEqual([user.id, user.status, scopes], [id, USER_STATUS.ACTIVE, []]);
     assert.ok(user.email_verified_at instanceof Date);
     assert.deepEqual(await readAppRows(fastify, SESSIONS_SQL, { userId: id }), [{ id: readClaims(accessToken).sid, ip: LOOPBACK, is_dev: true }]);
-    assert.deepEqual(me.json(), successBody(me, { id, scopes: [] }));
+    assertOk(me, { id, scopes: [] });
     assert.equal(me.raw.req.headers[HEADER.COOKIE], undefined);
     assert.deepEqual(readTitles(receiver), [ALERT_TITLE]);
     assert.equal(readBlock(receiver.requests[0].body, 'Error').userId, id);
@@ -206,34 +194,31 @@ describe('POST /api/v1/auth/login-dev', { skip: testRedis.skip || testDb.skip },
     const response = await postLoginDev(fastify, ADMIN_EMAIL);
     const { id, scopes, accessToken } = response.json().data;
     const me = await getMeByBearer(fastify, accessToken);
-    const [{ id: groupId }] = await readAppRows(fastify, SLUG_SQL, { slug: GROUP_SLUG.ADMIN });
+    const groupId = await readAdminId(fastify);
 
     assert.equal(response.statusCode, 200);
     assert.deepEqual(scopes, [SCOPE_ALL]);
     assert.deepEqual(await readAppRows(fastify, MEMBERSHIPS_SQL, { userId: id }), [{ slug: GROUP_SLUG.ADMIN }]);
-    assert.deepEqual(await readAppRows(fastify, AUDIT_SQL, { userId: id }), [{
-      actor_id: null,
+    assert.deepEqual(await readAudit(fastify, id), [describeAudit(response, null, {
       action: AUDIT_ACTION.USER_GROUP_GRANT,
-      entity_type: TABLE.USERS,
-      entity_id: id,
+      entityType: TABLE.USERS,
+      entityId: id,
       meta: { group: GROUP_SLUG.ADMIN, groupId },
-    }]);
-    assert.deepEqual(me.json(), successBody(me, { id, scopes: [SCOPE_ALL] }));
+    })]);
+    assertOk(me, { id, scopes: [SCOPE_ALL] });
   });
 
   test('a user that is there signs in to that account, and a blocked one is refused with 403 and no session', async (t) => {
     const fastify = await openApp(t);
-    const [knownId, blockedId] = [uuidv7(), uuidv7()];
-
-    await readAppRows(fastify, INSERT_USER_SQL, { id: knownId, email: 'known.route@example.com', status: USER_STATUS.ACTIVE });
-    await readAppRows(fastify, INSERT_USER_SQL, { id: blockedId, email: 'blocked.route@example.com', status: USER_STATUS.BLOCKED });
-
+    const [knownId, blockedId] = await mapSeries([
+      ['known.route@example.com', USER_STATUS.ACTIVE],
+      ['blocked.route@example.com', USER_STATUS.BLOCKED],
+    ], ([email, status]) => insertUser(fastify, { email, emailVerifiedAt: nowUtc(), status }));
     const known = await postLoginDev(fastify, 'Known.Route@Example.com');
     const blocked = await postLoginDev(fastify, 'blocked.route@example.com');
 
     assert.deepEqual([known.statusCode, known.json().data.id], [200, knownId]);
-    assert.equal(blocked.statusCode, 403);
-    assert.deepEqual(blocked.json(), errorBody(blocked, 'AUTHORIZATION_ERROR', 'Authorization error'));
+    assertForbidden(blocked);
     assert.equal(blocked.headers[HEADER.SET_COOKIE], undefined);
     assert.deepEqual(await readAppRows(fastify, SESSIONS_SQL, { userId: blockedId }), []);
   });

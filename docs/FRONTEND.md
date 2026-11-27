@@ -66,7 +66,7 @@ with `AUTHENTICATION_ERROR`. The flow cookie lives 10 minutes.
 |---|---|---|
 | `AUTHENTICATION_ERROR` | cancelled at the provider, too slow (over 10 minutes), the flow cookie is gone or replaced, the code of the provider was spent | "Sign-in did not finish, try again" |
 | `AUTHORIZATION_ERROR` | the account is blocked | "The account is blocked" |
-| `CONTACT_TAKEN` | the email the provider confirmed belongs to another account that has not confirmed it; nothing was created | "This email is used by another account: sign in to it and confirm the email, or contact support" |
+| `CONTACT_TAKEN` | the email the provider confirmed belongs to another account that has not confirmed it, or to an account where it is an admin address no provider has confirmed; nothing was created | "This email is used by another account: sign in to it and confirm the email, or contact support" |
 | `UPSTREAM_ERROR` | the provider failed or refused the backend | "The provider is not available, try another way or later" |
 | `SERVICE_UNAVAILABLE_ERROR` | the backend is overloaded | "Try again in a minute" |
 | `RATE_LIMIT_ERROR` | too many attempts | "Too many attempts, wait a little" |
@@ -105,8 +105,8 @@ the page can read say what is there, and hold no secret:
   shortly before `exp`", which the page cannot read.
 - **`AUTHENTICATION_ERROR` from any other route while `hasSession` is there**: one refresh (`refreshSession({ force: true })`
   below), then the request once more, whatever `hasAccess` says (a marker can outlive its token by a moment).
-- **`SESSION_REVOKED` from any route**: the session is over (signed out elsewhere, revoked, blocked). Delete both markers
-  and go to sign-in, without retries.
+- **`SESSION_REVOKED` from any route**: the session is over (signed out elsewhere, revoked, blocked, deleted). Delete both
+  markers and go to sign-in, without retries.
 
 ### Refresh
 
@@ -187,7 +187,30 @@ function isGranted(scopes, code) {
   `422` with `validation[]` on `slug`. `PATCH` with `scopes` replaces the whole list; an empty `PATCH` answers
   `409 NO_CHANGES`.
 - `PUT /api/v1/groups/:groupId/members/:userId` adds a member and answers `204` also for one who is a member already;
-  `DELETE` of a user who is no member answers `404`. The list of members also needs `users:read`.
+  `DELETE` of a user who is no member answers `404`. The list of members also needs `users:read` or `users:manage`.
+
+## Profile and users
+
+- `GET /api/v1/users/me` gives the profile: `id`, `email`, `emailVerifiedAt`, `firstName`, `lastName`, `locale`,
+  `timezone`, `status`, `createdAt`, `updatedAt`.
+- `PATCH /api/v1/users/me` changes `firstName` and `lastName`: a key that is missing keeps its value, `null` clears it,
+  an empty body answers `409 NO_CHANGES`. A name is one word of letters of any script, with a hyphen or an apostrophe
+  inside it, up to 40 characters; another answers `422` on that field with `operator: 'format'` and
+  `operatorValue: 'person-name'`, or with `operator: 'maxLength'` over 100 characters. The email is not changed here.
+- `DELETE /api/v1/users/me` deletes the account for good and ends every session. Its `204` clears the session cookies
+  and the markers, unless the request came with `Authorization: Bearer`; then go to sign-in. The last active member of
+  the admin group gets `409 GROUP_PROTECTED`: another member must stay. Whoever signs in again gets a new, empty account.
+- People are managed under `/api/v1/users`: `users:read` or `users:manage` to see them (`GET /` with the filters
+  `firstName`, `status`, `createdAtFrom`, `createdAtTo`, `sort`, `limit`, `offset`; `GET /:id`), `users:manage` to
+  change them: `PATCH /:id` (`email`, `firstName`, `lastName`), `POST /:id/block`, `POST /:id/unblock`,
+  `DELETE /:id`. A new email set here counts as confirmed: a sign-in through a provider that confirms the same address
+  signs into this person; one
+  another account holds answers `422` on `email`. A block ends every session of the person at once and keeps them
+  from signing in; a deletion is no ban.
+- One changes only people who hold no scope beyond one's own, and never oneself through these routes:
+  `403 AUTHORIZATION_ERROR`. A person whose email is in the admin list of the server, or whose confirmed sign-in
+  identity holds such an address while the account has none, counts as holding full access.
+  The last active member of the admin group cannot be blocked or deleted: `409 GROUP_PROTECTED`.
 
 ## Development
 

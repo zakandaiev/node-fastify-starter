@@ -1,5 +1,11 @@
 import { writeAudit } from '#core/audit/index.js';
 import { createSession, SESSION_TRANSACTION } from '#core/auth/session.js';
+import {
+  ACCOUNT_FIELDS,
+  assertActiveUser,
+  lockAccount,
+  lockUsers,
+} from '#core/auth/user.js';
 import { grantMembership } from '#core/authz/membership.js';
 import { getContext } from '#core/context/index.js';
 import { insertReturning, updateReturning } from '#core/db/index.js';
@@ -13,10 +19,8 @@ import { GROUP_SLUG } from '#enums/group.js';
 import { IDENTITY_LINK_REASON } from '#enums/identity-link-reason.js';
 import { TABLE } from '#enums/table.js';
 import { UNIQUE_INDEX } from '#enums/unique-index.js';
-import { USER_STATUS } from '#enums/user-status.js';
-import { camelToSnakeKey } from '#utils/case.js';
 import { nowUtc } from '#utils/date.js';
-import { assertUuid, uuidv7 } from '#utils/id.js';
+import { assertUuid, isUuid, uuidv7 } from '#utils/id.js';
 import { compact } from '#utils/object.js';
 import { toValidPersonName } from '#utils/person.js';
 import { toJsonTree } from '#utils/serialize.js';
@@ -28,12 +32,15 @@ import {
 } from '#utils/type.js';
 import { toValidEmail } from '#utils/validate.js';
 
-const USER_FIELDS = Object.freeze(['id', 'email', 'emailVerifiedAt', 'firstName', 'lastName', 'status']);
-const USER_COLUMNS = USER_FIELDS.map((field) => camelToSnakeKey(field)).join(', ');
 const IDENTITY_FIELDS = Object.freeze(['id']);
 
-const LOCK_USER_SQL = `SELECT ${USER_COLUMNS} FROM users WHERE id = :userId FOR UPDATE`;
-const LOCK_EMAIL_OWNER_SQL = `SELECT ${USER_COLUMNS} FROM users WHERE email = :email FOR UPDATE`;
+const EMAIL_OWNER_SQL = 'SELECT id FROM users WHERE email = :email';
+const LISTED_IDENTITY_SQL = `
+  SELECT id
+  FROM user_identities
+  WHERE user_id = :userId AND email IN (:emails) AND is_email_verified = TRUE
+  LIMIT 1
+`;
 const IDENTITY_SQL = 'SELECT id, user_id FROM user_identities WHERE provider = :provider AND provider_user_id = :subject';
 
 const ADMIN_GROUP_SQL = `
@@ -104,26 +111,20 @@ async function readRow(sql, binding) {
   return query.fetch();
 }
 
-function assertActive(user) {
-  if (user.status !== USER_STATUS.ACTIVE) {
-    throw new AppError(ERROR_CODE.AUTHORIZATION_ERROR);
+// Found without a lock and locked by its key: a lock taken through the entry of the email first would cross a deletion
+// or a change of the email that holds the row and goes for that entry. An owner that changed meanwhile is none.
+async function lockEmailOwner(email) {
+  const found = await readRow(EMAIL_OWNER_SQL, { email });
+
+  if (found === null) {
+    return null;
   }
 
-  return user;
-}
+  const [owner = null] = await lockUsers([found.id]);
 
-async function lockUser(userId) {
-  const user = await readRow(LOCK_USER_SQL, { userId });
-
-  if (user === null) {
-    throw new AppError(ERROR_CODE.AUTHENTICATION_ERROR);
-  }
-
-  return assertActive(user);
-}
-
-function lockEmailOwner(email) {
-  return readRow(LOCK_EMAIL_OWNER_SQL, { email });
+  return owner?.email === email
+    ? owner
+    : null;
 }
 
 // A plain read: no lock of a flow comes before the lock of the user.
@@ -147,7 +148,7 @@ function insertUser({
       : null,
     firstName,
     lastName,
-  }, { returning: USER_FIELDS });
+  }, { returning: ACCOUNT_FIELDS });
 }
 
 async function updateUser(user, patch) {
@@ -155,13 +156,18 @@ async function updateUser(user, patch) {
     return user;
   }
 
-  const [updated] = await updateReturning(TABLE.USERS, patch, { where: { id: user.id }, returning: USER_FIELDS });
+  const [updated] = await updateReturning(TABLE.USERS, patch, { where: { id: user.id }, returning: ACCOUNT_FIELDS });
 
   return updated;
 }
 
 function toIdentityFields(profile, now) {
-  return { email: profile.email, profile: profile.claimsJson, lastLoginAt: now };
+  return {
+    email: profile.email,
+    isEmailVerified: profile.isEmailVerified,
+    profile: profile.claimsJson,
+    lastLoginAt: now,
+  };
 }
 
 function insertIdentity(userId, { providerId, profile, now }) {
@@ -237,16 +243,49 @@ async function fillProfile(user, flow) {
     : filled;
 }
 
-function isListedAdmin(user) {
-  return user.email !== null
-    && user.emailVerifiedAt !== null
-    && getContext().config.auth.adminEmails.includes(user.email);
+function isListedEmail(email) {
+  return email !== null && getContext().config.auth.adminEmails.includes(email);
+}
+
+async function hasConfirmingIdentity(userId, emails) {
+  return (await readRow(LISTED_IDENTITY_SQL, { userId, emails })) !== null;
+}
+
+// A provider vouches for the address, not a manager: one may set an address before it is listed, and the list would then
+// hand full access to their own account. Dev mode trusts its caller with the address.
+async function isListedAdmin(user, { isTrusted }) {
+  if (user.emailVerifiedAt === null || !isListedEmail(user.email)) {
+    return false;
+  }
+
+  return isTrusted || hasConfirmingIdentity(user.id, [user.email]);
+}
+
+// Whom a sign-in makes an admin through APP_ADMIN_EMAILS holds full access already: an address of the list on the row,
+// confirmed or not, as the provider of its owner confirms it; or, while the row has none, a confirmed one of their
+// identities, whose address the sign-in copies onto the row.
+export async function isAdminCandidate(user) {
+  if (!isObject(user) || !isUuid(user.id) || !(user.email === null || isNonEmptyString(user.email))) {
+    throw new TypeError('isAdminCandidate(user) requires the row of a user { id, email }');
+  }
+
+  if (isListedEmail(user.email)) {
+    return true;
+  }
+
+  const { adminEmails } = getContext().config.auth;
+
+  if (user.email !== null || !adminEmails.length) {
+    return false;
+  }
+
+  return hasConfirmingIdentity(user.id, adminEmails);
 }
 
 // Granted by nobody: writeAudit() takes the actor from request.user, which the routes of signing in never set. The
 // row of the user is locked by then.
-async function grantListedAdmin(user, request) {
-  if (!isListedAdmin(user)) {
+async function grantListedAdmin(user, request, { isTrusted = false } = {}) {
+  if (!(await isListedAdmin(user, { isTrusted }))) {
     return false;
   }
 
@@ -266,7 +305,7 @@ async function grantListedAdmin(user, request) {
 }
 
 async function signInByIdentity(identity, flow) {
-  const user = await lockUser(identity.userId);
+  const user = await lockAccount(identity.userId);
 
   await touchIdentity(identity, user.id, flow);
 
@@ -280,7 +319,12 @@ async function mergeByEmail(owner, flow) {
     throw new AppError(ERROR_CODE.CONTACT_TAKEN);
   }
 
-  assertActive(owner);
+  // The merge would give the row the identity that the grant of the admin group waits for.
+  if (isListedEmail(owner.email) && !(await hasConfirmingIdentity(owner.id, [owner.email]))) {
+    throw new AppError(ERROR_CODE.CONTACT_TAKEN);
+  }
+
+  assertActiveUser(owner);
   await insertIdentity(owner.id, flow);
   await recordLink(owner.id, flow, IDENTITY_LINK_REASON.EMAIL);
 
@@ -379,7 +423,7 @@ export async function linkProvider({
       now: nowUtc(),
       request,
     };
-    const user = await lockUser(userId);
+    const user = await lockAccount(userId);
 
     await linkIdentity(user, flow);
 
@@ -413,9 +457,9 @@ export async function signInWithEmail({ email, client, request } = {}) {
         firstName: null,
         lastName: null,
       }, nowUtc())
-      : assertActive(owner);
+      : assertActiveUser(owner);
 
-    await grantListedAdmin(user, request);
+    await grantListedAdmin(user, request, { isTrusted: true });
 
     return createSession({ userId: user.id, client, isDev: true });
   });

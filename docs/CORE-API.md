@@ -76,6 +76,7 @@
 
 ## #core/auth/account.js
 
+- `async isAdminCandidate(user)`
 - `async linkProvider({ userId, providerId, profile, request } = {})`
 - `async signInWithEmail({ email, client, request } = {})`
 - `async signInWithProvider({ providerId, profile, client, request } = {})`
@@ -163,9 +164,19 @@
 - `verifyAccessToken(token)`
 - `verifyRefreshToken(token)`
 
+## #core/auth/user.js
+
+- `ACCOUNT_FIELDS`
+- `assertActiveUser(user)`
+- `assertOtherUser(actorId, userId, signature = 'assertOtherUser(actorId, userId)')`
+- `async lockAccount(userId)`
+- `async lockActorAndUser({ actorId, userId } = {})`
+- `async lockUsers(userIds)`
+
 ## #core/authz/match.js
 
 - `assertScopeRequirement(requirement, signature = 'assertScopeRequirement(requirement)')`
+- `assertWantedScopes(wanted, signature = 'assertWantedScopes(wanted)')`
 - `isEveryScopeGranted(scopes, wanted)`
 - `isGrantableScope(scope)`
 - `isRequirementMet(scopes, requirement)`
@@ -179,6 +190,7 @@
 
 ## #core/authz/scope.js
 
+- `async assertActorHolds(actor, { requirement, scopes } = {})`
 - `async readUserScopes(userId)`
 
 ## #core/cache/index.js

@@ -23,6 +23,7 @@ import {
   removeMigrationFiles,
   REPOSITORY_MIGRATIONS,
   REPOSITORY_SEEDS,
+  REPOSITORY_TABLES,
   runMigrateProcess,
   writeMigrationFiles,
 } from '#root/tests/helper/migration.js';
@@ -1107,7 +1108,7 @@ describe('migrate: as a process', { skip: testDb.skip }, () => {
       lines: [
         target('Verify'),
         ...describeFiles('Verify', REPOSITORY_MIGRATIONS, 'up'),
-        `🎉 Verify succeeded: "${testDb.name}" matches its migrations (${migrations} tables)`,
+        `🎉 Verify succeeded: "${testDb.name}" matches its migrations (${REPOSITORY_TABLES.length} tables)`,
       ],
       stderr: '',
     });
@@ -1191,7 +1192,7 @@ describe('migrate: as a process', { skip: testDb.skip }, () => {
       ],
       stderr: '',
     });
-    assert.deepEqual(await listTableNames(testDb), ['_migrations', 'audit_logs', 'group_scopes', 'groups', 'sessions', 'user_groups', 'user_identities', 'users']);
+    assert.deepEqual(await listTableNames(testDb), ['_migrations', ...REPOSITORY_TABLES].toSorted());
     assert.deepEqual(await testDb.readRows('SELECT COUNT(*) AS total FROM groups'), [{ total: 0 }]);
   });
 

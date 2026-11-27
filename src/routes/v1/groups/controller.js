@@ -2,7 +2,6 @@ import { createSchema } from '#core/schema/create-schema.js';
 import { ERROR_CODE } from '#enums/error-code.js';
 import { HTTP_STATUS } from '#enums/http-status.js';
 import { SCOPE_CATALOG } from '#enums/scope.js';
-import { MEMBER_FIELDS } from '#modules/groups/groups.repository.js';
 import {
   addMember,
   createGroup,
@@ -13,6 +12,7 @@ import {
   removeMember,
   updateGroup,
 } from '#modules/groups/groups.service.js';
+import { USER_LIST_FIELDS } from '#modules/users/users.repository.js';
 import * as paginationSchema from '#schemas/common/pagination.js';
 import * as groupSchema from '#schemas/entity/group.js';
 import * as scopeSchema from '#schemas/entity/scope.js';
@@ -122,7 +122,7 @@ export const getMembersSchema = createSchema(userSchema, paginationSchema, membe
   .meta({ tags: TAGS, summary: 'List the members of a group' })
   .params(['groupId'])
   .query(['firstName', 'status', 'createdAt', 'sort', 'limit', 'offset'])
-  .response(HTTP_STATUS.OK, { data: [...MEMBER_FIELDS], format: 'array' })
+  .response(HTTP_STATUS.OK, { data: [...USER_LIST_FIELDS], format: 'array' })
   .defaultResponses()
   .build();
 

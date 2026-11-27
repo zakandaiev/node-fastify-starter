@@ -30,6 +30,27 @@ const DATABASE_ENV_KEYS = Object.freeze([
 const LOOPBACK = '127.0.0.1';
 export const ACCOUNT_HOST = '%';
 
+// What a statement on the database of createDownDb() fails with: the proof that a call has reached the database.
+export const REFUSED_CONNECTION_CODE = 'ECONNREFUSED';
+
+// Few on purpose: the files of the tests share the connections of one server.
+export const SMALL_POOL = Object.freeze({ connectionLimit: 2 });
+
+// The warning of withTransaction({ retry: true }) in src/core/db/transaction.js before it runs the transaction once
+// more: a test that expects no crossing of locks finds no such line.
+export const RETRY_MESSAGE = 'Database transaction is run again after a lock conflict';
+
+// A statement the server has listed for this long waits for a row of another transaction. A test would also pass with
+// one that is only slow: what it lets go on then is the same.
+const BLOCKED_MS = 100;
+
+const SESSIONS_SQL = `
+  SELECT id
+  FROM information_schema.processlist
+  WHERE db = :database AND info LIKE :pattern AND (:state IS NULL OR state = :state)
+    AND (:blockedMs IS NULL OR time_ms > :blockedMs) AND id <> CONNECTION_ID()
+`;
+
 const GATE_PREFIX = 'nfs-test-gate:';
 const GATE_WAIT_SECONDS = 10;
 const LOCK_WAIT_STATE = 'User lock';
@@ -170,23 +191,49 @@ export async function countSessionsLeft(pool, ids, checks) {
   }
 }
 
-// Among the sessions of one database, the one of the pool unless another is named: test files run side by side
-// on one server. With a state, the session must be in it too.
-function findSession(pool, { mark, database = pool.config.db.database, state = null }, what) {
+// The ids of the sessions of other connections that run a statement with "mark" in its text, once the server lists
+// "count" of them. Among the sessions of one database, the one of the pool unless another is named: test files run side
+// by side on one server. With a state, a session must be in it too; with blockedMs, listed for longer than that.
+function findSessions(pool, {
+  mark,
+  count = 1,
+  database = pool.config.db.database,
+  state = null,
+  blockedMs = null,
+}, what) {
   return waitFor(async () => {
-    const [session] = await pool.readRows(
-      'SELECT id FROM information_schema.processlist WHERE db = :database AND info LIKE :pattern AND (:state IS NULL OR state = :state) AND id <> CONNECTION_ID()',
-      { database, pattern: `%${mark}%`, state },
-    );
+    const sessions = await pool.readRows(SESSIONS_SQL, {
+      database,
+      pattern: `%${mark}%`,
+      state,
+      blockedMs,
+    });
 
-    return session?.id;
+    return sessions.length >= count && sessions.map((session) => session.id);
   }, what);
+}
+
+async function findSession(pool, criteria, what) {
+  const [id] = await findSessions(pool, criteria, what);
+
+  return id;
 }
 
 // The session of another connection that is running a statement with "mark" in its text, once the server
 // lists it.
 export function findSessionId(pool, mark, database) {
   return findSession(pool, { mark, database }, `a session that runs "${mark}"`);
+}
+
+// The ids of the sessions, once "count" of them wait in a statement with "mark" in its text: for a test that lets a
+// transaction go only after the others have reached the lock it holds.
+export function waitForBlockedSessions(pool, mark, count, { blockedMs = BLOCKED_MS, database } = {}) {
+  return findSessions(pool, {
+    mark,
+    count,
+    database,
+    blockedMs,
+  }, `${count} sessions to wait in a statement with "${mark}"`);
 }
 
 // KILL ends the session; with "isQueryOnly" it cuts only the statement the session is running.

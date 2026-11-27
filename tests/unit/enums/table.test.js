@@ -28,11 +28,11 @@ describe('TABLE', () => {
 });
 
 describe('TABLE_DEPENDENTS', () => {
-  test('names for users and for groups, and for no other table, the tables whose rows a delete of theirs changes through a foreign key', () => {
+  test('names for users and for groups, and for no other table, the tables whose rows a delete of theirs changes through a foreign key: audit_logs is not one, its record keeps the actor of a deleted user', () => {
     const sorted = Object.fromEntries(Object.entries(TABLE_DEPENDENTS).map(([table, dependents]) => [table, dependents.toSorted()]));
 
     assert.deepEqual(sorted, {
-      [TABLE.USERS]: [TABLE.AUDIT_LOGS, TABLE.SESSIONS, TABLE.USER_GROUPS, TABLE.USER_IDENTITIES],
+      [TABLE.USERS]: [TABLE.SESSIONS, TABLE.USER_GROUPS, TABLE.USER_IDENTITIES],
       [TABLE.GROUPS]: [TABLE.GROUP_SCOPES, TABLE.USER_GROUPS],
     });
   });

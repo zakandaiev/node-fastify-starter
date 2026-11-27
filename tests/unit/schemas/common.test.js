@@ -4,6 +4,7 @@ import { createEnvelope } from '#core/response/index.js';
 import { createSchema } from '#core/schema/create-schema.js';
 import { assertRouteContract } from '#core/schema/route.js';
 import { ERROR_CODE } from '#enums/error-code.js';
+import { SCHEMA_FORMAT } from '#enums/schema-format.js';
 import { buildTestApp } from '#root/tests/helper/app.js';
 import { isDeepFrozen } from '#root/tests/helper/object.js';
 import { errorEnvelope, listEnvelope, successEnvelope } from '#schemas/common/envelope.js';
@@ -15,6 +16,7 @@ import {
   json,
   nullable,
   omitFields,
+  personName,
   pickFields,
   text,
   uuid,
@@ -26,6 +28,7 @@ import * as paginationSchema from '#schemas/common/pagination.js';
 import { PRIMITIVE_TYPES, primitiveOrList, validation } from '#schemas/common/validation.js';
 import { UUID_REGEXP, uuidv7 } from '#utils/id.js';
 import { freezeDeep, omit } from '#utils/object.js';
+import { PERSON_NAME_MAX_LENGTH } from '#utils/person.js';
 import { isArray, isNonEmptyString, isObject } from '#utils/type.js';
 import { EMAIL_MAX_LENGTH } from '#utils/validate.js';
 import fastJson from 'fast-json-stringify';
@@ -41,6 +44,10 @@ const LONGEST_UTC_DATE_TIME = '2026-11-20T10:00:00.123456789+00:00';
 const EMAIL_DOMAIN = '@example.com';
 
 const STATUSES = Object.freeze(['active', 'blocked']);
+
+const NAME_COLUMN_LENGTH = 100;
+const PERSON_NAMES = Object.freeze(["Мар'яна", 'Анна-Марія', 'Müller', "O'Connor", 'Ανδρέας', '山田', 'สมชาย', '지민']);
+const EMOJI = String.fromCodePoint(0x1F600);
 
 const PERSON_FIELDS = freezeDeep({
   id: uuid('Person id'),
@@ -384,6 +391,57 @@ describe('text', () => {
     assert.deepEqual(readFailures(empty), [['name', 'minLength'], ['nickname', 'minLength']]);
     assert.deepEqual(readLimits(tooLong), [['name', 'maxLength', SCHEMA_LIMITS.textMaxLength], ['nickname', 'maxLength', 3]]);
     assert.deepEqual(readFailures(cleared), [['name', 'type']]);
+  });
+});
+
+describe('personName', () => {
+  test('describes a text of 1 to SCHEMA_LIMITS.textMaxLength characters in the person-name format when no length is given', () => {
+    assert.deepEqual(personName(), {
+      type: 'string',
+      minLength: 1,
+      maxLength: SCHEMA_LIMITS.textMaxLength,
+      format: SCHEMA_FORMAT.PERSON_NAME,
+    });
+  });
+
+  test('takes the maxLength of a column, which may be longer than a name', () => {
+    assert.deepEqual(personName(undefined, { maxLength: NAME_COLUMN_LENGTH }), { ...personName(), maxLength: NAME_COLUMN_LENGTH });
+  });
+
+  test('refuses a maxLength that is not a whole positive number', () => {
+    [0, -1, 2.5, Infinity, '100', null].forEach((maxLength) => {
+      assert.throws(() => personName('Name', { maxLength }), { name: 'TypeError', message: /maxLength/ }, String(maxLength));
+    });
+  });
+
+  test('carries a description only when one is given', () => {
+    assert.equal(Object.hasOwn(personName(), 'description'), false);
+    assert.deepEqual(personName('First name'), { ...personName(), description: 'First name' });
+  });
+
+  test('takes in a request one word of letters of any script, checked as it is stored, and keeps it as it came', async (t) => {
+    const accepted = [...PERSON_NAMES, '  Anna  ', '𝕍𝕚𝕣𝕒', 'a'.repeat(PERSON_NAME_MAX_LENGTH)];
+    const responses = await postFields(t, { name: personName('Name') }, accepted.map((name) => ({ name })));
+
+    assert.deepEqual(responses.map((response) => [response.statusCode, response.json()]), accepted.map((name) => [200, { name }]));
+  });
+
+  test('refuses in a request a title with a dot, a word with a digit, an emoji, two words and a name over PERSON_NAME_MAX_LENGTH characters by the format', async (t) => {
+    const refused = ['Dr. X', 'Іван2', EMOJI, 'Anna Maria', 'a'.repeat(PERSON_NAME_MAX_LENGTH + 1), '-Anna'];
+    const responses = await postFields(t, { name: personName('Name') }, refused.map((name) => ({ name })));
+
+    assert.deepEqual(responses.map((response) => readFailures(response)), refused.map(() => [['name', 'format']]));
+  });
+
+  test('answers a value over its maxLength with the error of the length alone, and lets null through a nullable one', async (t) => {
+    const properties = { name: personName('Name'), lastName: nullable(personName('Last name', { maxLength: NAME_COLUMN_LENGTH })) };
+    const [tooLong, cleared] = await postFields(t, properties, [
+      { name: 'a'.repeat(SCHEMA_LIMITS.textMaxLength + 1), lastName: 'a'.repeat(NAME_COLUMN_LENGTH + 1) },
+      { name: 'Anna', lastName: null },
+    ]);
+
+    assert.deepEqual(readLimits(tooLong), [['name', 'maxLength', SCHEMA_LIMITS.textMaxLength], ['lastName', 'maxLength', NAME_COLUMN_LENGTH]]);
+    assert.deepEqual([cleared.statusCode, cleared.json()], [200, { name: 'Anna', lastName: null }]);
   });
 });
 

@@ -1,6 +1,8 @@
 import { buildValidator, useSchemaKeywords } from '#core/schema/validator.js';
 import { MEDIA_TYPE } from '#enums/media-type.js';
+import { SCHEMA_FORMAT } from '#enums/schema-format.js';
 import { buildTestApp } from '#root/tests/helper/app.js';
+import { PERSON_NAME_MAX_LENGTH } from '#utils/person.js';
 import Ajv from 'ajv';
 import addFormats from 'ajv-formats';
 import assert from 'node:assert/strict';
@@ -86,6 +88,35 @@ const NOT_UTC_DATE_TIMES = Object.freeze([
   'yesterday',
   '',
 ]);
+
+const PERSON_NAMES = Object.freeze(["Мар'яна", 'Анна-Марія', 'Müller', "O'Connor", 'Ανδρέας', '山田', 'สมชาย', '지민']);
+
+// Names once trimmed and in plain letters, the form a name is stored in.
+const PERSON_NAMES_ONCE_NORMALIZED = Object.freeze(['  Anna  ', '𝕍𝕚𝕣𝕒', 'Ｖｉｒａ']);
+
+const NOT_PERSON_NAMES = Object.freeze([
+  '',
+  '   ',
+  'Anna Maria',
+  'Dr. X',
+  'Іван2',
+  String.fromCodePoint(0x1F600),
+  `Anna${String.fromCodePoint(0x1F600)}`,
+  'a'.repeat(PERSON_NAME_MAX_LENGTH + 1),
+  '-Anna',
+  'Anna--Maria',
+  '<b>x</b>',
+  'anna@example.com',
+]);
+
+// A JSON body goes to the validator without coercion, a form and a query to the one with it.
+const PERSON_NAME_PARTS = Object.freeze([
+  Object.freeze({ httpPart: 'body' }),
+  Object.freeze({ httpPart: 'body', contentType: MEDIA_TYPE.FORM_URLENCODED }),
+  Object.freeze({ httpPart: 'querystring' }),
+]);
+
+const PERSON_NAME_FIELD = Object.freeze({ type: 'string', format: SCHEMA_FORMAT.PERSON_NAME });
 
 const compileValidator = buildValidator();
 
@@ -265,6 +296,24 @@ describe('buildValidator', () => {
     NOT_UTC_DATE_TIMES.forEach((value) => assert.equal(validate(value), false, value));
   });
 
+  test('takes a person name of letters of any script and refuses what is no name, in a JSON body, a form and a query alike', () => {
+    PERSON_NAME_PARTS.forEach((input) => {
+      const validate = compileValidator({ ...input, schema: PERSON_NAME_FIELD });
+      const label = JSON.stringify(input);
+
+      PERSON_NAMES.forEach((value) => assert.equal(validate(value), true, `${label}: ${value}`));
+      NOT_PERSON_NAMES.forEach((value) => assert.equal(validate(value), false, `${label}: ${value}`));
+    });
+  });
+
+  test('checks a person name as it is stored, trimmed and in plain letters, and leaves the value as it came', () => {
+    PERSON_NAME_PARTS.forEach((input) => {
+      PERSON_NAMES_ONCE_NORMALIZED.forEach((value) => {
+        assert.deepEqual(validateField(input, PERSON_NAME_FIELD, value), { isValid: true, value, keywords: [] }, `${JSON.stringify(input)}: ${value}`);
+      });
+    });
+  });
+
   test('takes only a boolean for the json marker', () => {
     ['body', 'querystring'].forEach((httpPart) => {
       assert.doesNotThrow(() => compileValidator({ schema: { type: 'object', json: false }, httpPart }), httpPart);
@@ -348,6 +397,15 @@ describe('useSchemaKeywords', () => {
 
     assert.equal(addFormats(new Ajv()).validate(schema, 'олена@приклад.укр'), false);
     assert.equal(useSchemaKeywords(addFormats(new Ajv())).validate(schema, 'олена@приклад.укр'), true);
+  });
+
+  test('gives an instance of AJV the person-name format, which ajv-formats does not know', () => {
+    assert.throws(() => addFormats(new Ajv()).compile(PERSON_NAME_FIELD), new RegExp(`unknown format "${SCHEMA_FORMAT.PERSON_NAME}"`));
+
+    const validate = useSchemaKeywords(addFormats(new Ajv())).compile(PERSON_NAME_FIELD);
+
+    assert.deepEqual(PERSON_NAMES.map((value) => validate(value)), PERSON_NAMES.map(() => true));
+    assert.deepEqual(NOT_PERSON_NAMES.map((value) => validate(value)), NOT_PERSON_NAMES.map(() => false));
   });
 
   test('requires an instance of AJV', () => {
@@ -611,5 +669,39 @@ describe('validator in the app', () => {
 
     assert.equal(response.statusCode, 422);
     assert.deepEqual(response.json().validation.map(({ column, operator }) => [column, operator]), [['item.code', 'pattern']]);
+  });
+
+  test('answers 422 with a format entry to what is no person name in a JSON body, a form and a query, and passes a name of any script as it came', async (t) => {
+    const fastify = await createApp(t);
+    const part = { type: 'object', properties: { firstName: { ...PERSON_NAME_FIELD, maxLength: PERSON_NAME_MAX_LENGTH } } };
+    const body = { content: { [MEDIA_TYPE.JSON]: { schema: part }, [MEDIA_TYPE.FORM_URLENCODED]: { schema: part } } };
+
+    useFormParser(fastify);
+    fastify.post('/people', { schema: { body } }, echoBody);
+    fastify.get('/people', { schema: { querystring: part } }, (request) => request.query);
+
+    function send(firstName) {
+      return Promise.all([
+        fastify.inject({ method: 'POST', url: '/people', payload: { firstName } }),
+        fastify.inject({
+          method: 'POST',
+          url: '/people',
+          payload: new URLSearchParams({ firstName }).toString(),
+          headers: { 'content-type': MEDIA_TYPE.FORM_URLENCODED },
+        }),
+        fastify.inject({ url: '/people', query: { firstName } }),
+      ]);
+    }
+
+    const [taken, refused] = await Promise.all([send('Ольга'), send('Dr. X')]);
+    const entry = {
+      column: 'firstName',
+      columnValue: 'Dr. X',
+      operator: 'format',
+      operatorValue: SCHEMA_FORMAT.PERSON_NAME,
+    };
+
+    assert.deepEqual(taken.map((response) => [response.statusCode, response.json()]), taken.map(() => [200, { firstName: 'Ольга' }]));
+    assert.deepEqual(refused.map((response) => [response.statusCode, response.json().validation]), refused.map(() => [422, [entry]]));
   });
 });

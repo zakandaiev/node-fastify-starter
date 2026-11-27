@@ -1,7 +1,5 @@
-import { MODE } from '#config/env.js';
 import { assertRouteContract } from '#core/schema/route.js';
 import { GROUP_SLUG } from '#enums/group.js';
-import { HEADER } from '#enums/header.js';
 import { MEDIA_TYPE } from '#enums/media-type.js';
 import { SCOPE_CATALOG } from '#enums/scope.js';
 import {
@@ -10,20 +8,32 @@ import {
   getScopesSchema,
 } from '#root/src/routes/v1/groups/controller.js';
 import useGroupRoutes from '#root/src/routes/v1/groups/index.js';
-import { describeAnswer, readRequestId, successBody } from '#root/tests/helper/app.js';
+import { describeAnswer, successBody } from '#root/tests/helper/app.js';
 import {
+  assertHeadsRefused,
   assertRefused,
-  BEARER,
+  bothWays,
   buildOpenApp,
-  describeHeaders,
   describeRefusal,
+  expectStatuses,
   FORBIDDEN,
+  injectAs,
   issueFor,
+  listBadBodies,
+  listDeclaredRoutes,
+  listHeadTwins,
+  listWrongRequests,
   NO_STORE,
+  OUTAGE,
+  probeGuard,
+  readDocumentedOperations,
+  readFailureLines,
+  REFUSED_CONNECTION,
   UNAUTHENTICATED,
   UNAVAILABLE,
+  withHeaders,
 } from '#root/tests/helper/guard.js';
-import { createLogSink, findLogLines, LOG_LEVEL } from '#root/tests/helper/log.js';
+import { createLogSink } from '#root/tests/helper/log.js';
 import { buildDownApp } from '#root/tests/helper/session.js';
 import * as groupSchema from '#schemas/entity/group.js';
 import * as userSchema from '#schemas/entity/user.js';
@@ -35,7 +45,10 @@ import { describe, test } from 'node:test';
 const PUBLIC = Object.freeze({ auth: false });
 const READ = freezeDeep({ auth: true, scopes: ['groups:read', 'groups:manage'] });
 const MANAGE = freezeDeep({ auth: true, scopes: ['groups:manage'] });
-const READ_MEMBERS = freezeDeep({ auth: true, scopes: [['groups:read', 'users:read'], ['groups:manage', 'users:read']] });
+const READ_MEMBERS = freezeDeep({
+  auth: true,
+  scopes: [['groups:read', 'users:read'], ['groups:read', 'users:manage'], ['groups:manage', 'users:read'], ['groups:manage', 'users:manage']],
+});
 
 const GROUPS_URL = '/api/v1/groups';
 const SCOPES_URL = `${GROUPS_URL}/scopes`;
@@ -45,18 +58,13 @@ const MEMBER_URL = `${MEMBERS_URL}/${uuidv7()}`;
 const BAD_ID = 'not-a-uuid';
 
 const MOVED_PREFIX = '/api/v2/groups';
-const DOCS_URL = '/docs/json';
 
-const BROKEN_JSON = '{"name":';
+const BODY_FIELD = 'name';
 
-const OUTAGE = Object.freeze({ statusCode: 500, code: 'SERVER_ERROR', message: 'Server error' });
 const PROTECTED = Object.freeze({ statusCode: 409, code: 'GROUP_PROTECTED', message: 'Group is protected' });
 const UNCHANGED = Object.freeze({ statusCode: 409, code: 'NO_CHANGES', message: 'No changes' });
 
 const PROTECTED_EXAMPLE = Object.freeze({ status: 'error', code: PROTECTED.code, message: PROTECTED.message });
-
-const REQUEST_FAILED_MESSAGE = 'Request failed';
-const REFUSED_CONNECTION = freezeDeep([LOG_LEVEL.ERROR, { type: 'DbError', code: 'ECONNREFUSED', isConnectFailure: true }]);
 
 // A request each route takes from a caller with the scopes beside it: past the guard, it goes to the database.
 const REQUESTS = freezeDeep([
@@ -77,9 +85,7 @@ const SLASH_REQUESTS = freezeDeep([
   ['POST / with a slash', { method: 'POST', url: `${GROUPS_URL}/`, payload: { slug: 'editors', name: 'Editors' } }],
 ]);
 
-const HEAD_REQUESTS = freezeDeep([...REQUESTS, ...SLASH_REQUESTS]
-  .filter(([, request]) => request.method === 'GET')
-  .map(([name, request]) => [`HEAD ${name.slice('GET '.length)}`, { ...request, method: 'HEAD' }]));
+const HEAD_REQUESTS = freezeDeep(listHeadTwins([...REQUESTS, ...SLASH_REQUESTS]));
 
 // What the validation of a route refuses, and its answer: a request the guard lets through ends there, short of the
 // database. The catalog has nothing to refuse, and is answered.
@@ -114,75 +120,9 @@ const RESERVED_POSTS = freezeDeep(Object.values(GROUP_SLUG).flatMap((slug) => [
 
 const MEMBER_FIELDS = Object.freeze(['id', 'email', 'firstName', 'lastName', 'status', 'createdAt']);
 
-function withHeaders(request, headers) {
-  return { ...request, headers: { ...request.headers, ...headers } };
-}
-
-function listWrongRequests() {
-  return Object.entries(GUARD_PROBES)
-    .filter(([, [request, statusCode]]) => request.method !== 'HEAD' && statusCode !== 200)
-    .map(([name, [request]]) => [`${name} that its validation refuses`, request]);
-}
-
-function listBadBodies(fastify, entries) {
-  const tooLarge = { name: 'x'.repeat(fastify.config.app.bodyLimit) };
-
-  return entries.flatMap(([name, request]) => [
-    [`${name} with a body over bodyLimit`, { ...request, payload: tooLarge }],
-    [`${name} with invalid JSON`, withHeaders({ ...request, payload: BROKEN_JSON }, { [HEADER.CONTENT_TYPE]: MEDIA_TYPE.JSON })],
-  ]);
-}
-
-function injectAs(fastify, { headers }, entries) {
-  return Promise.all(entries.map(([, request]) => fastify.inject(withHeaders(request, headers))));
-}
-
-async function probeGuard(fastify, scopes, names) {
-  const { headers } = issueFor(fastify, scopes);
-  const responses = await Promise.all(names.map((name) => fastify.inject(withHeaders(GUARD_PROBES[name][0], headers))));
-
-  return responses.map((response, index) => [names[index], response.statusCode]);
-}
-
-function expectStatuses(names, passing) {
-  return names.map((name) => [name, passing.includes(name)
-    ? GUARD_PROBES[name][1]
-    : FORBIDDEN.statusCode]);
-}
-
-// The lines come in the order the requests failed: each answer finds its own by the id of its request.
-function readFailures(sink, responses) {
-  const lines = findLogLines(sink, REQUEST_FAILED_MESSAGE);
-
-  return responses.map((response) => lines
-    .filter((line) => line.requestId === readRequestId(response))
-    .map((line) => [line.level, pick(line.err, ['type', 'code', 'isConnectFailure'])]));
-}
-
-async function listDeclaredRoutes(fastify) {
-  const routes = [];
-
-  // A copy: Fastify writes the second spelling of the root of a prefix into the same options.
-  fastify.addHook('onRoute', (routeOptions) => routes.push({ ...routeOptions }));
-  await fastify.register(useGroupRoutes, { prefix: MOVED_PREFIX });
-
-  return routes;
-}
-
-// OpenAPI names a term of the scopes once for each way the token rides in.
-function bothWays(term) {
-  return [{ cookieAuth: term }, { bearerAuth: term }];
-}
-
-function listOperations(paths) {
-  return Object.entries(paths)
-    .filter(([path]) => path.startsWith(GROUPS_URL))
-    .flatMap(([path, operations]) => Object.entries(operations).map(([method, operation]) => [`${method.toUpperCase()} ${path}`, operation]));
-}
-
 describe('routes of groups: who may call them', () => {
-  test('each has the method, the path and the scopes of its contract, and a GET a HEAD twin of its scopes: a read takes groups:read or groups:manage, a change groups:manage, the members users:read beside either', async (t) => {
-    const routes = await listDeclaredRoutes(await buildDownApp(t));
+  test('each has the method, the path and the scopes of its contract, and a GET a HEAD twin of its scopes: a read takes groups:read or groups:manage, a change groups:manage, the members users:read or users:manage beside either', async (t) => {
+    const routes = await listDeclaredRoutes(await buildDownApp(t), useGroupRoutes, MOVED_PREFIX);
 
     assert.deepEqual(routes.filter(({ method }) => method !== 'HEAD').map(({ method, url, security }) => [method, url, security]), [
       ['GET', MOVED_PREFIX, READ],
@@ -209,23 +149,20 @@ describe('routes of groups: who may call them', () => {
 
   test('a guest gets 401 that names the Bearer scheme from every one, before a body over bodyLimit, invalid JSON, a wrong id or a wrong query is looked at', async (t) => {
     const fastify = await buildDownApp(t);
-    const requests = [...REQUESTS, ...SLASH_REQUESTS, ...listBadBodies(fastify, REQUESTS), ...listWrongRequests()];
+    const requests = [...REQUESTS, ...SLASH_REQUESTS, ...listBadBodies(fastify, REQUESTS, BODY_FIELD), ...listWrongRequests(GUARD_PROBES)];
     const responses = await Promise.all(requests.map(([, request]) => fastify.inject(request)));
     const heads = await Promise.all(HEAD_REQUESTS.map(([, request]) => fastify.inject(request)));
 
     assertRefused(responses, UNAUTHENTICATED, requests.map(([name]) => name));
-    assert.deepEqual(
-      heads.map((response, index) => [HEAD_REQUESTS[index][0], describeHeaders(response)]),
-      HEAD_REQUESTS.map(([name]) => [name, [UNAUTHENTICATED.statusCode, NO_STORE, BEARER]]),
-    );
+    assertHeadsRefused(heads, UNAUTHENTICATED, HEAD_REQUESTS.map(([name]) => name));
   });
 
   test('a user whose token lacks the scopes of a route gets 403 that names no scheme and may not be stored, before a body over bodyLimit, invalid JSON, a wrong id or a wrong query is looked at', async (t) => {
     const fastify = await buildOpenApp(t);
     const beyondReader = [...CHANGING, 'POST / with a slash', 'GET /:groupId/members'];
     const changes = [...REQUESTS, ...SLASH_REQUESTS].filter(([name]) => beyondReader.includes(name));
-    const requests = [...REQUESTS, ...SLASH_REQUESTS, ...listBadBodies(fastify, REQUESTS), ...listWrongRequests()];
-    const ofReader = [...changes, ...listBadBodies(fastify, changes)];
+    const requests = [...REQUESTS, ...SLASH_REQUESTS, ...listBadBodies(fastify, REQUESTS, BODY_FIELD), ...listWrongRequests(GUARD_PROBES)];
+    const ofReader = [...changes, ...listBadBodies(fastify, changes, BODY_FIELD)];
     const [ofNobody, ofUsersOnly, ofGroupReader] = await Promise.all([
       injectAs(fastify, issueFor(fastify, []), requests),
       injectAs(fastify, issueFor(fastify, ['users:*']), requests),
@@ -236,10 +173,7 @@ describe('routes of groups: who may call them', () => {
     assertRefused(ofNobody, FORBIDDEN, requests.map(([name]) => name));
     assertRefused(ofUsersOnly, FORBIDDEN, requests.map(([name]) => name));
     assertRefused(ofGroupReader, FORBIDDEN, ofReader.map(([name]) => name));
-    assert.deepEqual(
-      heads.map((response, index) => [HEAD_REQUESTS[index][0], describeHeaders(response)]),
-      HEAD_REQUESTS.map(([name]) => [name, [FORBIDDEN.statusCode, NO_STORE, undefined]]),
-    );
+    assertHeadsRefused(heads, FORBIDDEN, HEAD_REQUESTS.map(([name]) => name));
   });
 
   test('reading takes groups:read or groups:manage and a change groups:manage, either also through groups:* or full access, and the scopes of users pass neither', async (t) => {
@@ -254,32 +188,35 @@ describe('routes of groups: who may call them', () => {
       [ALL_SCOPES_OF_GROUPS, names],
       [FULL_ACCESS, names],
     ];
-    const statuses = await Promise.all(profiles.map(([scopes]) => probeGuard(fastify, scopes, names)));
+    const statuses = await Promise.all(profiles.map(([scopes]) => probeGuard(fastify, GUARD_PROBES, scopes, names)));
 
     assert.deepEqual(
       statuses.map((list, index) => [profiles[index][0], list]),
-      profiles.map(([scopes, passing]) => [scopes, expectStatuses(names, passing)]),
+      profiles.map(([scopes, passing]) => [scopes, expectStatuses(GUARD_PROBES, names, passing)]),
     );
   });
 
-  test('the members of a group take users:read beside groups:read or groups:manage: either alone, or users:read alone, is 403', async (t) => {
+  test('the members of a group take users:read or users:manage beside groups:read or groups:manage: either alone, or a scope of users alone, is 403', async (t) => {
     const fastify = await buildOpenApp(t);
     const profiles = [
       [['groups:read'], []],
       [['groups:manage'], []],
       [['users:read'], []],
+      [['users:manage'], []],
       [ALL_SCOPES_OF_GROUPS, []],
       [['users:*'], []],
       [['groups:read', 'users:read'], MEMBERS],
+      [['groups:read', 'users:manage'], MEMBERS],
       [['groups:manage', 'users:read'], MEMBERS],
+      [['groups:manage', 'users:manage'], MEMBERS],
       [['groups:*', 'users:*'], MEMBERS],
       [FULL_ACCESS, MEMBERS],
     ];
-    const statuses = await Promise.all(profiles.map(([scopes]) => probeGuard(fastify, scopes, MEMBERS)));
+    const statuses = await Promise.all(profiles.map(([scopes]) => probeGuard(fastify, GUARD_PROBES, scopes, MEMBERS)));
 
     assert.deepEqual(
       statuses.map((list, index) => [profiles[index][0], list]),
-      profiles.map(([scopes, passing]) => [scopes, expectStatuses(MEMBERS, passing)]),
+      profiles.map(([scopes, passing]) => [scopes, expectStatuses(GUARD_PROBES, MEMBERS, passing)]),
     );
   });
 });
@@ -311,7 +248,7 @@ describe('routes of groups with a service down', () => {
       cookies: undefined,
     });
     assertRefused(responses, OUTAGE, outages.map(([name]) => name));
-    assert.deepEqual(readFailures(sink, responses), outages.map(() => [REFUSED_CONNECTION]));
+    assert.deepEqual(readFailureLines(sink, responses), outages.map(() => [REFUSED_CONNECTION]));
   });
 
   test('with Redis alive and the database down, the holder rule waits for what the database grants, whatever the token holds: a scope or full access beyond the token, the scopes it holds and a reserved slug for a group that is there are the 500 of the outage, each with the error line of its refused connection', async (t) => {
@@ -328,7 +265,7 @@ describe('routes of groups with a service down', () => {
     const responses = await injectAs(fastify, issueFor(fastify, MANAGER), requests);
 
     assertRefused(responses, OUTAGE, requests.map(([name]) => name));
-    assert.deepEqual(readFailures(sink, responses), requests.map(() => [REFUSED_CONNECTION]));
+    assert.deepEqual(readFailureLines(sink, responses), requests.map(() => [REFUSED_CONNECTION]));
   });
 });
 
@@ -362,13 +299,10 @@ describe('routes of groups: what the service refuses before the database', () =>
 
 describe('routes of groups: what they say', () => {
   test('in dev mode the spec documents each with its scopes as role names of the cookie and of the Bearer header, with 401 and 403, and a route that may meet a protected group with a 409 of the codes it answers with, the first of them its example', async (t) => {
-    const fastify = await buildDownApp(t, { env: { APP_MODE: MODE.DEV } });
-    const response = await fastify.inject(DOCS_URL);
-    const operations = listOperations(response.json().paths);
+    const operations = await readDocumentedOperations(t, GROUPS_URL);
     const reading = [...bothWays(['groups:read']), ...bothWays(['groups:manage'])];
     const changing = bothWays(['groups:manage']);
 
-    assert.equal(response.statusCode, 200);
     assert.deepEqual(operations.map(([name, operation]) => [name, operation.security]), [
       [`GET ${GROUPS_URL}`, reading],
       [`POST ${GROUPS_URL}`, changing],
@@ -376,7 +310,12 @@ describe('routes of groups: what they say', () => {
       [`GET ${GROUPS_URL}/{id}`, reading],
       [`PATCH ${GROUPS_URL}/{id}`, changing],
       [`DELETE ${GROUPS_URL}/{id}`, changing],
-      [`GET ${GROUPS_URL}/{groupId}/members`, [...bothWays(['groups:read', 'users:read']), ...bothWays(['groups:manage', 'users:read'])]],
+      [`GET ${GROUPS_URL}/{groupId}/members`, [
+        ...bothWays(['groups:read', 'users:read']),
+        ...bothWays(['groups:read', 'users:manage']),
+        ...bothWays(['groups:manage', 'users:read']),
+        ...bothWays(['groups:manage', 'users:manage']),
+      ]],
       [`PUT ${GROUPS_URL}/{groupId}/members/{userId}`, changing],
       [`DELETE ${GROUPS_URL}/{groupId}/members/{userId}`, changing],
     ]);

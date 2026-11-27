@@ -705,9 +705,9 @@ describe('reply decorators and the response schema of the route', () => {
     const fastify = await buildTestApp();
     t.after(() => fastify.close());
 
-    declare(fastify, '/api/v1/users', { 200: successEnvelope(USER_SCHEMA), default: successEnvelope({ type: 'null' }) }, sendCreated);
+    declare(fastify, '/api/v1/reply-probe/users', { 200: successEnvelope(USER_SCHEMA), default: successEnvelope({ type: 'null' }) }, sendCreated);
 
-    const response = await fastify.inject('/api/v1/users');
+    const response = await fastify.inject('/api/v1/reply-probe/users');
 
     assert.equal(response.statusCode, 500);
     assert.deepEqual(response.json(), serverErrorBody(response));
@@ -728,9 +728,9 @@ describe('reply decorators and the response schema of the route', () => {
   test('say in the log which status has no schema', async (t) => {
     const { fastify, sink } = await buildWarnLoggedApp(t);
 
-    declare(fastify, '/api/v1/users', { 200: successEnvelope(USER_SCHEMA) }, sendCreated);
+    declare(fastify, '/api/v1/reply-probe/users', { 200: successEnvelope(USER_SCHEMA) }, sendCreated);
 
-    await fastify.inject('/api/v1/users');
+    await fastify.inject('/api/v1/reply-probe/users');
 
     assert.equal(sink.lines.length, 1);
     assert.equal(sink.lines[0].level, 50);
@@ -817,11 +817,11 @@ describe('reply decorators and the response schema of the route', () => {
     const fastify = await buildTestApp();
     t.after(() => fastify.close());
 
-    declare(fastify, '/api/v1/users', { 200: successEnvelope(USER_SCHEMA) }, sendOk);
+    declare(fastify, '/api/v1/reply-probe/users', { 200: successEnvelope(USER_SCHEMA) }, sendOk);
     declare(fastify, '/api/v1/created', { 200: successEnvelope(USER_SCHEMA) }, sendCreated);
 
     const [found, mismatched] = await Promise.all([
-      fastify.inject({ method: 'HEAD', url: '/api/v1/users' }),
+      fastify.inject({ method: 'HEAD', url: '/api/v1/reply-probe/users' }),
       fastify.inject({ method: 'HEAD', url: '/api/v1/created' }),
     ]);
 

@@ -23,10 +23,15 @@ import {
 const READ = Object.freeze({ auth: true, scopes: [SCOPE.GROUPS_READ, SCOPE.GROUPS_MANAGE] });
 const MANAGE = Object.freeze({ auth: true, scopes: [SCOPE.GROUPS_MANAGE] });
 
-// The members are users, and their list shows what users:read guards.
+// The members are users, and their list shows what the reads of users guard.
 const READ_MEMBERS = Object.freeze({
   auth: true,
-  scopes: [[SCOPE.GROUPS_READ, SCOPE.USERS_READ], [SCOPE.GROUPS_MANAGE, SCOPE.USERS_READ]],
+  scopes: [
+    [SCOPE.GROUPS_READ, SCOPE.USERS_READ],
+    [SCOPE.GROUPS_READ, SCOPE.USERS_MANAGE],
+    [SCOPE.GROUPS_MANAGE, SCOPE.USERS_READ],
+    [SCOPE.GROUPS_MANAGE, SCOPE.USERS_MANAGE],
+  ],
 });
 
 export default async function useGroupRoutes(fastify) {

@@ -2,6 +2,7 @@ import { insertReturning, updateReturning } from '#core/db/index.js';
 import { createQuery } from '#core/db/query.js';
 import { TABLE } from '#enums/table.js';
 import { USER_STATUS } from '#enums/user-status.js';
+import { USER_LIST_COLUMNS } from '#modules/users/users.repository.js';
 import * as groupSchema from '#schemas/entity/group.js';
 import * as userSchema from '#schemas/entity/user.js';
 import { groupBy } from '#utils/array.js';
@@ -10,12 +11,9 @@ import { camelToSnakeKey } from '#utils/case.js';
 const GROUP_ROW_FIELDS = Object.freeze(['id', 'slug', 'name', 'description', 'isSuperadmin', 'isSystem', 'createdAt', 'updatedAt']);
 const GROUP_COLUMNS = GROUP_ROW_FIELDS.map((field) => camelToSnakeKey(field)).join(', ');
 
-export const MEMBER_FIELDS = Object.freeze(['id', 'email', 'firstName', 'lastName', 'status', 'createdAt']);
-const MEMBER_COLUMNS = MEMBER_FIELDS.map((field) => camelToSnakeKey(field)).join(', ');
-
 const LIST_SQL = `SELECT ${GROUP_COLUMNS} FROM groups`;
 const FIND_SQL = `SELECT ${GROUP_COLUMNS} FROM groups WHERE id = :id`;
-const LOCK_SQL = `SELECT ${GROUP_COLUMNS} FROM groups WHERE id = :id FOR UPDATE`;
+const LOCK_LIST_SQL = `SELECT ${GROUP_COLUMNS} FROM groups WHERE id IN (:ids) ORDER BY id FOR UPDATE`;
 const TOUCH_SQL = 'UPDATE groups SET updated_at = CURRENT_TIMESTAMP(3) WHERE id = :id';
 const DELETE_SQL = 'DELETE FROM groups WHERE id = :id';
 
@@ -25,13 +23,11 @@ const DELETE_SCOPES_SQL = 'DELETE FROM group_scopes WHERE group_id = :groupId AN
 
 // A subquery, not a join: the filters and the sort of the users name their columns without a table.
 const MEMBERS_SQL = `
-  SELECT ${MEMBER_COLUMNS}
+  SELECT ${USER_LIST_COLUMNS}
   FROM users
   WHERE id IN (SELECT user_id FROM user_groups WHERE group_id = :groupId)
 `;
 
-// In the order of the key: two flows that lock the same users take them one after another and never cross.
-const LOCK_USERS_SQL = 'SELECT id, status FROM users WHERE id IN (:userIds) ORDER BY id FOR UPDATE';
 const MEMBER_IDS_SQL = 'SELECT user_id FROM user_groups WHERE group_id = :groupId ORDER BY user_id';
 const ACTIVE_MEMBERS_SQL = `
   SELECT COUNT(*) AS total
@@ -40,6 +36,15 @@ const ACTIVE_MEMBERS_SQL = `
   WHERE ug.group_id = :groupId AND u.status = :status
 `;
 const MEMBERSHIP_SQL = 'SELECT user_id FROM user_groups WHERE user_id = :userId AND group_id = :groupId';
+
+// A plain read: every flow that changes the groups of a user holds the lock of the row of that user first.
+const PROTECTED_GROUP_IDS_SQL = `
+  SELECT ug.group_id
+  FROM user_groups ug
+  JOIN groups g ON g.id = ug.group_id
+  WHERE ug.user_id = :userId AND g.is_system = TRUE AND g.is_superadmin = TRUE
+  ORDER BY ug.group_id
+`;
 
 // Inside a transaction the cache is skipped: this reads what the transaction sees.
 async function readScopes(groupIds) {
@@ -88,11 +93,28 @@ export async function findGroup(id) {
   return withScopes(query.fetch());
 }
 
+// Without their scopes: the caller guards who stays in them, not what they grant.
+export async function lockGroups(ids) {
+  if (!ids.length) {
+    return [];
+  }
+
+  const query = await createQuery(LOCK_LIST_SQL, { ids }).execute();
+
+  return query.fetchAll();
+}
+
 // The row every change of the group, of its scopes and of its members waits for.
 export async function lockGroup(id) {
-  const query = await createQuery(LOCK_SQL, { id }).execute();
+  const [group = null] = await lockGroups([id]);
 
-  return withScopes(query.fetch());
+  return withScopes(group);
+}
+
+export async function readProtectedGroupIds(userId) {
+  const query = await createQuery(PROTECTED_GROUP_IDS_SQL, { userId }).execute();
+
+  return query.fetchAll().map((row) => row.groupId);
 }
 
 export function insertGroup(row) {
@@ -151,12 +173,6 @@ export async function findMembers(groupId, payload) {
     .execute();
 
   return query.getAll();
-}
-
-export async function lockUsers(userIds) {
-  const query = await createQuery(LOCK_USERS_SQL, { userIds }).execute();
-
-  return query.fetchAll();
 }
 
 export async function countActiveMembers(groupId) {

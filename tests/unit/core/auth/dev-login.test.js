@@ -1,9 +1,9 @@
 import { signInForDev } from '#core/auth/dev-login.js';
+import { DEV_ENV } from '#root/tests/helper/guard.js';
 import { buildDownApp, runInApp, TEST_CLIENT } from '#root/tests/helper/session.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-const DEV_ENV = Object.freeze({ APP_MODE: 'dev' });
 const EMAIL = 'anna@example.com';
 
 const DEV_ONLY_MESSAGE = 'signInForDev({ email, client, request }) signs in by an email alone: it runs in dev mode only, APP_MODE=dev';

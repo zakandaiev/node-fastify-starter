@@ -67,8 +67,7 @@ async function readSession({ sid, userId }) {
   return query.fetch();
 }
 
-// Nobody is named as the actor: it is the user or a thief, and which of them nobody knows. An actor would also take the
-// row of the user after the row of the session, the other way round than a sign-in.
+// Nobody is named as the actor: it is the user or a thief, and which of them nobody knows.
 async function endReplayed(session, request) {
   const query = createQuery(END_SQL, { sid: session.sid });
 

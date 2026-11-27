@@ -40,7 +40,6 @@ const USERS_REACH = Object.freeze({
   [TABLE.USERS]: 1,
   [TABLE.USER_IDENTITIES]: 1,
   [TABLE.USER_GROUPS]: 1,
-  [TABLE.AUDIT_LOGS]: 1,
   [TABLE.SESSIONS]: 1,
 });
 const GROUPS_REACH = Object.freeze({ [TABLE.GROUPS]: 1, [TABLE.GROUP_SCOPES]: 1, [TABLE.USER_GROUPS]: 1 });
@@ -317,7 +316,7 @@ describe('db writes and the tables the foreign keys of their table reach', { ski
     await run(() => invalidateCacheTables(WATCHED_TABLES));
   });
 
-  test('invalidateAfterWrite bumps with users the versions of user_identities, user_groups, audit_logs and sessions, with groups those of group_scopes and user_groups, and a table both reach once', async () => {
+  test('invalidateAfterWrite bumps with users the versions of user_identities, user_groups and sessions, not that of audit_logs, with groups those of group_scopes and user_groups, and a table both reach once', async () => {
     const users = await bumpAfter([TABLE.USERS]);
     const groups = await bumpAfter([TABLE.GROUPS]);
     const both = await bumpAfter([TABLE.GROUPS, TABLE.USERS]);

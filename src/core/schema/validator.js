@@ -6,6 +6,7 @@ import { SCHEMA_FORMAT } from '#enums/schema-format.js';
 import { SCHEMA_KEYWORD } from '#enums/schema-keyword.js';
 import { isUtcDateTime } from '#utils/date.js';
 import { toMimeEssence } from '#utils/mime.js';
+import { isValidPersonName } from '#utils/person.js';
 import { isFunction, isObject } from '#utils/type.js';
 import { isEmail } from '#utils/validate.js';
 import Ajv from 'ajv';
@@ -43,6 +44,7 @@ export function useSchemaKeywords(ajv) {
   // In place of the formats of ajv-formats: its "email" takes ASCII only.
   ajv.addFormat(SCHEMA_FORMAT.EMAIL, isEmail);
   ajv.addFormat(SCHEMA_FORMAT.DATE_TIME_UTC, isUtcDateTime);
+  ajv.addFormat(SCHEMA_FORMAT.PERSON_NAME, isValidPersonName);
 
   return ajv;
 }

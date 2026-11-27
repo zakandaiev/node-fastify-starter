@@ -63,7 +63,6 @@ const USERS_REACH = Object.freeze({
   [TABLE.USERS]: 1,
   [TABLE.USER_IDENTITIES]: 1,
   [TABLE.USER_GROUPS]: 1,
-  [TABLE.AUDIT_LOGS]: 1,
   [TABLE.SESSIONS]: 1,
 });
 const GROUPS_REACH = Object.freeze({ [TABLE.GROUPS]: 1, [TABLE.GROUP_SCOPES]: 1, [TABLE.USER_GROUPS]: 1 });
@@ -460,7 +459,7 @@ describe('invalidateCacheTables and the tables the foreign keys of a table reach
     return opened;
   }
 
-  test('a bump of users moves the versions of user_identities, user_groups, audit_logs and sessions with its own, and one of groups those of group_scopes and user_groups, each by one', async () => {
+  test('a bump of users moves the versions of user_identities, user_groups and sessions with its own, not that of audit_logs, and one of groups those of group_scopes and user_groups, each by one', async () => {
     const { run } = await openStarted();
     const results = [];
     const users = await listBumped(async () => {
@@ -865,11 +864,16 @@ describe('cache and the foreign keys of the database', { skip: testRedis.skip ||
     assert.deepEqual([await readScopes(), await readMembers()], [[], []]);
   });
 
-  test('after a user is deleted by hand, invalidateCacheTables([users]) leaves no cached read of user_groups or audit_logs that still names the user in a column the delete set to NULL', async () => {
+  test('after a user is deleted by hand, invalidateCacheTables([users]) leaves no cached read of user_groups that still names the user in a column the delete set to NULL, and a cached read of audit_logs is still served: the record keeps the user as its actor', async () => {
     const { run } = await openMigrated();
     const [memberId, granterId, groupId, auditId] = [uuidv7(), uuidv7(), uuidv7(), uuidv7()];
     const readMembers = cacheRows(run, TABLE.USER_GROUPS, MEMBERS_SQL, { groupId });
-    const readActor = cacheRows(run, TABLE.AUDIT_LOGS, ACTOR_SQL, { id: auditId });
+    const actorKey = nextName(TABLE.AUDIT_LOGS);
+    const actor = countCalls(() => testDb.readRows(ACTOR_SQL, { id: auditId }));
+
+    function readActor() {
+      return run(() => wrapCache(actorKey, actor.fn, { tables: [TABLE.AUDIT_LOGS] }));
+    }
 
     await testDb.readRows(INSERT_USER_SQL, { id: memberId });
     await testDb.readRows(INSERT_USER_SQL, { id: granterId });
@@ -888,6 +892,8 @@ describe('cache and the foreign keys of the database', { skip: testRedis.skip ||
 
     assert.deepEqual(cached, [[{ user_id: memberId, granted_by: granterId }], [{ actor_id: granterId }]]);
     assert.deepEqual(stale, cached);
-    assert.deepEqual([await readMembers(), await readActor()], [[{ user_id: memberId, granted_by: null }], [{ actor_id: null }]]);
+    assert.deepEqual([await readMembers(), await readActor()], [[{ user_id: memberId, granted_by: null }], [{ actor_id: granterId }]]);
+    assert.equal(actor.calls.count, 1);
+    assert.deepEqual(await testDb.readRows(ACTOR_SQL, { id: auditId }), [{ actor_id: granterId }]);
   });
 });

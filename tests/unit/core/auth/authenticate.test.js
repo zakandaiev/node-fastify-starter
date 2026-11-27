@@ -8,10 +8,9 @@ import {
   buildOpenApp,
   issueFor,
   NO_STORE,
-  REVOKED_MARK,
 } from '#root/tests/helper/guard.js';
 import { isDeepFrozen } from '#root/tests/helper/object.js';
-import { toBearer } from '#root/tests/helper/session.js';
+import { REVOKED_MARK, toBearer } from '#root/tests/helper/session.js';
 import { uuidv7 } from '#utils/id.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';

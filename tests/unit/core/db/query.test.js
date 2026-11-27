@@ -709,9 +709,9 @@ describe('createQuery: getAll() and reply.list()', () => {
 
     t.after(() => fastify.close());
     await execute(query, createFakeDb({ total: 2 }));
-    fastify.get('/api/v1/users', { schema, security: PUBLIC }, (request, reply) => reply.list(query.getAll()));
+    fastify.get('/api/v1/query-probe/users', { schema, security: PUBLIC }, (request, reply) => reply.list(query.getAll()));
 
-    const response = await fastify.inject('/api/v1/users');
+    const response = await fastify.inject('/api/v1/query-probe/users');
 
     assert.equal(response.statusCode, HTTP_STATUS.OK, response.body);
     assert.deepEqual(response.json(), {

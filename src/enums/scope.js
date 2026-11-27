@@ -11,6 +11,7 @@ export const SCOPE = Object.freeze({
   GROUPS_MANAGE: 'groups:manage',
   USERS_ALL: 'users:*',
   USERS_READ: 'users:read',
+  USERS_MANAGE: 'users:manage',
 });
 
 // What a group may hold: "*" is not here, full access is the flag of a group. The name and the description are an
@@ -21,6 +22,7 @@ export const SCOPE_CATALOG = Object.freeze([
   Object.freeze({ code: SCOPE.GROUPS_MANAGE, name: 'Manage groups', description: 'Create, change and delete groups and their members, within the scopes one holds' }),
   Object.freeze({ code: SCOPE.USERS_ALL, name: 'Users: everything', description: 'Every action on users, also those added later' }),
   Object.freeze({ code: SCOPE.USERS_READ, name: 'Read users', description: 'See the users and their profiles' }),
+  Object.freeze({ code: SCOPE.USERS_MANAGE, name: 'Manage users', description: 'Change, block and delete other users, those who hold no scope beyond the ones one holds' }),
 ]);
 
 export const SCOPE_CODES = Object.freeze(SCOPE_CATALOG.map((entry) => entry.code));

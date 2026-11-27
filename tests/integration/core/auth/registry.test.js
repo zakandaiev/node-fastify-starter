@@ -25,7 +25,7 @@ import {
   waitUntilReady,
 } from '#root/tests/helper/redis.js';
 import { getServiceAddress } from '#root/tests/helper/service.js';
-import { listUntold, untoldOf } from '#root/tests/helper/session.js';
+import { listUntold, toRegistryKey, untoldOf } from '#root/tests/helper/session.js';
 import { mapSeries } from '#utils/async.js';
 import { addToDate, nowUtc } from '#utils/date.js';
 import { sha256 } from '#utils/hash.js';
@@ -142,7 +142,7 @@ function assertMark(mark, value, limitMs) {
 
 function openMarks(keyPrefix) {
   function toKey(sid) {
-    return `${keyPrefix}session:${sid}`;
+    return toRegistryKey(keyPrefix, sid);
   }
 
   async function readMark(sid) {

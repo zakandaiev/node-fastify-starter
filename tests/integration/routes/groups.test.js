@@ -1,59 +1,76 @@
-import { MODE } from '#config/env.js';
 import { PAGINATION } from '#config/pagination.js';
-import { ERROR_CATALOG } from '#enums/error-code.js';
+import { invalidateCacheTables } from '#core/cache/index.js';
 import { GROUP_SLUG } from '#enums/group.js';
 import { HEADER } from '#enums/header.js';
 import { HTTP_STATUS } from '#enums/http-status.js';
 import { MEDIA_TYPE } from '#enums/media-type.js';
-import { MIGRATION_TYPE } from '#enums/migration-type.js';
 import { SCOPE, SCOPE_ALL, SCOPE_CATALOG } from '#enums/scope.js';
 import { TABLE } from '#enums/table.js';
 import { USER_STATUS } from '#enums/user-status.js';
-import { errorBody, readRequestId, successBody } from '#root/tests/helper/app.js';
+import { readRequestId, successBody } from '#root/tests/helper/app.js';
 import { createTestDb, findSessionId } from '#root/tests/helper/db.js';
-import { bindMigrator } from '#root/tests/helper/migration.js';
+import { DEV_ENV, NO_STORE, readSpec } from '#root/tests/helper/guard.js';
 import { createTestRedis } from '#root/tests/helper/redis.js';
 import {
-  connectAppRedis,
+  assertChallenged,
+  assertError,
+  assertForbidden,
+  assertNoChanges,
+  assertNoContent,
+  assertNotFound,
+  assertOk,
+  assertProtected,
+  assertTaken,
+  blockByHand,
+  describeAudit,
+  getMembersRequest,
+  GROUPS_URL,
+  listMemberIds,
+  LONG_AGO,
+  migrateAndSeed,
+  openRouteApp,
+  readAnsweredConflicts,
+  readDocumentedConflicts,
+  readFailures,
+  readMemberIds,
+  readStatuses,
+  refresh,
+  send,
+  setAdminMembers,
+  signInAs,
+} from '#root/tests/helper/route.js';
+import {
   createUser,
-  grantScopes,
+  findGroupId,
+  insertGroup,
+  insertUser,
+  joinGroup,
+  readAdminId,
   readAppRows,
+  readAudit,
   readAuthCookies,
   readClaims,
-  signIn,
+  readMemberships,
+  readState,
+  runInApp,
   takeRefreshCookie,
   toBearer,
 } from '#root/tests/helper/session.js';
 import * as groupSchema from '#schemas/entity/group.js';
-import { unique } from '#utils/array.js';
 import { mapSeries } from '#utils/async.js';
+import { toDate } from '#utils/date.js';
 import { uuidv7, uuidVersion } from '#utils/id.js';
 import { pick } from '#utils/object.js';
 import assert from 'node:assert/strict';
-import { STATUS_CODES } from 'node:http';
 import { before, describe, test } from 'node:test';
 
 const testRedis = await createTestRedis();
 const testDb = await createTestDb();
-const { up } = bindMigrator(testDb);
 
-const GROUPS_URL = '/api/v1/groups';
 const SCOPES_URL = `${GROUPS_URL}/scopes`;
-const REFRESH_URL = '/api/v1/auth/refresh';
-const SPEC_PATH = '/json';
 
-// How the docs name the codes of a conflict: "Conflict: GROUP_PROTECTED, NO_CHANGES".
-const CONFLICT_PREFIX = `${STATUS_CODES[HTTP_STATUS.CONFLICT]}: `;
-const CODE_SEPARATOR = ', ';
-
-const LOOPBACK = '127.0.0.1';
-const NO_STORE = 'no-store';
-const BEARER_SCHEME = 'Bearer';
 const XML_MEDIA_TYPE = 'application/xml';
 const UUID_V7 = 7;
-
-// Few on purpose: the files of the tests share the connections of one server.
-const SMALL_POOL = Object.freeze({ connectionLimit: 2 });
 
 const CREATE_ACTION = 'group.create';
 const UPDATE_ACTION = 'group.update';
@@ -63,10 +80,15 @@ const REVOKE_ACTION = 'user.group_revoke';
 const GROUPS_ENTITY = 'groups';
 const USERS_ENTITY = 'users';
 
-const LONG_AGO = '2026-01-01T00:00:00.000Z';
-
 const CATALOG_CODES = Object.freeze(SCOPE_CATALOG.map((entry) => entry.code));
-const SORTED_CATALOG_CODES = Object.freeze([SCOPE.GROUPS_ALL, SCOPE.GROUPS_MANAGE, SCOPE.GROUPS_READ, SCOPE.USERS_ALL, SCOPE.USERS_READ]);
+const SORTED_CATALOG_CODES = Object.freeze([
+  SCOPE.GROUPS_ALL,
+  SCOPE.GROUPS_MANAGE,
+  SCOPE.GROUPS_READ,
+  SCOPE.USERS_ALL,
+  SCOPE.USERS_MANAGE,
+  SCOPE.USERS_READ,
+]);
 const RECORDED_FIELDS = Object.freeze(['slug', 'name', 'description', 'isSuperadmin', 'scopes']);
 
 // The answers of the routes, in the order listEveryRoute() gives them.
@@ -82,8 +104,11 @@ const ROUTE_ACCESS = Object.freeze([
   [[SCOPE.USERS_ALL], DENIED],
   [[SCOPE.GROUPS_READ], READ_ONLY],
   [[SCOPE.GROUPS_READ, SCOPE.USERS_READ], READ_MEMBERS],
+  [[SCOPE.GROUPS_READ, SCOPE.USERS_MANAGE], READ_MEMBERS],
+  [[SCOPE.USERS_MANAGE], DENIED],
   [[SCOPE.GROUPS_MANAGE], MANAGE_GROUPS],
   [[SCOPE.GROUPS_MANAGE, SCOPE.USERS_READ], ALLOWED],
+  [[SCOPE.GROUPS_MANAGE, SCOPE.USERS_MANAGE], ALLOWED],
   [[SCOPE.GROUPS_ALL], MANAGE_GROUPS],
   [[SCOPE.GROUPS_ALL, SCOPE.USERS_ALL], ALLOWED],
   [[SCOPE_ALL], ALLOWED],
@@ -147,19 +172,12 @@ const OUTSIDER = Object.freeze({
   createdAt: '2026-11-13T08:00:00.000Z',
 });
 
-const PROFILE_SQL = 'UPDATE users SET email = :email, first_name = :firstName, last_name = :lastName, created_at = :createdAt WHERE id = :id';
-const STATUS_SQL = 'UPDATE users SET status = :status WHERE id = :id';
 const GROUP_ROW_SQL = 'SELECT * FROM groups WHERE id = :id';
 const SCOPE_ROWS_SQL = 'SELECT scope FROM group_scopes WHERE group_id = :groupId ORDER BY scope';
-const MEMBERSHIPS_SQL = 'SELECT user_id, group_id, granted_by FROM user_groups WHERE group_id = :groupId ORDER BY user_id';
 const GROUPS_OF_USER_SQL = 'SELECT group_id FROM user_groups WHERE user_id = :userId';
-const SLUG_SQL = 'SELECT id FROM groups WHERE slug = :slug';
 const SET_UPDATED_AT_SQL = 'UPDATE groups SET updated_at = :updatedAt WHERE id = :id';
 const RENAME_SQL = 'UPDATE groups SET name = :name WHERE id = :id';
-const JOIN_SQL = 'INSERT INTO user_groups (user_id, group_id) VALUES (:userId, :groupId)';
-const EMPTY_GROUP_SQL = 'DELETE FROM user_groups WHERE group_id = :groupId';
 const DELETE_GROUP_SQL = 'DELETE FROM groups WHERE id = :id';
-const SYSTEM_GROUP_SQL = 'INSERT INTO groups (id, slug, name, is_system) VALUES (:id, :slug, :slug, TRUE)';
 const SCOPE_RECORDS_SQL = 'SELECT * FROM group_scopes WHERE group_id = :groupId';
 const MEMBERSHIP_RECORDS_SQL = 'SELECT * FROM user_groups WHERE group_id = :groupId';
 const RESTORE_GROUP_SQL = `
@@ -171,20 +189,9 @@ const RESTORE_MEMBERSHIP_SQL = `
   INSERT INTO user_groups (user_id, group_id, granted_by, created_at, updated_at)
   VALUES (:user_id, :group_id, :granted_by, :created_at, :updated_at)
 `;
-const AUDIT_SQL = `
-  SELECT actor_id, action, entity_type, entity_id, meta, ip, request_id
-  FROM audit_logs
-  WHERE entity_id = :entityId
-  ORDER BY id
-`;
 
 // The rows a change of groups writes: a refused one leaves each of them as it was.
-const STATE_SQL = Object.freeze([
-  'SELECT * FROM groups ORDER BY id',
-  'SELECT * FROM group_scopes ORDER BY group_id, scope',
-  'SELECT * FROM user_groups ORDER BY user_id, group_id',
-  'SELECT * FROM audit_logs ORDER BY id',
-]);
+const STATE_TABLES = Object.freeze([TABLE.GROUPS, TABLE.GROUP_SCOPES, TABLE.USER_GROUPS, TABLE.AUDIT_LOGS]);
 
 // The keeper is a connection of the test outside the pools, and takes "?" placeholders.
 const LEAVE_BY_KEEPER_SQL = 'DELETE FROM user_groups WHERE user_id = ? AND group_id = ?';
@@ -192,37 +199,6 @@ const COMMIT_SQL = 'COMMIT';
 
 // The statement that locks the users of a change of groups, as the server lists it while it waits.
 const USERS_LOCK_MARK = 'ORDER BY id FOR UPDATE';
-
-async function prepareDatabase() {
-  await up();
-  await up({ type: MIGRATION_TYPE.SEED });
-}
-
-async function openApp(t, sections = {}) {
-  const fastify = await testDb.buildApp({ ...sections, db: SMALL_POOL });
-
-  t.after(() => fastify.close());
-  await connectAppRedis(fastify);
-
-  return fastify;
-}
-
-// "*" stands for full access, the flag of a group; the other scopes go into a group of the user's own.
-async function signInAs(fastify, scopes = []) {
-  const userId = await createUser(fastify);
-  const listed = scopes.filter((scope) => scope !== SCOPE_ALL);
-  const isSuperadmin = listed.length !== scopes.length;
-
-  if (isSuperadmin || listed.length) {
-    await grantScopes(fastify, userId, listed, { isSuperadmin });
-  }
-
-  return signIn(fastify, { userId });
-}
-
-function send(fastify, actor, request) {
-  return fastify.inject({ ...request, headers: { ...actor?.bearer, ...request.headers } });
-}
 
 function getGroupsRequest(query = '') {
   return { method: 'GET', url: `${GROUPS_URL}${query}` };
@@ -246,10 +222,6 @@ function patchGroupRequest(id, payload) {
 
 function deleteGroupRequest(id) {
   return { method: 'DELETE', url: `${GROUPS_URL}/${id}` };
-}
-
-function getMembersRequest(groupId, query = '') {
-  return { method: 'GET', url: `${GROUPS_URL}/${groupId}/members${query}` };
 }
 
 function putMemberRequest(groupId, userId) {
@@ -323,16 +295,8 @@ async function runEveryRoute(fastify, root, scopes) {
 
 // A user with a profile, made at the moment the test names: the members list shows these fields of a user.
 async function createPerson(fastify, { createdAt, ...profile }) {
-  const id = await createUser(fastify, { status: profile.status });
-  const email = `${profile.firstName.toLowerCase()}-${id}@example.com`;
-
-  await readAppRows(fastify, PROFILE_SQL, {
-    id,
-    email,
-    firstName: profile.firstName,
-    lastName: profile.lastName,
-    createdAt: new Date(createdAt),
-  });
+  const email = `${profile.firstName.toLowerCase()}-${uuidv7()}@example.com`;
+  const id = await insertUser(fastify, { ...profile, email, createdAt: toDate(createdAt) });
 
   return {
     id,
@@ -344,7 +308,7 @@ async function createPerson(fastify, { createdAt, ...profile }) {
 
 // The device after a refresh: its next requests carry the tokens the refresh has set.
 async function refreshDevice(fastify, device) {
-  const response = await fastify.inject({ method: 'POST', url: REFRESH_URL, cookies: device.refreshCookie });
+  const response = await refresh(fastify, device.refreshCookie);
 
   assert.equal(response.statusCode, 200, response.body);
 
@@ -361,10 +325,6 @@ async function refreshDevice(fastify, device) {
   };
 }
 
-function readState(fastify) {
-  return mapSeries(STATE_SQL, (sql) => readAppRows(fastify, sql));
-}
-
 async function readGroupRow(fastify, id) {
   const [row = null] = await readAppRows(fastify, GROUP_ROW_SQL, { id });
 
@@ -377,34 +337,10 @@ async function readScopeRows(fastify, groupId) {
   return rows.map((row) => row.scope);
 }
 
-function readMemberships(fastify, groupId) {
-  return readAppRows(fastify, MEMBERSHIPS_SQL, { groupId });
-}
-
 async function readGroupIdsOf(fastify, userId) {
   const rows = await readAppRows(fastify, GROUPS_OF_USER_SQL, { userId });
 
   return rows.map((row) => row.group_id);
-}
-
-async function readAdminId(fastify) {
-  const [{ id }] = await readAppRows(fastify, SLUG_SQL, { slug: GROUP_SLUG.ADMIN });
-
-  return id;
-}
-
-async function listMemberIds(fastify, groupId) {
-  return (await readMemberships(fastify, groupId)).map((row) => row.user_id);
-}
-
-// The admin group with these members and no other: the tests of the file share it.
-async function setAdminMembers(fastify, userIds) {
-  const adminId = await readAdminId(fastify);
-
-  await readAppRows(fastify, EMPTY_GROUP_SQL, { groupId: adminId });
-  await mapSeries(userIds, (userId) => readAppRows(fastify, JOIN_SQL, { userId, groupId: adminId }));
-
-  return adminId;
 }
 
 // The admin row gone with what refers to it, as before the seed. The pool of the file puts it all back as it was once
@@ -428,106 +364,6 @@ async function removeAdminRow(t, fastify) {
   return id;
 }
 
-function readConflictCodes(operation) {
-  const conflict = operation.responses[HTTP_STATUS.CONFLICT];
-
-  if (conflict === undefined) {
-    return [];
-  }
-
-  assert.ok(conflict.description.startsWith(CONFLICT_PREFIX), conflict.description);
-
-  return conflict.description.slice(CONFLICT_PREFIX.length).split(CODE_SEPARATOR).toSorted();
-}
-
-// The codes each operation of the groups documents for 409, by "METHOD /path" as the docs spell it.
-function readDocumentedConflicts(paths) {
-  return Object.fromEntries(Object.entries(paths)
-    .filter(([path]) => path.startsWith(GROUPS_URL))
-    .flatMap(([path, operations]) => Object.entries(operations)
-      .map(([method, operation]) => [`${method.toUpperCase()} ${path}`, readConflictCodes(operation)])));
-}
-
-// The codes each operation has answered 409 with, by the name of its scenarios, which come in the order of the responses.
-function readAnsweredConflicts(scenarios, responses) {
-  const names = unique(scenarios.map(([name]) => name));
-
-  return Object.fromEntries(names.map((name) => [name, unique(responses
-    .filter((response, index) => scenarios[index][0] === name && response.statusCode === HTTP_STATUS.CONFLICT)
-    .map((response) => response.json().code)).toSorted()]));
-}
-
-function readAudit(fastify, entityId) {
-  return readAppRows(fastify, AUDIT_SQL, { entityId });
-}
-
-function describeAudit(response, actor, {
-  action, entityType, entityId, meta,
-}) {
-  return {
-    actor_id: actor.userId,
-    action,
-    entity_type: entityType,
-    entity_id: entityId,
-    meta,
-    ip: LOOPBACK,
-    request_id: readRequestId(response),
-  };
-}
-
-function readMemberIds(response) {
-  return response.json().data.map((member) => member.id);
-}
-
-function readHeaders(response) {
-  return [response.headers[HEADER.CACHE_CONTROL], response.headers[HEADER.WWW_AUTHENTICATE]];
-}
-
-function assertError(response, statusCode, code, message) {
-  assert.equal(response.statusCode, statusCode, response.body);
-  assert.deepEqual(response.json(), errorBody(response, code, message));
-}
-
-function assertUnauthenticated(response) {
-  assertError(response, 401, 'AUTHENTICATION_ERROR', 'Authentication error');
-  assert.deepEqual(readHeaders(response), [NO_STORE, BEARER_SCHEME]);
-}
-
-function assertForbidden(response) {
-  assertError(response, 403, 'AUTHORIZATION_ERROR', 'Authorization error');
-  assert.deepEqual(readHeaders(response), [NO_STORE, undefined]);
-}
-
-function assertNotFound(response) {
-  assertError(response, 404, 'NOT_FOUND_ERROR', 'Not found');
-}
-
-function assertNoChanges(response) {
-  assertError(response, 409, 'NO_CHANGES', 'No changes');
-}
-
-function assertProtected(response) {
-  assertError(response, 409, 'GROUP_PROTECTED', 'Group is protected');
-}
-
-function assertTaken(response, slug) {
-  assert.equal(response.statusCode, 422, response.body);
-  assert.deepEqual(response.json(), {
-    ...errorBody(response, 'VALIDATION_ERROR', 'Validation error'),
-    validation: [{
-      column: 'slug',
-      columnValue: slug,
-      operator: 'unique',
-      operatorValue: null,
-    }],
-  });
-}
-
-function assertNoContent(response) {
-  assert.equal(response.statusCode, 204, response.body);
-  assert.equal(response.body, '');
-}
-
 // A change that may lose a race: 204 when it came first, a clean 403 when what came first took its right away. Tells
 // which of them it was.
 function assertSettled(response) {
@@ -540,16 +376,6 @@ function assertSettled(response) {
   assertForbidden(response);
 
   return false;
-}
-
-function assertOk(response, data) {
-  assert.equal(response.statusCode, 200, response.body);
-  assert.deepEqual(response.json(), successBody(response, data));
-  assert.equal(response.headers[HEADER.CACHE_CONTROL], NO_STORE);
-}
-
-function readStatuses(responses) {
-  return responses.map((response) => response.statusCode);
 }
 
 // Bodies the parser or the schema refuses, and what one who may send them is answered.
@@ -565,22 +391,21 @@ function listBadBodies(bodyLimit) {
 }
 
 describe('the guard of /api/v1/groups', { skip: testRedis.skip || testDb.skip }, () => {
-  before(prepareDatabase);
+  before(() => migrateAndSeed(testDb));
 
   test('answers 401 with the Bearer challenge on every route to a request without a token, with one that is none or with a refresh token, before it looks for the group', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const device = await signInAs(fastify, [SCOPE_ALL]);
     const strangers = [null, { bearer: toBearer('not-a-token') }, { bearer: toBearer(device.issued.refreshToken) }];
     const requests = listEveryRoute(uuidv7(), uuidv7());
     const pairs = strangers.flatMap((stranger) => requests.map((request) => [stranger, request]));
     const responses = await mapSeries(pairs, ([stranger, request]) => send(fastify, stranger, request));
 
-    assert.equal(responses.length, strangers.length * requests.length);
-    responses.forEach((response) => assertUnauthenticated(response));
+    responses.forEach((response) => assertChallenged(response));
   });
 
-  test('answers each route by the scopes of the token: 403 without them, and the answer of the route with them, a wildcard of the resource and full access too; the members only beside users:read', async (t) => {
-    const fastify = await openApp(t);
+  test('answers each route by the scopes of the token: 403 without them, and the answer of the route with them, a wildcard of the resource and full access too; the members only beside users:read or users:manage', async (t) => {
+    const fastify = await openRouteApp(t, testDb);
     const root = await signInAs(fastify, [SCOPE_ALL]);
     const answers = await mapSeries(ROUTE_ACCESS, ([scopes]) => runEveryRoute(fastify, root, scopes));
 
@@ -589,7 +414,7 @@ describe('the guard of /api/v1/groups', { skip: testRedis.skip || testDb.skip },
   });
 
   test('guards the HEAD twin of each read and every spelling of an address the router takes alike: 401, 403, and the answer of the read, which nobody may store', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const root = await signInAs(fastify, [SCOPE_ALL]);
     const [plain, reader] = await mapSeries([[SCOPE.USERS_READ], [SCOPE.GROUPS_READ, SCOPE.USERS_READ]], (scopes) => signInAs(fastify, scopes));
     const group = await makeGroup(fastify, root);
@@ -605,29 +430,29 @@ describe('the guard of /api/v1/groups', { skip: testRedis.skip || testDb.skip },
   });
 
   test('refuses a guest with 401 and one without the scope with 403 before it reads the body: over the limit, not JSON, of another media type or against the schema; one with the scope is told what is wrong with it', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const [root, reader, manager] = await mapSeries([[SCOPE_ALL], [SCOPE.GROUPS_READ], [SCOPE.GROUPS_MANAGE]], (scopes) => signInAs(fastify, scopes));
     const group = await makeGroup(fastify, root);
     const bodies = listBadBodies(fastify.config.app.bodyLimit);
     const requests = bodies.flatMap(([body]) => [{ ...postGroupRequest(), ...body }, { ...patchGroupRequest(group.id), ...body }]);
-    const stateBefore = await readState(fastify);
+    const stateBefore = await readState(fastify, STATE_TABLES);
     const [byGuest, byReader, byManager] = await mapSeries([null, reader, manager], (actor) => mapSeries(requests, (request) => send(fastify, actor, request)));
 
-    byGuest.forEach((response) => assertUnauthenticated(response));
+    byGuest.forEach((response) => assertChallenged(response));
     byReader.forEach((response) => assertForbidden(response));
     assert.deepEqual(
       byManager.map((response) => [response.statusCode, response.json().code]),
       bodies.flatMap(([, answer]) => [answer, answer]),
     );
-    assert.deepEqual(await readState(fastify), stateBefore);
+    assert.deepEqual(await readState(fastify, STATE_TABLES), stateBefore);
   });
 });
 
 describe('GET /api/v1/groups', { skip: testRedis.skip || testDb.skip }, () => {
-  before(prepareDatabase);
+  before(() => migrateAndSeed(testDb));
 
   test('lists the groups with their scopes, by a part of the name in any case, in either order, a page at a time', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const root = await signInAs(fastify, [SCOPE_ALL]);
     const reader = await signInAs(fastify, [SCOPE.GROUPS_READ]);
     const marker = uuidv7().replaceAll('-', '');
@@ -681,16 +506,16 @@ describe('GET /api/v1/groups', { skip: testRedis.skip || testDb.skip }, () => {
   });
 
   test('gives the catalog of the scopes a group may grant: the wildcards of the resources are in it, * is not', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const reader = await signInAs(fastify, [SCOPE.GROUPS_READ]);
     const response = await send(fastify, reader, getScopesRequest());
 
     assertOk(response, SCOPE_CATALOG.map((entry) => ({ ...entry })));
-    assert.deepEqual(response.json().data.map((entry) => entry.code), ['groups:*', 'groups:read', 'groups:manage', 'users:*', 'users:read']);
+    assert.deepEqual(response.json().data.map((entry) => entry.code), ['groups:*', 'groups:read', 'groups:manage', 'users:*', 'users:read', 'users:manage']);
   });
 
   test('gives one group with its scopes, and 404 to an id that no group has', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const root = await signInAs(fastify, [SCOPE_ALL]);
     const reader = await signInAs(fastify, [SCOPE.GROUPS_READ]);
     const group = await makeGroup(fastify, root, { description: 'Read one by one', scopes: [SCOPE.USERS_READ] });
@@ -701,10 +526,10 @@ describe('GET /api/v1/groups', { skip: testRedis.skip || testDb.skip }, () => {
 });
 
 describe('POST /api/v1/groups', { skip: testRedis.skip || testDb.skip }, () => {
-  before(prepareDatabase);
+  before(() => migrateAndSeed(testDb));
 
   test('creates a group, answers 201 with it and its scopes sorted, and records group.create by its actor; what the body leaves out takes its default', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const manager = await signInAs(fastify, [SCOPE.GROUPS_MANAGE, SCOPE.GROUPS_READ, SCOPE.USERS_READ]);
     const full = {
       slug: createSlug('editors'),
@@ -738,7 +563,7 @@ describe('POST /api/v1/groups', { skip: testRedis.skip || testDb.skip }, () => {
     });
     assertOk(await send(fastify, manager, getGroupRequest(group.id)), group);
     assert.deepEqual(await readScopeRows(fastify, group.id), sorted);
-    assert.deepEqual(await readAudit(fastify, group.id), [describeAudit(created, manager, {
+    assert.deepEqual(await readAudit(fastify, group.id), [describeAudit(created, manager.userId, {
       action: CREATE_ACTION,
       entityType: GROUPS_ENTITY,
       entityId: group.id,
@@ -747,46 +572,46 @@ describe('POST /api/v1/groups', { skip: testRedis.skip || testDb.skip }, () => {
   });
 
   test('answers 422 to a slug that another group has, naming the column and the unique operator, and 409 GROUP_PROTECTED to the slug of the admin group, and writes nothing', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const manager = await signInAs(fastify, [SCOPE.GROUPS_MANAGE]);
     const taken = await makeGroup(fastify, manager);
-    const stateBefore = await readState(fastify);
+    const stateBefore = await readState(fastify, STATE_TABLES);
 
-    assertTaken(await send(fastify, manager, postGroupRequest({ slug: taken.slug, name: 'Another' })), taken.slug);
+    assertTaken(await send(fastify, manager, postGroupRequest({ slug: taken.slug, name: 'Another' })), 'slug', taken.slug);
     assertProtected(await send(fastify, manager, postGroupRequest({ slug: GROUP_SLUG.ADMIN, name: 'Another' })));
-    assert.deepEqual(await readState(fastify), stateBefore);
+    assert.deepEqual(await readState(fastify, STATE_TABLES), stateBefore);
   });
 
   test('makes one group of two requests that take one slug at the same moment: 201 to one, 422 to the other, one row and one record', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const root = await signInAs(fastify, [SCOPE_ALL]);
     const slug = createSlug('raced');
     const responses = await Promise.all(['first', 'second'].map((name) => send(fastify, root, postGroupRequest({ slug, name }))));
     const [created] = responses.filter((response) => response.statusCode === 201);
     const [refused] = responses.filter((response) => response.statusCode !== 201);
-    const [{ id }] = await readAppRows(fastify, SLUG_SQL, { slug });
+    const id = await findGroupId(fastify, slug);
 
     assert.deepEqual(readStatuses(responses).toSorted(), [201, 422]);
-    assertTaken(refused, slug);
+    assertTaken(refused, 'slug', slug);
     assert.equal(created.json().data.id, id);
     assert.deepEqual((await readAudit(fastify, id)).map((row) => [row.action, row.request_id]), [[CREATE_ACTION, readRequestId(created)]]);
   });
 
   test('answers 422 to a holder of * too for a body against the schema, and writes nothing: a slug off its pattern or too long, no name, a scope out of the catalog, * as a scope, a scope given twice', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const root = await signInAs(fastify, [SCOPE_ALL]);
-    const stateBefore = await readState(fastify);
+    const stateBefore = await readState(fastify, STATE_TABLES);
     const responses = await mapSeries(INVALID_BODIES, ([fields]) => send(fastify, root, postGroupRequest({ slug: createSlug('valid'), name: 'Valid', ...fields })));
 
     assert.deepEqual(
-      responses.map((response) => [response.statusCode, response.json().code, response.json().validation.map((entry) => [entry.column, entry.operator])]),
+      responses.map((response) => [response.statusCode, response.json().code, readFailures(response)]),
       INVALID_BODIES.map(([, failures]) => [422, 'VALIDATION_ERROR', failures]),
     );
-    assert.deepEqual(await readState(fastify), stateBefore);
+    assert.deepEqual(await readState(fastify, STATE_TABLES), stateBefore);
   });
 
   test('drops isSystem from a body: a group the API makes is never one of the system, and the admin group stays one', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const root = await signInAs(fastify, [SCOPE_ALL]);
     const adminId = await readAdminId(fastify);
     const created = await send(fastify, root, postGroupRequest({ slug: createSlug('system'), name: 'System', isSystem: true }));
@@ -802,11 +627,11 @@ describe('POST /api/v1/groups', { skip: testRedis.skip || testDb.skip }, () => {
   });
 
   test('lets only a holder of * turn full access on or off: a holder of every scope of the catalog is refused with 403 by POST and by PATCH, and nothing is written', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const root = await signInAs(fastify, [SCOPE_ALL]);
     const holder = await signInAs(fastify, CATALOG_CODES);
     const [plain, full] = await mapSeries([{}, { isSuperadmin: true }], (fields) => makeGroup(fastify, root, fields));
-    const stateBefore = await readState(fastify);
+    const stateBefore = await readState(fastify, STATE_TABLES);
     const refused = await mapSeries([
       postGroupRequest({ slug: createSlug('full'), name: 'Full', isSuperadmin: true }),
       patchGroupRequest(plain.id, { isSuperadmin: true }),
@@ -815,7 +640,7 @@ describe('POST /api/v1/groups', { skip: testRedis.skip || testDb.skip }, () => {
     ], (request) => send(fastify, holder, request));
 
     refused.forEach((response) => assertForbidden(response));
-    assert.deepEqual(await readState(fastify), stateBefore);
+    assert.deepEqual(await readState(fastify, STATE_TABLES), stateBefore);
 
     const listed = await makeGroup(fastify, holder, { isSuperadmin: false, scopes: CATALOG_CODES });
     const made = await makeGroup(fastify, root, { isSuperadmin: true });
@@ -827,7 +652,7 @@ describe('POST /api/v1/groups', { skip: testRedis.skip || testDb.skip }, () => {
   });
 
   test('lets one who manages groups give a group only the scopes they hold or their wildcard grants, never one they lack nor a wildcard whose actions they hold: by POST and by PATCH', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const root = await signInAs(fastify, [SCOPE_ALL]);
 
     async function give([held, given]) {
@@ -846,10 +671,10 @@ describe('POST /api/v1/groups', { skip: testRedis.skip || testDb.skip }, () => {
 });
 
 describe('PATCH /api/v1/groups/:id', { skip: testRedis.skip || testDb.skip }, () => {
-  before(prepareDatabase);
+  before(() => migrateAndSeed(testDb));
 
   test('changes the fields it is given, moves updated_at and records group.update with each change from what to what; a null description clears it', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const manager = await signInAs(fastify, [SCOPE.GROUPS_MANAGE, SCOPE.GROUPS_READ]);
     const group = await makeGroup(fastify, manager, { name: 'Writers', description: 'They write', scopes: [SCOPE.GROUPS_READ] });
     const slug = createSlug('authors');
@@ -869,7 +694,7 @@ describe('PATCH /api/v1/groups/:id', { skip: testRedis.skip || testDb.skip }, ()
     assert.ok(updatedAt > LONG_AGO, updatedAt);
     assert.equal((await readGroupRow(fastify, group.id)).description, null);
     assertOk(await send(fastify, manager, getGroupRequest(group.id)), response.json().data);
-    assert.deepEqual((await readAudit(fastify, group.id)).at(-1), describeAudit(response, manager, {
+    assert.deepEqual((await readAudit(fastify, group.id)).at(-1), describeAudit(response, manager.userId, {
       action: UPDATE_ACTION,
       entityType: GROUPS_ENTITY,
       entityId: group.id,
@@ -884,7 +709,7 @@ describe('PATCH /api/v1/groups/:id', { skip: testRedis.skip || testDb.skip }, ()
   });
 
   test('replaces the whole list of scopes, and a change of the scopes alone moves updated_at too', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const root = await signInAs(fastify, [SCOPE_ALL]);
     const group = await makeGroup(fastify, root, { scopes: [SCOPE.GROUPS_READ, SCOPE.USERS_READ] });
 
@@ -897,7 +722,7 @@ describe('PATCH /api/v1/groups/:id', { skip: testRedis.skip || testDb.skip }, ()
     assert.ok(updatedAt > LONG_AGO, updatedAt);
     assert.equal((await readGroupRow(fastify, group.id)).updated_at.toISOString(), updatedAt);
     assert.deepEqual(await readScopeRows(fastify, group.id), [SCOPE.GROUPS_MANAGE, SCOPE.USERS_READ]);
-    assert.deepEqual((await readAudit(fastify, group.id)).at(-1), describeAudit(replaced, root, {
+    assert.deepEqual((await readAudit(fastify, group.id)).at(-1), describeAudit(replaced, root.userId, {
       action: UPDATE_ACTION,
       entityType: GROUPS_ENTITY,
       entityId: group.id,
@@ -910,10 +735,10 @@ describe('PATCH /api/v1/groups/:id', { skip: testRedis.skip || testDb.skip }, ()
   });
 
   test('answers 200 with the group as it is to the values it has already, its scopes in another order too, and writes nothing', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const root = await signInAs(fastify, [SCOPE_ALL]);
     const group = await makeGroup(fastify, root, { name: 'Same', description: 'The same', scopes: [SCOPE.GROUPS_READ, SCOPE.USERS_READ] });
-    const stateBefore = await readState(fastify);
+    const stateBefore = await readState(fastify, STATE_TABLES);
     const response = await send(fastify, root, patchGroupRequest(group.id, {
       slug: group.slug,
       name: 'Same',
@@ -923,28 +748,28 @@ describe('PATCH /api/v1/groups/:id', { skip: testRedis.skip || testDb.skip }, ()
     }));
 
     assertOk(response, group);
-    assert.deepEqual(await readState(fastify), stateBefore);
+    assert.deepEqual(await readState(fastify, STATE_TABLES), stateBefore);
   });
 
   test('answers 409 NO_CHANGES to an empty body, 404 to an id that no group has, 422 to the slug of another group and 409 GROUP_PROTECTED to the slug of the admin group, and writes nothing', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const root = await signInAs(fastify, [SCOPE_ALL]);
     const [group, other] = await mapSeries([{}, {}], (fields) => makeGroup(fastify, root, fields));
-    const stateBefore = await readState(fastify);
+    const stateBefore = await readState(fastify, STATE_TABLES);
 
     assertNoChanges(await send(fastify, root, patchGroupRequest(group.id, {})));
     assertNotFound(await send(fastify, root, patchGroupRequest(uuidv7(), { name: 'Nobody' })));
-    assertTaken(await send(fastify, root, patchGroupRequest(group.id, { slug: other.slug })), other.slug);
+    assertTaken(await send(fastify, root, patchGroupRequest(group.id, { slug: other.slug })), 'slug', other.slug);
     assertProtected(await send(fastify, root, patchGroupRequest(group.id, { slug: GROUP_SLUG.ADMIN })));
-    assert.deepEqual(await readState(fastify), stateBefore);
+    assert.deepEqual(await readState(fastify, STATE_TABLES), stateBefore);
   });
 });
 
 describe('DELETE /api/v1/groups/:id', { skip: testRedis.skip || testDb.skip }, () => {
-  before(prepareDatabase);
+  before(() => migrateAndSeed(testDb));
 
   test('deletes a group with its scopes and its memberships, answers 204 and records group.delete with the ids of its members in their order, none for a group without them; the same id once more is 404', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const root = await signInAs(fastify, [SCOPE_ALL]);
     const [group, empty] = await mapSeries([{ description: 'Soon gone', scopes: [SCOPE.USERS_READ, SCOPE.GROUPS_READ] }, {}], (fields) => makeGroup(fastify, root, fields));
     const userIds = await mapSeries(['first', 'second', 'third'], () => createUser(fastify));
@@ -963,7 +788,7 @@ describe('DELETE /api/v1/groups/:id', { skip: testRedis.skip || testDb.skip }, (
     const audit = await readAudit(fastify, group.id);
 
     assert.deepEqual(audit.map((row) => row.action), [CREATE_ACTION, DELETE_ACTION]);
-    assert.deepEqual(audit.at(-1), describeAudit(deleted, root, {
+    assert.deepEqual(audit.at(-1), describeAudit(deleted, root.userId, {
       action: DELETE_ACTION,
       entityType: GROUPS_ENTITY,
       entityId: group.id,
@@ -975,10 +800,10 @@ describe('DELETE /api/v1/groups/:id', { skip: testRedis.skip || testDb.skip }, (
 });
 
 describe('a group that grants more than one holds', { skip: testRedis.skip || testDb.skip }, () => {
-  before(prepareDatabase);
+  before(() => migrateAndSeed(testDb));
 
   test('is not theirs to change: its name, its scopes, its full access, its deletion and its members are refused with 403, and nothing is written', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const root = await signInAs(fastify, [SCOPE_ALL]);
     const manager = await signInAs(fastify, [SCOPE.GROUPS_MANAGE, SCOPE.GROUPS_READ]);
     const [wider, full] = await mapSeries([{ scopes: [SCOPE.USERS_READ] }, { isSuperadmin: true }], (fields) => makeGroup(fastify, root, fields));
@@ -996,11 +821,11 @@ describe('a group that grants more than one holds', { skip: testRedis.skip || te
       ]),
       patchGroupRequest(full.id, { isSuperadmin: false }),
     ];
-    const stateBefore = await readState(fastify);
+    const stateBefore = await readState(fastify, STATE_TABLES);
     const responses = await mapSeries(requests, (request) => send(fastify, manager, request));
 
     responses.forEach((response) => assertForbidden(response));
-    assert.deepEqual(await readState(fastify), stateBefore);
+    assert.deepEqual(await readState(fastify, STATE_TABLES), stateBefore);
 
     const peer = await signInAs(fastify, [SCOPE.GROUPS_MANAGE, SCOPE.USERS_READ]);
     const renamed = await changeGroup(fastify, peer, wider.id, { name: 'Renamed by a peer' });
@@ -1013,13 +838,13 @@ describe('a group that grants more than one holds', { skip: testRedis.skip || te
 });
 
 describe('the system group admin', { skip: testRedis.skip || testDb.skip }, () => {
-  before(prepareDatabase);
+  before(() => migrateAndSeed(testDb));
 
   test('is never deleted and keeps its slug and its full access, a holder of * asking too: 409 GROUP_PROTECTED, and nothing is written', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const root = await signInAs(fastify, [SCOPE_ALL]);
     const adminId = await readAdminId(fastify);
-    const stateBefore = await readState(fastify);
+    const stateBefore = await readState(fastify, STATE_TABLES);
     const responses = await mapSeries([
       deleteGroupRequest(adminId),
       patchGroupRequest(adminId, { slug: 'root' }),
@@ -1028,11 +853,11 @@ describe('the system group admin', { skip: testRedis.skip || testDb.skip }, () =
     ], (request) => send(fastify, root, request));
 
     responses.forEach((response) => assertProtected(response));
-    assert.deepEqual(await readState(fastify), stateBefore);
+    assert.deepEqual(await readState(fastify, STATE_TABLES), stateBefore);
   });
 
   test('may be renamed and described anew by a holder of *, and takes members from them: its slug, its full access and its mark of the system stay', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const root = await signInAs(fastify, [SCOPE_ALL]);
     const member = await signInAs(fastify);
     const adminId = await readAdminId(fastify);
@@ -1063,11 +888,11 @@ describe('the system group admin', { skip: testRedis.skip || testDb.skip }, () =
   });
 
   test('tells one who manages groups 409 for what nobody may do before 403 for what only a holder of * may, and 404 before both', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const manager = await signInAs(fastify, [SCOPE.GROUPS_MANAGE, SCOPE.GROUPS_READ]);
     const adminId = await readAdminId(fastify);
     const userId = await createUser(fastify);
-    const stateBefore = await readState(fastify);
+    const stateBefore = await readState(fastify, STATE_TABLES);
 
     assertNotFound(await send(fastify, manager, deleteGroupRequest(uuidv7())));
     assertNotFound(await send(fastify, manager, patchGroupRequest(uuidv7(), { slug: 'root' })));
@@ -1076,11 +901,11 @@ describe('the system group admin', { skip: testRedis.skip || testDb.skip }, () =
     assertProtected(await send(fastify, manager, patchGroupRequest(adminId, { isSuperadmin: false })));
     assertForbidden(await send(fastify, manager, patchGroupRequest(adminId, { name: 'Ours now' })));
     assertForbidden(await send(fastify, manager, putMemberRequest(adminId, userId)));
-    assert.deepEqual(await readState(fastify), stateBefore);
+    assert.deepEqual(await readState(fastify, STATE_TABLES), stateBefore);
   });
 
   test('keeps its last member: a holder of * from another group is answered 409 GROUP_PROTECTED, after 404 for one who is no member and before 403 for one who may not change the group, while one of two members may go', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const root = await signInAs(fastify, [SCOPE_ALL]);
     const manager = await signInAs(fastify, [SCOPE.GROUPS_MANAGE, SCOPE.GROUPS_READ]);
     const [firstId, secondId, outsiderId] = await mapSeries(['first', 'second', 'outsider'], () => createUser(fastify));
@@ -1089,7 +914,7 @@ describe('the system group admin', { skip: testRedis.skip || testDb.skip }, () =
     assertForbidden(await send(fastify, manager, deleteMemberRequest(adminId, secondId)));
     await dropMember(fastify, root, adminId, secondId);
 
-    const stateBefore = await readState(fastify);
+    const stateBefore = await readState(fastify, STATE_TABLES);
     const responses = await mapSeries([root, manager], (actor) => mapSeries(
       [deleteMemberRequest(adminId, outsiderId), deleteMemberRequest(adminId, firstId)],
       (request) => send(fastify, actor, request),
@@ -1099,22 +924,22 @@ describe('the system group admin', { skip: testRedis.skip || testDb.skip }, () =
       assertNotFound(outside);
       assertProtected(last);
     });
-    assert.deepEqual(await readState(fastify), stateBefore);
+    assert.deepEqual(await readState(fastify, STATE_TABLES), stateBefore);
     assert.deepEqual(await listMemberIds(fastify, adminId), [firstId]);
   });
 
   test('keeps its last active member: blocked members do not count, and may go themselves while the active one stays', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const root = await signInAs(fastify, [SCOPE_ALL]);
     const [activeId, firstBlockedId, secondBlockedId] = await mapSeries(['active', 'first blocked', 'second blocked'], () => createUser(fastify));
 
-    await mapSeries([firstBlockedId, secondBlockedId], (id) => readAppRows(fastify, STATUS_SQL, { id, status: USER_STATUS.BLOCKED }));
+    await mapSeries([firstBlockedId, secondBlockedId], (id) => blockByHand(fastify, id));
 
     const adminId = await setAdminMembers(fastify, [activeId, firstBlockedId, secondBlockedId]);
-    const stateBefore = await readState(fastify);
+    const stateBefore = await readState(fastify, STATE_TABLES);
 
     assertProtected(await send(fastify, root, deleteMemberRequest(adminId, activeId)));
-    assert.deepEqual(await readState(fastify), stateBefore);
+    assert.deepEqual(await readState(fastify, STATE_TABLES), stateBefore);
 
     await mapSeries([firstBlockedId, secondBlockedId], (userId) => dropMember(fastify, root, adminId, userId));
     assertProtected(await send(fastify, root, deleteMemberRequest(adminId, activeId)));
@@ -1122,20 +947,19 @@ describe('the system group admin', { skip: testRedis.skip || testDb.skip }, () =
   });
 
   test('lets the last member go of a group with full access that is not of the system, and of a group of the system without full access', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const root = await signInAs(fastify, [SCOPE_ALL]);
     const full = await makeGroup(fastify, root, { isSuperadmin: true });
-    const systemId = uuidv7();
+    const { id: systemId } = await insertGroup(fastify, { isSystem: true });
     const [fullMemberId, systemMemberId] = await mapSeries(['full', 'system'], () => createUser(fastify));
 
-    await readAppRows(fastify, SYSTEM_GROUP_SQL, { id: systemId, slug: createSlug('system') });
     await mapSeries([[full.id, fullMemberId], [systemId, systemMemberId]], ([groupId, userId]) => makeMember(fastify, root, groupId, userId));
     await mapSeries([[full.id, fullMemberId], [systemId, systemMemberId]], ([groupId, userId]) => dropMember(fastify, root, groupId, userId));
     assert.deepEqual([await listMemberIds(fastify, full.id), await listMemberIds(fastify, systemId)], [[], []]);
   });
 
   test('keeps its slug to itself while its row is there and while it is missing: a new group and a change of the slug of another group to it are 409 GROUP_PROTECTED, before the 403 of one who may not give full access, and nothing is written', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const root = await signInAs(fastify, [SCOPE_ALL]);
     const manager = await signInAs(fastify, [SCOPE.GROUPS_MANAGE]);
     const [plain, full] = await mapSeries([{}, { isSuperadmin: true }], (fields) => makeGroup(fastify, root, fields));
@@ -1149,25 +973,25 @@ describe('the system group admin', { skip: testRedis.skip || testDb.skip }, () =
     ];
 
     async function assertRefused() {
-      const stateBefore = await readState(fastify);
+      const stateBefore = await readState(fastify, STATE_TABLES);
       const responses = await mapSeries(refusals, ([actor, request]) => send(fastify, actor, request));
 
       responses.forEach((response) => assertProtected(response));
-      assert.deepEqual(await readState(fastify), stateBefore);
+      assert.deepEqual(await readState(fastify, STATE_TABLES), stateBefore);
     }
 
     await assertRefused();
     await removeAdminRow(t, fastify);
-    assert.deepEqual(await readAppRows(fastify, SLUG_SQL, { slug: GROUP_SLUG.ADMIN }), []);
+    assert.equal(await findGroupId(fastify, GROUP_SLUG.ADMIN), null);
     await assertRefused();
   });
 });
 
 describe('the members of a group', { skip: testRedis.skip || testDb.skip }, () => {
-  before(prepareDatabase);
+  before(() => migrateAndSeed(testDb));
 
   test('lists the members with the fields of a user and no other, by the filters and the sort of the users, a page at a time; an unknown group is 404', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const root = await signInAs(fastify, [SCOPE_ALL]);
     const reader = await signInAs(fastify, [SCOPE.GROUPS_READ, SCOPE.USERS_READ]);
     const group = await makeGroup(fastify, root);
@@ -1206,32 +1030,32 @@ describe('the members of a group', { skip: testRedis.skip || testDb.skip }, () =
   });
 
   test('adds another user with PUT and takes them out with DELETE, 204 each: granted_by and the records of user.group_grant and user.group_revoke name the actor; a second PUT writes nothing', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const manager = await signInAs(fastify, [SCOPE.GROUPS_MANAGE, SCOPE.GROUPS_READ, SCOPE.USERS_READ]);
     const group = await makeGroup(fastify, manager);
     const userId = await createUser(fastify);
     const meta = { group: group.slug, groupId: group.id };
     const added = await makeMember(fastify, manager, group.id, userId);
-    const stateAdded = await readState(fastify);
+    const stateAdded = await readState(fastify, STATE_TABLES);
 
     assert.deepEqual(await readMemberships(fastify, group.id), [{ user_id: userId, group_id: group.id, granted_by: manager.userId }]);
     assert.deepEqual(readMemberIds(await send(fastify, manager, getMembersRequest(group.id))), [userId]);
 
     await makeMember(fastify, manager, group.id, userId);
-    assert.deepEqual(await readState(fastify), stateAdded);
+    assert.deepEqual(await readState(fastify, STATE_TABLES), stateAdded);
 
     const removed = await dropMember(fastify, manager, group.id, userId);
 
     assert.deepEqual(await readMemberships(fastify, group.id), []);
     assert.deepEqual(readMemberIds(await send(fastify, manager, getMembersRequest(group.id))), []);
     assert.deepEqual(await readAudit(fastify, userId), [
-      describeAudit(added, manager, {
+      describeAudit(added, manager.userId, {
         action: GRANT_ACTION,
         entityType: USERS_ENTITY,
         entityId: userId,
         meta,
       }),
-      describeAudit(removed, manager, {
+      describeAudit(removed, manager.userId, {
         action: REVOKE_ACTION,
         entityType: USERS_ENTITY,
         entityId: userId,
@@ -1241,7 +1065,7 @@ describe('the members of a group', { skip: testRedis.skip || testDb.skip }, () =
   });
 
   test('adds a member once when two requests add them at the same moment: both 204, one row and one record', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const root = await signInAs(fastify, [SCOPE_ALL]);
     const group = await makeGroup(fastify, root);
     const userId = await createUser(fastify);
@@ -1253,11 +1077,11 @@ describe('the members of a group', { skip: testRedis.skip || testDb.skip }, () =
   });
 
   test('answers 404 to a group or a user that does not exist, by PUT and by DELETE, and to one who is no member by DELETE, and writes nothing', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const root = await signInAs(fastify, [SCOPE_ALL]);
     const group = await makeGroup(fastify, root);
     const userId = await createUser(fastify);
-    const stateBefore = await readState(fastify);
+    const stateBefore = await readState(fastify, STATE_TABLES);
     const responses = await mapSeries([
       putMemberRequest(uuidv7(), userId),
       putMemberRequest(group.id, uuidv7()),
@@ -1267,17 +1091,17 @@ describe('the members of a group', { skip: testRedis.skip || testDb.skip }, () =
     ], (request) => send(fastify, root, request));
 
     responses.forEach((response) => assertNotFound(response));
-    assert.deepEqual(await readState(fastify), stateBefore);
+    assert.deepEqual(await readState(fastify, STATE_TABLES), stateBefore);
   });
 
   test('lets nobody add themselves or take themselves out, a holder of * neither, and says so before it looks for the group: 403, and nothing is written', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const root = await signInAs(fastify, [SCOPE_ALL]);
     const manager = await signInAs(fastify, [SCOPE.GROUPS_MANAGE]);
     const group = await makeGroup(fastify, root);
     const adminId = await readAdminId(fastify);
     const [ownGroupId] = await readGroupIdsOf(fastify, root.userId);
-    const stateBefore = await readState(fastify);
+    const stateBefore = await readState(fastify, STATE_TABLES);
     const refusals = [
       [root, putMemberRequest(group.id, root.userId)],
       [root, putMemberRequest(adminId, root.userId)],
@@ -1289,16 +1113,16 @@ describe('the members of a group', { skip: testRedis.skip || testDb.skip }, () =
     const responses = await mapSeries(refusals, ([actor, request]) => send(fastify, actor, request));
 
     responses.forEach((response) => assertForbidden(response));
-    assert.deepEqual(await readState(fastify), stateBefore);
+    assert.deepEqual(await readState(fastify, STATE_TABLES), stateBefore);
     assert.deepEqual(await readGroupIdsOf(fastify, root.userId), [ownGroupId]);
   });
 });
 
 describe('a change of groups and the access token', { skip: testRedis.skip || testDb.skip }, () => {
-  before(prepareDatabase);
+  before(() => migrateAndSeed(testDb));
 
   test('reaches a member on their next refresh and not before: the token they hold keeps the scopes it was issued with as scopes come and go', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const root = await signInAs(fastify, [SCOPE_ALL]);
     const member = await signInAs(fastify);
     const group = await makeGroup(fastify, root, { scopes: [SCOPE.GROUPS_READ] });
@@ -1348,7 +1172,7 @@ describe('a change of groups and the access token', { skip: testRedis.skip || te
   });
 
   test('takes the scopes of a deleted group from its members on their next refresh', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const root = await signInAs(fastify, [SCOPE_ALL]);
     const member = await signInAs(fastify);
     const group = await makeGroup(fastify, root, { scopes: [SCOPE.GROUPS_READ] });
@@ -1369,10 +1193,14 @@ describe('a change of groups and the access token', { skip: testRedis.skip || te
 });
 
 describe('the cache of the reads of groups', { skip: testRedis.skip || testDb.skip }, () => {
-  before(prepareDatabase);
+  before(() => migrateAndSeed(testDb));
 
   test('with Redis up serves a read again from the cache until a change through the API, which the next read shows: the list, the group, its scopes and its members', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
+
+    // The first read of a table whose version is not there yet starts it and goes to the database, caching nothing.
+    await runInApp(fastify, () => invalidateCacheTables([TABLE.GROUPS, TABLE.GROUP_SCOPES, TABLE.USERS, TABLE.USER_GROUPS]));
+
     const root = await signInAs(fastify, [SCOPE_ALL]);
     const reader = await signInAs(fastify, [SCOPE.GROUPS_READ, SCOPE.USERS_READ]);
     const [userId, otherId] = await mapSeries(['member', 'other'], () => createUser(fastify));
@@ -1394,7 +1222,7 @@ describe('the cache of the reads of groups', { skip: testRedis.skip || testDb.sk
     assert.deepEqual([await readNewest(), await readOne(), await readMembers()], [[group], group, []]);
 
     await readAppRows(fastify, RENAME_SQL, { id: group.id, name: 'Renamed behind the back' });
-    await readAppRows(fastify, JOIN_SQL, { userId: otherId, groupId: group.id });
+    await joinGroup(fastify, { userId: otherId, groupId: group.id });
     assert.deepEqual([await readNewest(), await readOne(), await readMembers()], [[group], group, []]);
 
     const described = await changeGroup(fastify, root, group.id, { description: 'Changed through the API' });
@@ -1419,10 +1247,10 @@ describe('the cache of the reads of groups', { skip: testRedis.skip || testDb.sk
 });
 
 describe('a write with the token of one who was just demoted', { skip: testRedis.skip || testDb.skip }, () => {
-  before(prepareDatabase);
+  before(() => migrateAndSeed(testDb));
 
   test('is judged by what the database grants the actor now: a manager taken out of the group that gave them groups:manage is refused with 403 by every change at once, though the old token still passes the guard, and nothing is written', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const root = await signInAs(fastify, [SCOPE_ALL]);
     const member = await signInAs(fastify);
     const [power, target] = await mapSeries([{ scopes: [SCOPE.GROUPS_MANAGE, SCOPE.GROUPS_READ] }, {}], (fields) => makeGroup(fastify, root, fields));
@@ -1436,7 +1264,7 @@ describe('a write with the token of one who was just demoted', { skip: testRedis
     await changeGroup(fastify, manager, target.id, { name: 'Managed' });
     await dropMember(fastify, root, power.id, manager.userId);
 
-    const stateBefore = await readState(fastify);
+    const stateBefore = await readState(fastify, STATE_TABLES);
     const responses = await mapSeries([
       postGroupRequest({ slug: createSlug('stale'), name: 'Stale' }),
       patchGroupRequest(target.id, { name: 'Stale' }),
@@ -1446,7 +1274,7 @@ describe('a write with the token of one who was just demoted', { skip: testRedis
     ], (request) => send(fastify, manager, request));
 
     responses.forEach((response) => assertForbidden(response));
-    assert.deepEqual(await readState(fastify), stateBefore);
+    assert.deepEqual(await readState(fastify, STATE_TABLES), stateBefore);
     assert.equal((await send(fastify, manager, getGroupRequest(target.id))).statusCode, 200);
     assertNotFound(await send(fastify, manager, patchGroupRequest(uuidv7(), { name: 'Nobody' })));
 
@@ -1457,7 +1285,7 @@ describe('a write with the token of one who was just demoted', { skip: testRedis
   });
 
   test('lets no manager taken out of the group that gave them groups:manage add a second account to any group with the old token, that group among them: 403, and nothing is written', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const root = await signInAs(fastify, [SCOPE_ALL]);
     const member = await signInAs(fastify);
     const groups = await mapSeries([{ scopes: [SCOPE.GROUPS_MANAGE] }, {}, { scopes: [SCOPE.GROUPS_MANAGE] }], (fields) => makeGroup(fastify, root, fields));
@@ -1471,16 +1299,16 @@ describe('a write with the token of one who was just demoted', { skip: testRedis
     await makeMember(fastify, manager, plain.id, otherId);
     await dropMember(fastify, root, power.id, manager.userId);
 
-    const stateBefore = await readState(fastify);
+    const stateBefore = await readState(fastify, STATE_TABLES);
     const responses = await mapSeries(groups, (group) => send(fastify, manager, putMemberRequest(group.id, secondId)));
 
     responses.forEach((response) => assertForbidden(response));
-    assert.deepEqual(await readState(fastify), stateBefore);
+    assert.deepEqual(await readState(fastify, STATE_TABLES), stateBefore);
     assert.deepEqual(await readGroupIdsOf(fastify, secondId), []);
   });
 
   test('lets no holder of * whom another one took out of the admin group take that one out with the old token, nor change the group: 403, and the admin group keeps them', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const root = await signInAs(fastify, [SCOPE_ALL]);
     const devices = await mapSeries(['taker', 'taken'], () => signInAs(fastify));
     const [thirdId, newcomerId] = await mapSeries(['third', 'newcomer'], () => createUser(fastify));
@@ -1493,7 +1321,7 @@ describe('a write with the token of one who was just demoted', { skip: testRedis
     assert.deepEqual([taker.scopes, taken.scopes], [[SCOPE_ALL], [SCOPE_ALL]]);
     await dropMember(fastify, taker, adminId, taken.userId);
 
-    const stateBefore = await readState(fastify);
+    const stateBefore = await readState(fastify, STATE_TABLES);
     const responses = await mapSeries([
       deleteMemberRequest(adminId, taker.userId),
       deleteMemberRequest(adminId, thirdId),
@@ -1502,13 +1330,13 @@ describe('a write with the token of one who was just demoted', { skip: testRedis
     ], (request) => send(fastify, taken, request));
 
     responses.forEach((response) => assertForbidden(response));
-    assert.deepEqual(await readState(fastify), stateBefore);
+    assert.deepEqual(await readState(fastify, STATE_TABLES), stateBefore);
     assert.ok((await listMemberIds(fastify, adminId)).includes(taker.userId));
     assert.deepEqual((await refreshDevice(fastify, taken)).scopes, []);
   });
 
   test('lets no member of a group whose full access was just turned off turn it back on with the old token, nor give it to a new group: 403, and nothing is written', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const root = await signInAs(fastify, [SCOPE_ALL]);
     const member = await signInAs(fastify);
     const full = await makeGroup(fastify, root, { isSuperadmin: true });
@@ -1520,19 +1348,19 @@ describe('a write with the token of one who was just demoted', { skip: testRedis
     assert.deepEqual(holder.scopes, [SCOPE_ALL]);
     await changeGroup(fastify, root, full.id, { isSuperadmin: false });
 
-    const stateBefore = await readState(fastify);
+    const stateBefore = await readState(fastify, STATE_TABLES);
     const responses = await mapSeries([
       patchGroupRequest(full.id, { isSuperadmin: true }),
       postGroupRequest({ slug: createSlug('full'), name: 'Full again', isSuperadmin: true }),
     ], (request) => send(fastify, holder, request));
 
     responses.forEach((response) => assertForbidden(response));
-    assert.deepEqual(await readState(fastify), stateBefore);
+    assert.deepEqual(await readState(fastify, STATE_TABLES), stateBefore);
     assert.equal((await readGroupRow(fastify, full.id)).is_superadmin, false);
   });
 
   test('loses a scope taken from a group of the actor at once, while the reads go by the token until its next refresh, which leaves the scope out', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const root = await signInAs(fastify, [SCOPE_ALL]);
     const member = await signInAs(fastify);
     const [power, readers] = await mapSeries([{ scopes: [SCOPE.GROUPS_MANAGE, SCOPE.USERS_READ] }, { scopes: [SCOPE.USERS_READ] }], (fields) => makeGroup(fastify, root, fields));
@@ -1546,7 +1374,7 @@ describe('a write with the token of one who was just demoted', { skip: testRedis
     await changeGroup(fastify, manager, readers.id, { name: 'Readers' });
     await changeGroup(fastify, root, power.id, { scopes: [SCOPE.GROUPS_MANAGE] });
 
-    const stateBefore = await readState(fastify);
+    const stateBefore = await readState(fastify, STATE_TABLES);
     const responses = await mapSeries([
       patchGroupRequest(readers.id, { name: 'Readers again' }),
       putMemberRequest(readers.id, userId),
@@ -1554,7 +1382,7 @@ describe('a write with the token of one who was just demoted', { skip: testRedis
     ], (request) => send(fastify, manager, request));
 
     responses.forEach((response) => assertForbidden(response));
-    assert.deepEqual(await readState(fastify), stateBefore);
+    assert.deepEqual(await readState(fastify, STATE_TABLES), stateBefore);
     assert.equal((await send(fastify, manager, getMembersRequest(readers.id))).statusCode, 200);
 
     const narrowed = await refreshDevice(fastify, manager);
@@ -1567,18 +1395,18 @@ describe('a write with the token of one who was just demoted', { skip: testRedis
 
 // Blocked by hand: nothing revokes the session, and its access token stays alive until it ends.
 describe('a user who was just blocked', { skip: testRedis.skip || testDb.skip }, () => {
-  before(prepareDatabase);
+  before(() => migrateAndSeed(testDb));
 
   test('changes no group with the token they still hold, which the guard lets through to the reads: every write is refused with 403 though their groups grant full access, and nothing is written', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const [root, actor] = await mapSeries(['root', 'actor'], () => signInAs(fastify, [SCOPE_ALL]));
     const group = await makeGroup(fastify, root);
     const [insiderId, outsiderId] = await mapSeries(['insider', 'outsider'], () => createUser(fastify));
 
     await makeMember(fastify, actor, group.id, insiderId);
-    await readAppRows(fastify, STATUS_SQL, { id: actor.userId, status: USER_STATUS.BLOCKED });
+    await blockByHand(fastify, actor.userId);
 
-    const stateBefore = await readState(fastify);
+    const stateBefore = await readState(fastify, STATE_TABLES);
     const writes = await mapSeries([
       postGroupRequest({ slug: createSlug('blocked'), name: 'Blocked' }),
       patchGroupRequest(group.id, { name: 'Blocked' }),
@@ -1594,13 +1422,13 @@ describe('a user who was just blocked', { skip: testRedis.skip || testDb.skip },
     ], (request) => send(fastify, actor, request));
 
     writes.forEach((response) => assertForbidden(response));
-    assert.deepEqual(await readState(fastify), stateBefore);
+    assert.deepEqual(await readState(fastify, STATE_TABLES), stateBefore);
     assert.deepEqual(readStatuses(reads), [200, 200, 200, 200]);
     assert.deepEqual(readMemberIds(reads.at(-1)), [insiderId]);
   });
 
   test('may still be added to a group and taken out of it by an active manager: 204 each, and granted_by and the records of user.group_grant and user.group_revoke name the manager', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const manager = await signInAs(fastify, [SCOPE.GROUPS_MANAGE, SCOPE.USERS_READ]);
     const group = await makeGroup(fastify, manager);
     const blockedId = await createUser(fastify, { status: USER_STATUS.BLOCKED });
@@ -1614,13 +1442,13 @@ describe('a user who was just blocked', { skip: testRedis.skip || testDb.skip },
 
     assert.deepEqual(await readMemberships(fastify, group.id), []);
     assert.deepEqual(await readAudit(fastify, blockedId), [
-      describeAudit(added, manager, {
+      describeAudit(added, manager.userId, {
         action: GRANT_ACTION,
         entityType: USERS_ENTITY,
         entityId: blockedId,
         meta,
       }),
-      describeAudit(removed, manager, {
+      describeAudit(removed, manager.userId, {
         action: REVOKE_ACTION,
         entityType: USERS_ENTITY,
         entityId: blockedId,
@@ -1631,10 +1459,10 @@ describe('a user who was just blocked', { skip: testRedis.skip || testDb.skip },
 });
 
 describe('the conflicts of the routes of groups', { skip: testRedis.skip || testDb.skip }, () => {
-  before(prepareDatabase);
+  before(() => migrateAndSeed(testDb));
 
   test('are the ones the docs name for each route: GROUP_PROTECTED to POST, GROUP_PROTECTED and NO_CHANGES to PATCH, GROUP_PROTECTED to the DELETE of a group and of a member, and none to the others', async (t) => {
-    const fastify = await openApp(t, { env: { APP_MODE: MODE.DEV } });
+    const fastify = await openRouteApp(t, testDb, { env: DEV_ENV });
     const root = await signInAs(fastify, [SCOPE_ALL]);
     const group = await makeGroup(fastify, root);
     const [memberId, lastId] = await mapSeries(['member', 'last'], () => createUser(fastify));
@@ -1642,7 +1470,7 @@ describe('the conflicts of the routes of groups', { skip: testRedis.skip || test
 
     await makeMember(fastify, root, group.id, memberId);
 
-    const spec = await fastify.inject(`${fastify.config.app.docsPrefix}${SPEC_PATH}`);
+    const spec = await readSpec(fastify);
     const scenarios = [
       [`GET ${GROUPS_URL}`, getGroupsRequest(), 200],
       [`GET ${SCOPES_URL}`, getScopesRequest(), 200],
@@ -1662,20 +1490,16 @@ describe('the conflicts of the routes of groups', { skip: testRedis.skip || test
 
     assert.equal(spec.statusCode, 200);
     assert.deepEqual(readStatuses(responses), scenarios.map(([, , statusCode]) => statusCode));
-    assert.deepEqual(readAnsweredConflicts(scenarios, responses), readDocumentedConflicts(spec.json().paths));
-    responses.filter((response) => response.statusCode === HTTP_STATUS.CONFLICT).forEach((response) => {
-      const { code } = response.json();
-
-      assertError(response, HTTP_STATUS.CONFLICT, code, ERROR_CATALOG[code].message);
-    });
+    assert.deepEqual(readAnsweredConflicts(scenarios, responses), readDocumentedConflicts(spec.json().paths, GROUPS_URL));
+    responses.filter((response) => response.statusCode === HTTP_STATUS.CONFLICT).forEach((response) => assertError(response, response.json().code));
   });
 });
 
 describe('changes of groups at the same moment', { skip: testRedis.skip || testDb.skip }, () => {
-  before(prepareDatabase);
+  before(() => migrateAndSeed(testDb));
 
   test('settle when two managers take each other out of groups at once, with 204 or a clean 403 and never a 500 or a hang: both go out of groups that gave them nothing, and of the two that gave each of them groups:manage only the first to come goes', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const root = await signInAs(fastify, [SCOPE_ALL]);
     const managers = await mapSeries(['first', 'second'], () => signInAs(fastify, [SCOPE.GROUPS_MANAGE]));
     const powerIds = await mapSeries(managers, async (manager) => (await readGroupIdsOf(fastify, manager.userId))[0]);
@@ -1708,7 +1532,7 @@ describe('changes of groups at the same moment', { skip: testRedis.skip || testD
   });
 
   test('settle when a change of the members of a group and a PATCH of it come at once: the PATCH 200, and the change 204 when it is first or a clean 403 after a PATCH that gives the group a scope its actor lacks', async (t) => {
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const root = await signInAs(fastify, [SCOPE_ALL]);
     const manager = await signInAs(fastify, [SCOPE.GROUPS_MANAGE, SCOPE.USERS_READ]);
     const group = await makeGroup(fastify, root, { scopes: [SCOPE.USERS_READ] });
@@ -1740,7 +1564,7 @@ describe('changes of groups at the same moment', { skip: testRedis.skip || testD
 
   test('reads what the actor holds once it has locked them: a write that waits for the row of its actor is refused with 403 when a demotion commits meanwhile, and writes nothing', async (t) => {
     const keeper = await testDb.openKeeper(t);
-    const fastify = await openApp(t);
+    const fastify = await openRouteApp(t, testDb);
     const root = await signInAs(fastify, [SCOPE_ALL]);
     const member = await signInAs(fastify);
     const [power, plain] = await mapSeries([{ scopes: [SCOPE.GROUPS_MANAGE] }, {}], (fields) => makeGroup(fastify, root, fields));

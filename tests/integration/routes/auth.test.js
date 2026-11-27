@@ -13,7 +13,7 @@ import {
 } from '#root/tests/helper/alert.js';
 import { errorBody, readRequestId, successBody } from '#root/tests/helper/app.js';
 import { waitFor } from '#root/tests/helper/async.js';
-import { createGate, createTestDb } from '#root/tests/helper/db.js';
+import { createGate, createTestDb, SMALL_POOL } from '#root/tests/helper/db.js';
 import { createLogSink, findLogLines } from '#root/tests/helper/log.js';
 import { bindMigrator } from '#root/tests/helper/migration.js';
 import {
@@ -22,11 +22,13 @@ import {
   FAST_RECONNECT,
   REDIS_DOWN_ENV,
 } from '#root/tests/helper/redis.js';
+import { assertRevoked } from '#root/tests/helper/route.js';
 import { getServiceAddress } from '#root/tests/helper/service.js';
 import {
   connectAppRedis,
   createUser,
   grantScopes,
+  LONG_MEMORY,
   readAppRows,
   readAuthCookies,
   readClaims,
@@ -35,6 +37,7 @@ import {
   signIn,
   takeRefreshCookie,
   toBearer,
+  toRegistryKey,
 } from '#root/tests/helper/session.js';
 import { mapSeries } from '#utils/async.js';
 import { convertStringToMs, convertStringToSeconds } from '#utils/date.js';
@@ -65,13 +68,10 @@ const MODES = Object.freeze([
   Object.freeze({ title: 'with Redis down', isRedisUp: false }),
 ]);
 
-// Few on purpose: the files of the tests share the connections of one server.
-const SMALL_POOL = Object.freeze({ connectionLimit: 2 });
 const POOL_OF_ONE = Object.freeze({ connectionLimit: 1 });
 
-// How long a process takes a session it has found alive for alive: over within a test, or longer than any.
+// How long a process takes a session it has found alive for alive: over within a test.
 const SHORT_MEMORY = Object.freeze({ registryMemoryTtl: '0.2s' });
-const LONG_MEMORY = Object.freeze({ registryMemoryTtl: '1h' });
 
 // How long a command waits for a Redis that hangs: until the test lets it go on, or a part of a second.
 const PATIENT = Object.freeze({ ...FAST_RECONNECT, commandTimeout: '5s', socketTimeout: '10s' });
@@ -225,10 +225,6 @@ function assertRefused(response, code, message) {
   assert.equal(response.statusCode, 401);
   assert.equal(response.headers['cache-control'], NO_STORE);
   assert.deepEqual(response.json(), errorBody(response, code, message));
-}
-
-function assertRevoked(response) {
-  assertRefused(response, 'SESSION_REVOKED', 'Session revoked');
 }
 
 function assertUnauthenticated(response) {
@@ -924,7 +920,7 @@ describe('a session and the services behind it', { skip: testRedis.skip || testD
   test('a user deleted by SQL is refused with Redis up once the mark of the session is gone, which lives no longer than the access token', async (t) => {
     const { fastify } = await openApp(t, { auth: SHORT_MEMORY });
     const { userId, sid, accessCookie: cookies } = await signIn(fastify);
-    const key = `${testRedis.keyPrefix}session:${sid}`;
+    const key = toRegistryKey(testRedis.keyPrefix, sid);
     const ttl = await testRedis.admin.ttl(key);
 
     assertAllowed(await getMe(fastify, { cookies }), userId);

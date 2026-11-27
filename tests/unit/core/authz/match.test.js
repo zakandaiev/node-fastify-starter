@@ -1,5 +1,6 @@
 import {
   assertScopeRequirement,
+  assertWantedScopes,
   isEveryScopeGranted,
   isGrantableScope,
   isRequirementMet,
@@ -18,9 +19,10 @@ const TERMS_SIGNATURE = 'readScopeTerms(requirement)';
 const ROUTE_SIGNATURE = 'security.scopes';
 const EVERY_SIGNATURE = 'isEveryScopeGranted(scopes, wanted)';
 const MET_SIGNATURE = 'isRequirementMet(scopes, requirement)';
+const WANTED_SIGNATURE = 'assertWantedScopes(wanted)';
+const HOLDS_SIGNATURE = 'assertActorHolds(actor, { requirement, scopes })';
 
 const REQUIREMENT_FORM = "['a', 'b'] for one of them, [['a', 'b']] for both";
-const WANTED_MESSAGE = `${EVERY_SIGNATURE} requires the scopes to look for as a list of strings`;
 const GRANTS_MESSAGE = 'readGroupGrants({ isSuperadmin, scopes }) requires the flag of full access and the scopes of a group';
 
 const ACTIONS = Object.freeze([SCOPE.GROUPS_READ, SCOPE.GROUPS_MANAGE, SCOPE.USERS_READ]);
@@ -112,6 +114,10 @@ function refusal(message) {
 
 function heldRefusal(signature) {
   return refusal(`${signature} requires the scopes a user holds as a list of strings`);
+}
+
+function wantedRefusal(signature) {
+  return refusal(`${signature} requires the scopes to look for as a list of strings`);
 }
 
 function shapeRefusal(signature) {
@@ -247,10 +253,10 @@ describe('isEveryScopeGranted', () => {
   test('refuses either list when it is not a list of strings, a scope that is not a string among the wanted ones too, naming its signature', () => {
     NOT_SCOPE_LISTS.forEach((scopes) => {
       assert.throws(() => isEveryScopeGranted(scopes, [SCOPE.GROUPS_READ]), heldRefusal(EVERY_SIGNATURE), inspect(scopes));
-      assert.throws(() => isEveryScopeGranted([SCOPE_ALL], scopes), refusal(WANTED_MESSAGE), inspect(scopes));
+      assert.throws(() => isEveryScopeGranted([SCOPE_ALL], scopes), wantedRefusal(EVERY_SIGNATURE), inspect(scopes));
     });
     NOT_SCOPES.forEach((scope) => {
-      assert.throws(() => isEveryScopeGranted([SCOPE_ALL], [scope]), refusal(WANTED_MESSAGE), inspect(scope));
+      assert.throws(() => isEveryScopeGranted([SCOPE_ALL], [scope]), wantedRefusal(EVERY_SIGNATURE), inspect(scope));
     });
     assert.throws(() => isEveryScopeGranted(null, null), heldRefusal(EVERY_SIGNATURE));
   });
@@ -259,8 +265,31 @@ describe('isEveryScopeGranted', () => {
   test('refuses either list when it has a hole, as it refuses undefined there', () => {
     listSparseScopes().forEach((scopes) => {
       assert.throws(() => isEveryScopeGranted(scopes, [SCOPE.GROUPS_READ]), heldRefusal(EVERY_SIGNATURE), inspect(scopes));
-      assert.throws(() => isEveryScopeGranted([SCOPE_ALL], scopes), refusal(WANTED_MESSAGE), inspect(scopes));
-      assert.throws(() => isEveryScopeGranted([], scopes), refusal(WANTED_MESSAGE), inspect(scopes));
+      assert.throws(() => isEveryScopeGranted([SCOPE_ALL], scopes), wantedRefusal(EVERY_SIGNATURE), inspect(scopes));
+      assert.throws(() => isEveryScopeGranted([], scopes), wantedRefusal(EVERY_SIGNATURE), inspect(scopes));
+    });
+  });
+});
+
+describe('assertWantedScopes', () => {
+  test('says true for a list of strings: an empty one, a frozen one and one of scopes the catalog does not have', () => {
+    [[], [SCOPE_ALL], [...ACTIONS, ...WILDCARDS], Object.freeze([SCOPE.USERS_READ]), [LATER_ACTION, RESOURCE_ACTION]].forEach((wanted) => {
+      assert.equal(assertWantedScopes(wanted), true, inspect(wanted));
+    });
+  });
+
+  test('refuses with a TypeError what is no list of strings, a list with an item that is no string and a list with a hole, under the signature it is given and under its own when it is given none', () => {
+    [...NOT_SCOPE_LISTS, ...NOT_SCOPES.map((scope) => [scope]), ...listSparseScopes()].forEach((wanted) => {
+      assert.throws(() => assertWantedScopes(wanted), wantedRefusal(WANTED_SIGNATURE), inspect(wanted));
+      assert.throws(() => assertWantedScopes(wanted, undefined), wantedRefusal(WANTED_SIGNATURE), inspect(wanted));
+      assert.throws(() => assertWantedScopes(wanted, HOLDS_SIGNATURE), wantedRefusal(HOLDS_SIGNATURE), inspect(wanted));
+    });
+  });
+
+  test('is the refusal of the wanted scopes in isEveryScopeGranted, which keeps its message under its own signature', () => {
+    [...NOT_SCOPE_LISTS, ...listSparseScopes()].forEach((wanted) => {
+      assert.throws(() => assertWantedScopes(wanted, EVERY_SIGNATURE), wantedRefusal(EVERY_SIGNATURE), inspect(wanted));
+      assert.throws(() => isEveryScopeGranted([SCOPE_ALL], wanted), wantedRefusal(EVERY_SIGNATURE), inspect(wanted));
     });
   });
 });

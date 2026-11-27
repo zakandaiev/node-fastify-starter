@@ -1,5 +1,4 @@
 import { refreshSession } from '#core/auth/refresh.js';
-import { isSessionAlive } from '#core/auth/registry.js';
 import {
   createSession,
   listSessions,
@@ -8,29 +7,34 @@ import {
 } from '#core/auth/session.js';
 import { verifyAccessToken, verifyRefreshToken } from '#core/auth/token.js';
 import { withTransaction } from '#core/db/transaction.js';
-import { AppError } from '#core/error/index.js';
 import { ERROR_CODE } from '#enums/error-code.js';
 import { HEADER } from '#enums/header.js';
-import { HTTP_STATUS } from '#enums/http-status.js';
 import { ISOLATION_LEVEL } from '#enums/isolation-level.js';
 import { SCOPE_ALL } from '#enums/scope.js';
 import { TABLE } from '#enums/table.js';
 import { USER_STATUS } from '#enums/user-status.js';
 import { rejectionOf, waitFor } from '#root/tests/helper/async.js';
-import { createTestDb } from '#root/tests/helper/db.js';
+import { createTestDb, RETRY_MESSAGE, waitForBlockedSessions } from '#root/tests/helper/db.js';
+import { assertAppError, REFUSAL } from '#root/tests/helper/error.js';
 import { createLogSink, findLogLines } from '#root/tests/helper/log.js';
 import { bindMigrator } from '#root/tests/helper/migration.js';
 import { createTcpProxy, createTestRedis } from '#root/tests/helper/redis.js';
 import { getServiceAddress } from '#root/tests/helper/service.js';
 import {
+  ALIVE_MARK,
   connectAppRedis,
   createUser,
   grantScopes,
+  isAliveIn,
+  LONG_MEMORY,
   readClaims,
+  readRegistryMarks,
   readSessionRow,
+  REVOKED_MARK,
   runInApp,
   signIn,
   TEST_CLIENT,
+  toRegistryKey,
 } from '#root/tests/helper/session.js';
 import { unique } from '#utils/array.js';
 import { mapSeries } from '#utils/async.js';
@@ -64,9 +68,6 @@ const LOCK_WAIT = Object.freeze({ lockWaitTimeout: '1s' });
 // No command gives up before the test lets Redis answer.
 const PATIENT = Object.freeze({ commandTimeout: '10s', socketTimeout: '10s' });
 
-// What is found alive is answered from memory for the whole test: another check would wait for the Redis that hangs.
-const LONG_MEMORY = Object.freeze({ registryMemoryTtl: '1h' });
-
 // Not the client of the sign-ins: a refresh then changes every column it may.
 const REQUEST = Object.freeze({ headers: Object.freeze({ [HEADER.USER_AGENT]: 'session-refresh-agent' }), ip: '198.51.100.23' });
 
@@ -77,9 +78,6 @@ const PAST_YEAR = 2020;
 const FUTURE_YEAR = 2098;
 const FAR_AWAY = parseStrictUtc('2099-01-01T00:00:00.000Z');
 
-// The marks of the registry: a session that has none is read as null.
-const ALIVE = '1';
-const REVOKED = '0';
 const TTL_SLACK_SECONDS = 5;
 
 // A refresh that runs beside the end of its session either comes first or is refused.
@@ -94,15 +92,6 @@ const ROUNDS = 5;
 
 // A call that must settle and does not is a test that never ends: the limit turns it into a failure.
 const HANG_TIMEOUT_MS = 10_000;
-
-// A statement the server has listed for this long waits for a row of another transaction. The tests would also pass
-// with one that is only slow: what they let go on then is the same.
-const BLOCKED_MS = 100;
-const BLOCKED_SQL = `
-  SELECT id
-  FROM information_schema.processlist
-  WHERE db = :database AND info LIKE :pattern AND time_ms > :blockedMs AND id <> CONNECTION_ID()
-`;
 
 const READ_COMMITTED = Object.freeze({ isolation: ISOLATION_LEVEL.READ_COMMITTED });
 const OTHER_LEVELS = Object.freeze([
@@ -143,7 +132,6 @@ const LEAVE_GROUPS_SQL = 'DELETE FROM user_groups WHERE user_id = ?';
 const LOCK_SESSION_SQL = 'SELECT id FROM sessions WHERE id = ? FOR UPDATE';
 const TOUCH_SESSION_SQL = 'UPDATE sessions SET rotated_at = CURRENT_TIMESTAMP(3) WHERE id = ?';
 
-const RETRY_MESSAGE = 'Database transaction is run again after a lock conflict';
 const ROTATION_RETRY_MESSAGE = 'The token of a session is set again after a lock conflict';
 const QUERY_MESSAGE = 'Database query';
 const QUERY_VALUES_MESSAGE = 'Database query with its values';
@@ -164,16 +152,8 @@ function dayOf(day, year = PAST_YEAR) {
   return parseStrictUtc(`${year}-01-${String(day).padStart(2, '0')}T10:00:00.000Z`);
 }
 
-function toKey(sid) {
-  return `${testRedis.keyPrefix}session:${sid}`;
-}
-
-function readMarks(sids) {
-  return testRedis.admin.mget(sids.map((sid) => toKey(sid)));
-}
-
 async function readMark(sid) {
-  const [mark] = await readMarks([sid]);
+  const [mark] = await readRegistryMarks(testRedis, [sid]);
 
   return mark;
 }
@@ -229,15 +209,9 @@ function insertIdle(userId, days, year) {
   return mapSeries(days, (day) => insertSession(userId, { rotatedAt: dayOf(day, year) }));
 }
 
-async function signInAs(fastify, userId) {
-  const { sid } = await signIn(fastify, { userId });
-
-  return sid;
-}
-
 // As many sessions as the limit allows, the longest idle first. That one has been made by a sign-in, with its mark.
 async function fillUp(fastify, userId) {
-  const first = await signInAs(fastify, userId);
+  const { sid: first } = await signIn(fastify, { userId });
 
   await observer.readRows('UPDATE sessions SET rotated_at = :rotatedAt WHERE id = :first', { first, rotatedAt: dayOf(1) });
 
@@ -262,10 +236,6 @@ function revokeAll(fastify, userId, options) {
 
 function list(fastify, userId) {
   return runInApp(fastify, () => listSessions(userId));
-}
-
-function isAlive(fastify, sid) {
-  return runInApp(fastify, () => isSessionAlive(sid));
 }
 
 function transact(fastify, fn, options = READ_COMMITTED) {
@@ -323,13 +293,9 @@ async function settle(promise) {
 // Resolves once a statement with this text in it waits for a row of another transaction. A call that has ended before
 // fails the test with what it has ended with.
 async function catchAtRow(running, text) {
-  const binding = { database: testDb.name, pattern: `%${text}%`, blockedMs: BLOCKED_MS };
-  const caught = await Promise.race([
-    settle(running),
-    waitFor(async () => (await observer.readRows(BLOCKED_SQL, binding))[0]?.id, `a statement with "${text}" to wait for a row`),
-  ]);
+  const caught = await Promise.race([settle(running), waitForBlockedSessions(observer, text, 1)]);
 
-  assert.ok(Number.isInteger(caught), `The call did not wait for a row: ${inspect(caught)}`);
+  assert.ok(Array.isArray(caught), `The call did not wait for a row: ${inspect(caught)}`);
 }
 
 // A sign-in on its way: it holds the row of its user, and has made no session until it is told to go on.
@@ -354,11 +320,6 @@ async function startSignIn(t, fastify, userId) {
   await Promise.race([locked.promise, running]);
 
   return goOn;
-}
-
-function assertForbidden(error) {
-  assert.ok(error instanceof AppError, inspect(error));
-  assert.deepEqual([error.code, error.statusCode], [ERROR_CODE.AUTHORIZATION_ERROR, HTTP_STATUS.FORBIDDEN]);
 }
 
 async function assertRefused(values, call, refusal) {
@@ -391,20 +352,20 @@ async function assertWaitsForRedis(t, end) {
     state.isResolved = true;
   }
 
-  assert.equal(await isAlive(slow, sid), true);
+  assert.equal(await isAliveIn(slow, sid), true);
   proxy.freeze();
 
   const running = run();
 
-  await waitFor(async () => !(await isAlive(slow, sid)), 'the process to refuse the session');
+  await waitFor(async () => !(await isAliveIn(slow, sid)), 'the process to refuse the session');
 
   const hanging = { ...state, mark: await readMark(sid) };
 
   proxy.thaw();
   await running;
 
-  assert.deepEqual(hanging, { isResolved: false, mark: ALIVE });
-  assert.equal(await readMark(sid), REVOKED);
+  assert.deepEqual(hanging, { isResolved: false, mark: ALIVE_MARK });
+  assert.equal(await readMark(sid), REVOKED_MARK);
 }
 
 describe('sessions', { skip: testRedis.skip || testDb.skip }, () => {
@@ -484,9 +445,9 @@ describe('sessions', { skip: testRedis.skip || testDb.skip }, () => {
 
     test('marks the session alive in Redis for as long as its access token lives', async () => {
       const { sid, accessTtl } = await create(fastify, await createUser(fastify));
-      const ttl = await testRedis.admin.ttl(toKey(sid));
+      const ttl = await testRedis.admin.ttl(toRegistryKey(testRedis.keyPrefix, sid));
 
-      assert.equal(await readMark(sid), ALIVE);
+      assert.equal(await readMark(sid), ALIVE_MARK);
       assert.ok(ttl > accessTtl - TTL_SLACK_SECONDS && ttl <= accessTtl, `The mark lives ${ttl} s`);
     });
 
@@ -495,7 +456,7 @@ describe('sessions', { skip: testRedis.skip || testDb.skip }, () => {
       const keys = await readKeys();
       const errors = await Promise.all(userIds.map((userId) => rejectionOf(create(fastify, userId))));
 
-      errors.forEach((error) => assertForbidden(error));
+      errors.forEach((error) => assertAppError(error, REFUSAL.FORBIDDEN));
       assert.deepEqual(await Promise.all(userIds.map((userId) => readUserRows(userId))), [[], []]);
       assert.deepEqual(await readKeys(), keys);
     });
@@ -514,7 +475,7 @@ describe('sessions', { skip: testRedis.skip || testDb.skip }, () => {
 
       const outcomes = await mapSeries([BLOCK_USER_SQL, DELETE_USER_SQL], createBehind);
 
-      outcomes.forEach(({ error }) => assertForbidden(error));
+      outcomes.forEach(({ error }) => assertAppError(error, REFUSAL.FORBIDDEN));
       assert.deepEqual(outcomes.map(({ rows }) => rows), [[], []]);
     });
 
@@ -592,10 +553,10 @@ describe('sessions', { skip: testRedis.skip || testDb.skip }, () => {
   describe('createSession: the limit of live sessions', () => {
     test('ends none while there are no more than the limit', async () => {
       const userId = await createUser(fastify);
-      const sids = await mapSeries(Array.from({ length: MAX_SESSIONS }), () => signInAs(fastify, userId));
+      const sids = await mapSeries(Array.from({ length: MAX_SESSIONS }), async () => (await signIn(fastify, { userId })).sid);
 
       assert.deepEqual(await readSids(userId), { live: sids.toSorted(), ended: [] });
-      assert.deepEqual(await readMarks(sids), sids.map(() => ALIVE));
+      assert.deepEqual(await readRegistryMarks(testRedis, sids), sids.map(() => ALIVE_MARK));
     });
 
     test('ends the session idle the longest once there are more: by its last activity, not by its sign-in, and no session of another user', async () => {
@@ -607,7 +568,7 @@ describe('sessions', { skip: testRedis.skip || testDb.skip }, () => {
 
       assert.deepEqual(await readSids(userId), { live: [...active, sid].toSorted(), ended: [idle] });
       assert.deepEqual(await readSids(strangerId), { live: [strange], ended: [] });
-      assert.deepEqual(await readMarks([idle, ...active, sid]), [REVOKED, ...active.map(() => null), ALIVE]);
+      assert.deepEqual(await readRegistryMarks(testRedis, [idle, ...active, sid]), [REVOKED_MARK, ...active.map(() => null), ALIVE_MARK]);
     });
 
     test('of two sessions idle equally long ends the one with the smaller id first, whichever was written first', async () => {
@@ -656,7 +617,7 @@ describe('sessions', { skip: testRedis.skip || testDb.skip }, () => {
       const [kept, ...ended] = sids.toReversed();
 
       assert.deepEqual(await readSids(userId), { live: [kept, sid].toSorted(), ended: ended.toSorted() });
-      assert.deepEqual(await readMarks([kept, sid, ...ended]), [null, ALIVE, ...ended.map(() => REVOKED)]);
+      assert.deepEqual(await readRegistryMarks(testRedis, [kept, sid, ...ended]), [null, ALIVE_MARK, ...ended.map(() => REVOKED_MARK)]);
     });
 
     test('passes over a session that is refreshed while it waits for its row: the next one idle the longest ends', { timeout: HANG_TIMEOUT_MS }, async (t) => {
@@ -684,7 +645,7 @@ describe('sessions', { skip: testRedis.skip || testDb.skip }, () => {
 
       assert.equal(live.length, LOWERED_LIMIT);
       assert.deepEqual([...live, ...ended].toSorted(), sids.toSorted());
-      assert.deepEqual(await readMarks(sids), sids.map((sid) => (live.includes(sid) ? ALIVE : REVOKED)));
+      assert.deepEqual(await readRegistryMarks(testRedis, sids), sids.map((sid) => (live.includes(sid) ? ALIVE_MARK : REVOKED_MARK)));
     });
 
     test('signs in new users at once without a deadlock: none of them is run again', async () => {
@@ -705,7 +666,7 @@ describe('sessions', { skip: testRedis.skip || testDb.skip }, () => {
       const readLog = watchLog();
       const rounds = await mapSeries(Array.from({ length: ROUNDS }), async () => {
         const userId = await createUser(fastify);
-        const first = await signInAs(fastify, userId);
+        const { sid: first } = await signIn(fastify, { userId });
         const second = await signIn(fastify, { userId });
         const [third, , fourth, , refreshed] = await Promise.all([
           create(fastify, userId),
@@ -719,8 +680,8 @@ describe('sessions', { skip: testRedis.skip || testDb.skip }, () => {
         return {
           made: [first, second.sid, third.sid, fourth.sid].toSorted(),
           found: [...live, ...ended].toSorted(),
-          marks: await readMarks([...live, ...ended]),
-          expected: [...live.map(() => ALIVE), ...ended.map(() => REVOKED)],
+          marks: await readRegistryMarks(testRedis, [...live, ...ended]),
+          expected: [...live.map(() => ALIVE_MARK), ...ended.map(() => REVOKED_MARK)],
           refreshed: refreshed.reason?.code ?? ROTATED,
         };
       });
@@ -746,15 +707,15 @@ describe('sessions', { skip: testRedis.skip || testDb.skip }, () => {
 
         return {
           sid: issued.sid,
-          marks: await readMarks([issued.sid, first]),
+          marks: await readRegistryMarks(testRedis, [issued.sid, first]),
           committed: await readSids(userId),
         };
       });
 
-      assert.deepEqual(marks, [null, ALIVE]);
+      assert.deepEqual(marks, [null, ALIVE_MARK]);
       assert.deepEqual(committed, { live: sids.toSorted(), ended: [] });
       assert.deepEqual(await readSids(userId), { live: [...rest, sid].toSorted(), ended: [first] });
-      assert.deepEqual(await readMarks([sid, first]), [ALIVE, REVOKED]);
+      assert.deepEqual(await readRegistryMarks(testRedis, [sid, first]), [ALIVE_MARK, REVOKED_MARK]);
     });
 
     test('goes with one that rolls back: there is no row and no mark of it, and the session it has ended is live', async () => {
@@ -774,8 +735,8 @@ describe('sessions', { skip: testRedis.skip || testDb.skip }, () => {
       assert.equal(error, failure);
       assert.deepEqual(seen.ended.rows, [{ id: first }]);
       assert.deepEqual(await readUserRows(userId), rows);
-      assert.deepEqual(await readMarks([seen.issued.sid, first]), [null, ALIVE]);
-      assert.equal(await isAlive(fastify, first), true);
+      assert.deepEqual(await readRegistryMarks(testRedis, [seen.issued.sid, first]), [null, ALIVE_MARK]);
+      assert.equal(await isAliveIn(fastify, first), true);
     });
 
     test('signs in a user whom that transaction has made, with the group it has given them', async () => {
@@ -836,8 +797,8 @@ describe('sessions', { skip: testRedis.skip || testDb.skip }, () => {
   describe('revokeSession', () => {
     test('ends the live session of its user, and no other: the row, the mark and the answer say so', async () => {
       const userId = await createUser(fastify);
-      const sid = await signInAs(fastify, userId);
-      const other = await signInAs(fastify, userId);
+      const { sid } = await signIn(fastify, { userId });
+      const { sid: other } = await signIn(fastify, { userId });
       const [row, otherRow] = await Promise.all([sid, other].map((id) => readSessionRow(fastify, id)));
 
       assert.equal(await revoke(fastify, sid, userId), true);
@@ -847,13 +808,13 @@ describe('sessions', { skip: testRedis.skip || testDb.skip }, () => {
       assert.ok(ended.revoked_at instanceof Date);
       assert.deepEqual(ended, { ...row, revoked_at: ended.revoked_at, updated_at: ended.updated_at });
       assert.deepEqual(await readSessionRow(fastify, other), otherRow);
-      assert.deepEqual(await readMarks([sid, other]), [REVOKED, ALIVE]);
-      assert.deepEqual([await isAlive(fastify, sid), await isAlive(fastify, other)], [false, true]);
+      assert.deepEqual(await readRegistryMarks(testRedis, [sid, other]), [REVOKED_MARK, ALIVE_MARK]);
+      assert.deepEqual([await isAliveIn(fastify, sid), await isAliveIn(fastify, other)], [false, true]);
     });
 
     test('gives false and changes nothing for a session of someone else, one that is revoked, one that is expired and one that is not there', async () => {
       const [userId, strangerId] = await Promise.all([createUser(fastify), createUser(fastify)]);
-      const strange = await signInAs(fastify, strangerId);
+      const { sid: strange } = await signIn(fastify, { userId: strangerId });
       const revoked = await insertSession(userId, { revokedAt: dayOf(2) });
       const expired = await insertSession(userId, { expiresAt: dayOf(2) });
       const sids = [strange, revoked, expired, uuidv7()];
@@ -862,14 +823,14 @@ describe('sessions', { skip: testRedis.skip || testDb.skip }, () => {
 
       assert.deepEqual(answers, [false, false, false, false]);
       assert.deepEqual(await Promise.all([userId, strangerId].map((id) => readUserRows(id))), rows);
-      assert.deepEqual(await readMarks(sids), [ALIVE, null, null, null]);
-      assert.equal(await isAlive(fastify, strange), true);
+      assert.deepEqual(await readRegistryMarks(testRedis, sids), [ALIVE_MARK, null, null, null]);
+      assert.equal(await isAliveIn(fastify, strange), true);
     });
 
     test('marks nothing inside a transaction until it commits, and nothing at all when it rolls back', async () => {
       const userId = await createUser(fastify);
-      const lost = await signInAs(fastify, userId);
-      const ended = await signInAs(fastify, userId);
+      const { sid: lost } = await signIn(fastify, { userId });
+      const { sid: ended } = await signIn(fastify, { userId });
       const failure = new Error('The action failed after the revocation');
       const seen = {};
       const error = await rejectionOf(transact(fastify, async () => {
@@ -885,10 +846,10 @@ describe('sessions', { skip: testRedis.skip || testDb.skip }, () => {
 
       assert.equal(error, failure);
       assert.deepEqual(seen, { isRevoked: true });
-      assert.deepEqual(inside, { isRevoked: true, mark: ALIVE });
+      assert.deepEqual(inside, { isRevoked: true, mark: ALIVE_MARK });
       assert.deepEqual(await readSids(userId), { live: [lost], ended: [ended] });
-      assert.deepEqual(await readMarks([lost, ended]), [ALIVE, REVOKED]);
-      assert.deepEqual([await isAlive(fastify, lost), await isAlive(fastify, ended)], [true, false]);
+      assert.deepEqual(await readRegistryMarks(testRedis, [lost, ended]), [ALIVE_MARK, REVOKED_MARK]);
+      assert.deepEqual([await isAliveIn(fastify, lost), await isAliveIn(fastify, ended)], [true, false]);
     });
 
     test('fails a transaction of the default level that has read before a refresh of the session, and ends nothing: one that is run again, or reads what is committed, goes through', async () => {
@@ -914,11 +875,11 @@ describe('sessions', { skip: testRedis.skip || testDb.skip }, () => {
         };
       }
 
-      const ended = { outcome: true, isLive: false, mark: REVOKED };
+      const ended = { outcome: true, isLive: false, mark: REVOKED_MARK };
 
       assert.deepEqual(await mapSeries([{}, { retry: true }, READ_COMMITTED], revokeBehindRefresh), [
         {
-          outcome: 'ER_CHECKREAD', runCount: 1, isLive: true, mark: ALIVE,
+          outcome: 'ER_CHECKREAD', runCount: 1, isLive: true, mark: ALIVE_MARK,
         },
         { ...ended, runCount: 2 },
         { ...ended, runCount: 1 },
@@ -942,44 +903,44 @@ describe('sessions', { skip: testRedis.skip || testDb.skip }, () => {
       const revoked = await insertSession(userId, { revokedAt: dayOf(2) });
       const expired = await insertSession(userId, { expiresAt: dayOf(2) });
       const dead = await readUserRows(userId);
-      const live = [await signInAs(fastify, userId), await signInAs(fastify, userId), await insertSession(userId)];
-      const strange = await signInAs(fastify, strangerId);
+      const live = [(await signIn(fastify, { userId })).sid, (await signIn(fastify, { userId })).sid, await insertSession(userId)];
+      const { sid: strange } = await signIn(fastify, { userId: strangerId });
       const strangeRows = await readUserRows(strangerId);
 
       assert.equal(await revokeAll(fastify, userId), live.length);
       assert.deepEqual(await readSids(userId), { live: [expired], ended: [...live, revoked].toSorted() });
       assert.deepEqual((await readUserRows(userId)).filter((row) => !live.includes(row.id)), dead);
       assert.deepEqual(await readUserRows(strangerId), strangeRows);
-      assert.deepEqual(await readMarks([...live, revoked, expired, strange]), [...live.map(() => REVOKED), null, null, ALIVE]);
+      assert.deepEqual(await readRegistryMarks(testRedis, [...live, revoked, expired, strange]), [...live.map(() => REVOKED_MARK), null, null, ALIVE_MARK]);
     });
 
     test('keeps exactly the session named by except', async () => {
       const userId = await createUser(fastify);
-      const first = await signInAs(fastify, userId);
-      const kept = await signInAs(fastify, userId);
-      const last = await signInAs(fastify, userId);
+      const { sid: first } = await signIn(fastify, { userId });
+      const { sid: kept } = await signIn(fastify, { userId });
+      const { sid: last } = await signIn(fastify, { userId });
       const keptRow = await readSessionRow(fastify, kept);
 
       assert.equal(await revokeAll(fastify, userId, { except: kept }), [first, last].length);
       assert.deepEqual(await readSids(userId), { live: [kept], ended: [first, last].toSorted() });
       assert.deepEqual(await readSessionRow(fastify, kept), keptRow);
-      assert.deepEqual(await readMarks([first, kept, last]), [REVOKED, ALIVE, REVOKED]);
-      assert.equal(await isAlive(fastify, kept), true);
+      assert.deepEqual(await readRegistryMarks(testRedis, [first, kept, last]), [REVOKED_MARK, ALIVE_MARK, REVOKED_MARK]);
+      assert.equal(await isAliveIn(fastify, kept), true);
     });
 
     test('ends them all when except names a session of another user: it is neither kept for this one nor ended', async () => {
       const [userId, strangerId] = await Promise.all([createUser(fastify), createUser(fastify)]);
-      const own = await signInAs(fastify, userId);
-      const strange = await signInAs(fastify, strangerId);
+      const { sid: own } = await signIn(fastify, { userId });
+      const { sid: strange } = await signIn(fastify, { userId: strangerId });
 
       assert.equal(await revokeAll(fastify, userId, { except: strange }), 1);
-      assert.deepEqual(await readMarks([own, strange]), [REVOKED, ALIVE]);
+      assert.deepEqual(await readRegistryMarks(testRedis, [own, strange]), [REVOKED_MARK, ALIVE_MARK]);
       assert.deepEqual([await readSids(userId), await readSids(strangerId)], [{ live: [], ended: [own] }, { live: [strange], ended: [] }]);
     });
 
     test('gives 0 when there is nothing to end, and sends no write then', async () => {
       const userId = await createUser(fastify);
-      const only = await signInAs(fastify, userId);
+      const { sid: only } = await signIn(fastify, { userId });
       const readLog = watchLog();
       const counts = [await revokeAll(fastify, userId, { except: only }), await revokeAll(fastify, uuidv7())];
       const statements = readLog(QUERY_MESSAGE).map((line) => line.sql.trim());
@@ -988,16 +949,16 @@ describe('sessions', { skip: testRedis.skip || testDb.skip }, () => {
       assert.ok(statements.length > 0);
       assert.deepEqual(statements.filter((sql) => !sql.startsWith('SELECT')), []);
       assert.deepEqual(await readSids(userId), { live: [only], ended: [] });
-      assert.equal(await readMark(only), ALIVE);
+      assert.equal(await readMark(only), ALIVE_MARK);
     });
 
     test('refuses a wrong except, null and an empty text too, and ends nothing: it must not pass for none', async () => {
       const userId = await createUser(fastify);
-      const sid = await signInAs(fastify, userId);
+      const { sid } = await signIn(fastify, { userId });
 
       await assertRefused(WRONG_SIDS, (except) => revokeAll(fastify, userId, { except }), SID_REFUSAL);
       assert.deepEqual(await readSids(userId), { live: [sid], ended: [] });
-      assert.equal(await readMark(sid), ALIVE);
+      assert.equal(await readMark(sid), ALIVE_MARK);
     });
 
     test('refuses a wrong id of a user', async () => {
@@ -1015,8 +976,8 @@ describe('sessions', { skip: testRedis.skip || testDb.skip }, () => {
 
       assert.equal(count, 1);
       assert.deepEqual(await readSids(userId), { live: [], ended: [sid] });
-      assert.equal(await readMark(sid), REVOKED);
-      assert.equal(await isAlive(fastify, sid), false);
+      assert.equal(await readMark(sid), REVOKED_MARK);
+      assert.equal(await isAliveIn(fastify, sid), false);
     });
 
     test('in the transaction of a block ends the session of a sign-in that block has waited for, and the next sign-in is refused', { timeout: HANG_TIMEOUT_MS }, async (t) => {
@@ -1034,13 +995,13 @@ describe('sessions', { skip: testRedis.skip || testDb.skip }, () => {
 
       assert.equal(count, 1);
       assert.deepEqual(await readSids(userId), { live: [], ended: [sid] });
-      assert.equal(await readMark(sid), REVOKED);
-      assertForbidden(await rejectionOf(create(fastify, userId)));
+      assert.equal(await readMark(sid), REVOKED_MARK);
+      assertAppError(await rejectionOf(create(fastify, userId)), REFUSAL.FORBIDDEN);
     });
 
     test('marks nothing inside a transaction until it commits, and nothing at all when it rolls back', async () => {
       const userId = await createUser(fastify);
-      const sids = [await signInAs(fastify, userId), await signInAs(fastify, userId)];
+      const sids = [(await signIn(fastify, { userId })).sid, (await signIn(fastify, { userId })).sid];
       const rows = await readUserRows(userId);
       const failure = new Error('The action failed after the revocation');
       const seen = {};
@@ -1053,13 +1014,13 @@ describe('sessions', { skip: testRedis.skip || testDb.skip }, () => {
       assert.equal(error, failure);
       assert.deepEqual(seen, { count: sids.length });
       assert.deepEqual(await readUserRows(userId), rows);
-      assert.deepEqual(await readMarks(sids), [ALIVE, ALIVE]);
-      assert.deepEqual(await Promise.all(sids.map((sid) => isAlive(fastify, sid))), [true, true]);
+      assert.deepEqual(await readRegistryMarks(testRedis, sids), [ALIVE_MARK, ALIVE_MARK]);
+      assert.deepEqual(await Promise.all(sids.map((sid) => isAliveIn(fastify, sid))), [true, true]);
 
-      const inside = await transact(fastify, async () => ({ count: await revokeAllSessions(userId), marks: await readMarks(sids) }));
+      const inside = await transact(fastify, async () => ({ count: await revokeAllSessions(userId), marks: await readRegistryMarks(testRedis, sids) }));
 
-      assert.deepEqual(inside, { count: sids.length, marks: [ALIVE, ALIVE] });
-      assert.deepEqual(await readMarks(sids), [REVOKED, REVOKED]);
+      assert.deepEqual(inside, { count: sids.length, marks: [ALIVE_MARK, ALIVE_MARK] });
+      assert.deepEqual(await readRegistryMarks(testRedis, sids), [REVOKED_MARK, REVOKED_MARK]);
     });
 
     test('resolves when Redis has been told, not before: a Redis that hangs holds it, though the process refuses the session already', { timeout: HANG_TIMEOUT_MS }, async (t) => {
@@ -1074,7 +1035,7 @@ describe('sessions', { skip: testRedis.skip || testDb.skip }, () => {
 
       await assert.rejects(revokeAll(hurried, userId), { name: 'DbError', code: 'ER_LOCK_WAIT_TIMEOUT' });
       assert.deepEqual(await readSids(userId), { live: [sid], ended: [] });
-      assert.equal(await readMark(sid), ALIVE);
+      assert.equal(await readMark(sid), ALIVE_MARK);
     });
 
     test('goes on after a plain read of the transaction around it and a refresh another connection has committed since', async () => {
@@ -1092,7 +1053,7 @@ describe('sessions', { skip: testRedis.skip || testDb.skip }, () => {
 
     test('is refused by a transaction of any other level, the default one too, and ends nothing', async () => {
       const userId = await createUser(fastify);
-      const sid = await signInAs(fastify, userId);
+      const { sid } = await signIn(fastify, { userId });
 
       await assertLevelRefused(fastify, () => revokeAllSessions(userId));
       assert.deepEqual(await readSids(userId), { live: [sid], ended: [] });
@@ -1190,7 +1151,7 @@ describe('sessions', { skip: testRedis.skip || testDb.skip }, () => {
       assert.deepEqual((await readSids(userId)).live, [...rest, sid].toSorted());
       assert.equal(await revokeAll(fastify, userId), MAX_SESSIONS);
       assert.deepEqual((await readSids(userId)).live, []);
-      assert.deepEqual(await readMarks([idle, ...rest, sid]), Array.from({ length: MAX_SESSIONS + 1 }, () => REVOKED));
+      assert.deepEqual(await readRegistryMarks(testRedis, [idle, ...rest, sid]), Array.from({ length: MAX_SESSIONS + 1 }, () => REVOKED_MARK));
     });
 
     test('wait for no row of another user however many sessions end at once: the server would read the whole table for a dozen ids', { timeout: HANG_TIMEOUT_MS }, async (t) => {
@@ -1231,7 +1192,7 @@ describe('sessions', { skip: testRedis.skip || testDb.skip }, () => {
 
     test('are asked for once more after a deadlock with a transaction that has taken them the other way round: there is one sign-in, and one revocation', { timeout: HANG_TIMEOUT_MS }, async (t) => {
       const userId = await createUser(fastify);
-      const first = await signInAs(fastify, userId);
+      const { sid: first } = await signIn(fastify, { userId });
 
       async function runAgainst(call) {
         const readLog = watchLog();
@@ -1254,21 +1215,21 @@ describe('sessions', { skip: testRedis.skip || testDb.skip }, () => {
 
       assert.equal(signedIn.retryCount, 1);
       assert.deepEqual(await readSids(userId), { live: [first, sid].toSorted(), ended: [] });
-      assert.equal(await readMark(sid), ALIVE);
+      assert.equal(await readMark(sid), ALIVE_MARK);
 
       assert.deepEqual(await runAgainst(() => revokeAll(fastify, userId)), { result: [first, sid].length, retryCount: 1 });
-      assert.deepEqual(await readMarks([first, sid]), [REVOKED, REVOKED]);
+      assert.deepEqual(await readRegistryMarks(testRedis, [first, sid]), [REVOKED_MARK, REVOKED_MARK]);
     });
 
     test('move no version of the table in the cache: no statement on sessions is cached', async () => {
       const userId = await createUser(fastify);
       const [first] = await fillUp(fastify, userId);
       const { sid, issued } = await signIn(fastify, { userId });
-      const unmarked = await signInAs(fastify, userId);
+      const { sid: unmarked } = await signIn(fastify, { userId });
 
-      await testRedis.admin.del(toKey(unmarked));
+      await testRedis.admin.del(toRegistryKey(testRedis.keyPrefix, unmarked));
 
-      const found = await isAlive(fastify, unmarked);
+      const found = await isAliveIn(fastify, unmarked);
 
       await refresh(fastify, issued.refreshToken);
 
@@ -1283,7 +1244,7 @@ describe('sessions', { skip: testRedis.skip || testDb.skip }, () => {
 
       assert.equal(found, true);
       assert.equal(replay.code, ERROR_CODE.SESSION_REVOKED);
-      assert.deepEqual(await readMarks([first, sid, unmarked]), [REVOKED, REVOKED, REVOKED]);
+      assert.deepEqual(await readRegistryMarks(testRedis, [first, sid, unmarked]), [REVOKED_MARK, REVOKED_MARK, REVOKED_MARK]);
       assert.deepEqual(versions, [`${prefix}${TABLE.AUDIT_LOGS}`]);
     });
   });

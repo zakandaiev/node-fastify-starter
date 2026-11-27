@@ -1,6 +1,7 @@
 import { writeAudit } from '#core/audit/index.js';
 import { createContext, runInContext } from '#core/context/index.js';
 import { migrateUp } from '#core/db/migrator.js';
+import { createQuery } from '#core/db/query.js';
 import { withTransaction } from '#core/db/transaction.js';
 import { AppError } from '#core/error/index.js';
 import { ERROR_CODE } from '#enums/error-code.js';
@@ -18,6 +19,8 @@ const testDb = await createTestDb();
 const RECORD_SQL = 'SELECT id, actor_id, action, entity_type, entity_id, meta, ip, request_id FROM audit_logs WHERE id = :id';
 const COUNT_SQL = 'SELECT COUNT(*) AS total FROM audit_logs WHERE entity_id = :entityId';
 const INSERT_USER_SQL = 'INSERT INTO users (id) VALUES (:id)';
+const DELETE_USER_SQL = 'DELETE FROM users WHERE id = :id';
+const USER_SQL = 'SELECT id FROM users WHERE id = :id';
 
 const UUID_V7 = 7;
 const HIDDEN = '[hidden]';
@@ -191,6 +194,23 @@ describe('writeAudit', { skip: testDb.skip }, () => {
       request: { ip: '::1', id: uuidv7(), user: { id: requestUserId } },
     });
 
+    assert.equal((await readRecord(id)).actor_id, actorId);
+  });
+
+  test('takes the actorId of a user deleted before it in its transaction, as the record of an account its owner deleted names them: no row of users has to stand behind an actor', async () => {
+    const actorId = await insertUser();
+    const id = await testDb.run(() => withTransaction(async () => {
+      await createQuery(DELETE_USER_SQL, { id: actorId }).execute();
+
+      return writeAudit({
+        action: 'user.delete',
+        entityType: TABLE.USERS,
+        entityId: actorId,
+        actorId,
+      });
+    }));
+
+    assert.deepEqual(await testDb.readRows(USER_SQL, { id: actorId }), []);
     assert.equal((await readRecord(id)).actor_id, actorId);
   });
 

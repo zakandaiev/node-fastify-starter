@@ -18,11 +18,10 @@ import {
   NO_STORE,
   readState,
   REVOKED,
-  REVOKED_MARK,
   UNAUTHENTICATED,
   withoutUser,
 } from '#root/tests/helper/guard.js';
-import { buildDownApp } from '#root/tests/helper/session.js';
+import { buildDownApp, REVOKED_MARK } from '#root/tests/helper/session.js';
 import { idParam } from '#schemas/common/request.js';
 import { mapSeries } from '#utils/async.js';
 import { uuidv7 } from '#utils/id.js';

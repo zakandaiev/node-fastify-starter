@@ -5,6 +5,7 @@ import { getProvidersSchema } from '#root/src/routes/v1/auth/controller.js';
 import { buildTestApp, errorBody, successBody } from '#root/tests/helper/app.js';
 import { createTestConfig } from '#root/tests/helper/config.js';
 import { createDownEnv } from '#root/tests/helper/db.js';
+import { DEV_ENV } from '#root/tests/helper/guard.js';
 import { createLogSink, findLogLines, LOG_LEVEL } from '#root/tests/helper/log.js';
 import { createMockProvider, signInThroughProvider } from '#root/tests/helper/oauth.js';
 import { REDIS_DOWN_ENV } from '#root/tests/helper/redis.js';
@@ -25,7 +26,6 @@ const APP_URL = 'https://app.test';
 const HTTP_APP_URL = 'http://app.test';
 const FAILURE_LOCATION = `${APP_URL}/auth/login?authError=AUTHENTICATION_ERROR`;
 
-const DEV_ENV = Object.freeze({ APP_MODE: 'dev' });
 const HTTP_ENV = Object.freeze({ APP_PROTOCOL: 'http' });
 const GOOGLE_ENV = Object.freeze({ APP_OAUTH_GOOGLE_CLIENT_ID: 'google-client-id', APP_OAUTH_GOOGLE_CLIENT_SECRET: 'google-client-secret' });
 

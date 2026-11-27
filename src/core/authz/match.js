@@ -16,10 +16,19 @@ function isScopeList(scopes) {
   return isArray(scopes) && Array.from(scopes).every((scope) => isString(scope));
 }
 
-function assertScopeList(scopes, signature) {
+const HELD_SCOPES = 'the scopes a user holds';
+const WANTED_SCOPES = 'the scopes to look for';
+
+function assertScopeList(scopes, signature, what) {
   if (!isScopeList(scopes)) {
-    throw new TypeError(`${signature} requires the scopes a user holds as a list of strings`);
+    throw new TypeError(`${signature} requires ${what} as a list of strings`);
   }
+
+  return true;
+}
+
+export function assertWantedScopes(wanted, signature = 'assertWantedScopes(wanted)') {
+  return assertScopeList(wanted, signature, WANTED_SCOPES);
 }
 
 function grantsScope(held, scope) {
@@ -80,11 +89,10 @@ export function readGroupGrants({ isSuperadmin, scopes } = {}) {
 }
 
 export function isEveryScopeGranted(scopes, wanted) {
-  assertScopeList(scopes, 'isEveryScopeGranted(scopes, wanted)');
+  const signature = 'isEveryScopeGranted(scopes, wanted)';
 
-  if (!isScopeList(wanted)) {
-    throw new TypeError('isEveryScopeGranted(scopes, wanted) requires the scopes to look for as a list of strings');
-  }
+  assertScopeList(scopes, signature, HELD_SCOPES);
+  assertWantedScopes(wanted, signature);
 
   return grantsEvery(scopes, wanted);
 }
@@ -92,7 +100,7 @@ export function isEveryScopeGranted(scopes, wanted) {
 export function isRequirementMet(scopes, requirement) {
   const signature = 'isRequirementMet(scopes, requirement)';
 
-  assertScopeList(scopes, signature);
+  assertScopeList(scopes, signature, HELD_SCOPES);
 
   return readScopeTerms(requirement, signature).some((term) => grantsEvery(scopes, term));
 }

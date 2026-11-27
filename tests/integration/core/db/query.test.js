@@ -273,7 +273,7 @@ describe('createQuery on MariaDB', { skip: testDb.skip }, () => {
     const fastify = await testDb.buildApp();
 
     t.after(() => fastify.close());
-    fastify.get('/api/v1/users', { schema: LIST_SCHEMA, security: PUBLIC }, async (request, reply) => {
+    fastify.get('/api/v1/query-probe/users', { schema: LIST_SCHEMA, security: PUBLIC }, async (request, reply) => {
       const query = createQuery(LIST_SQL).filter(userSchema, request.query).sort(userSchema, request.query).paginate(request.query);
 
       await query.execute();
@@ -282,7 +282,7 @@ describe('createQuery on MariaDB', { skip: testDb.skip }, () => {
     });
 
     const response = await fastify.inject({
-      url: '/api/v1/users',
+      url: '/api/v1/query-probe/users',
       query: {
         ...THREE_FILTERS,
         sort: 'name',
@@ -290,7 +290,7 @@ describe('createQuery on MariaDB', { skip: testDb.skip }, () => {
         total: '999',
       },
     });
-    const empty = await fastify.inject({ url: '/api/v1/users', query: { firstName: '', status: '', createdAtTo: '' } });
+    const empty = await fastify.inject({ url: '/api/v1/query-probe/users', query: { firstName: '', status: '', createdAtTo: '' } });
     const body = response.json();
 
     assert.equal(response.statusCode, HTTP_STATUS.OK, response.body);

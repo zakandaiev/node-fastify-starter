@@ -6,17 +6,21 @@ import {
   email,
   enumOf,
   nullable,
+  personName,
   text,
   uuid,
 } from '#schemas/common/field.js';
 import { freezeDeep } from '#utils/object.js';
+import { PERSON_NAME_MAX_LENGTH } from '#utils/person.js';
+
+const NAME_RULE = `one word of letters of any script, a hyphen or an apostrophe inside it, up to ${PERSON_NAME_MAX_LENGTH} characters`;
 
 export const properties = freezeDeep({
   id: uuid('User id'),
   email: nullable(email('Email, in lower case')),
   emailVerifiedAt: nullable(dateTimeUtc('When the email was confirmed')),
-  firstName: nullable(text('First name', { maxLength: 100 })),
-  lastName: nullable(text('Last name', { maxLength: 100 })),
+  firstName: nullable(personName(`First name: ${NAME_RULE}`, { maxLength: 100 })),
+  lastName: nullable(personName(`Last name: ${NAME_RULE}`, { maxLength: 100 })),
   locale: nullable(text('Language as a BCP 47 tag; null until the user chooses one', { maxLength: 35 })),
   timezone: nullable(text('IANA time zone; null until the user chooses one', { maxLength: 64 })),
   status: enumOf(Object.values(USER_STATUS), 'Status'),

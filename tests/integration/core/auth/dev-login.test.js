@@ -18,6 +18,7 @@ import {
 } from '#root/tests/helper/alert.js';
 import { rejectionOf, waitFor } from '#root/tests/helper/async.js';
 import { createTestDb } from '#root/tests/helper/db.js';
+import { DEV_ENV } from '#root/tests/helper/guard.js';
 import { bindMigrator } from '#root/tests/helper/migration.js';
 import { createTestRedis } from '#root/tests/helper/redis.js';
 import {
@@ -38,7 +39,6 @@ const testRedis = await createTestRedis();
 const testDb = await createTestDb();
 const { up } = bindMigrator(testDb);
 
-const DEV_ENV = Object.freeze({ APP_MODE: 'dev' });
 const ADMIN_EMAIL = 'dev.admin@admin.test';
 
 const DEV_ONLY_MESSAGE = 'signInForDev({ email, client, request }) signs in by an email alone: it runs in dev mode only, APP_MODE=dev';

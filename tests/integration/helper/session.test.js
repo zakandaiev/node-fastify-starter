@@ -1,6 +1,6 @@
 import { readUserScopes } from '#core/authz/scope.js';
 import { getContext } from '#core/context/index.js';
-import { createTestDb } from '#root/tests/helper/db.js';
+import { createTestDb, SMALL_POOL } from '#root/tests/helper/db.js';
 import { bindMigrator } from '#root/tests/helper/migration.js';
 import { createTestRedis } from '#root/tests/helper/redis.js';
 import {
@@ -30,9 +30,6 @@ const ME_URL = '/api/v1/auth/me';
 const REFRESH_URL = '/api/v1/auth/refresh';
 
 const UUID_V7 = 7;
-
-// Few on purpose: the files of the tests share the connections of one server.
-const SMALL_POOL = Object.freeze({ connectionLimit: 2 });
 
 async function openApp(t) {
   const fastify = await testDb.buildApp({ db: SMALL_POOL });

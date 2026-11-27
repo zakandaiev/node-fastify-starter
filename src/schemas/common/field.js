@@ -52,6 +52,12 @@ export function text(description, { minLength = 1, maxLength = SCHEMA_LIMITS.tex
   return withDescription({ type: 'string', minLength, maxLength }, description);
 }
 
+// A name a person gives in a form: the format holds it to a word of letters (isValidPersonName), which may be shorter
+// than its column.
+export function personName(description, { maxLength = SCHEMA_LIMITS.textMaxLength } = {}) {
+  return { ...text(description, { maxLength }), format: SCHEMA_FORMAT.PERSON_NAME };
+}
+
 export function enumOf(values, description) {
   if (!isNonEmptyArray(values) || !values.every((value) => isString(value)) || new Set(values).size !== values.length) {
     throw new TypeError('enumOf(values, description) requires a list of distinct strings');
