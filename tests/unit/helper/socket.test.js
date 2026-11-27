@@ -64,6 +64,20 @@ describe('sendRawRequest', () => {
     );
   });
 
+  test('writes the follow-up once the first bytes of an answer are there, not with the request', async (t) => {
+    const received = [];
+    const port = await listen(t, (socket) => {
+      socket.write(PARTIAL_ANSWER);
+      socket.once('data', (chunk) => {
+        received.push(chunk.toString('latin1'));
+        socket.end();
+      });
+    });
+
+    assert.equal(await sendRawRequest(port, 'GET / HTTP/1.1\r\n\r\n', { followUp: 'GARBAGE\r\n\r\n' }), PARTIAL_ANSWER);
+    assert.deepEqual(received, ['GARBAGE\r\n\r\n']);
+  });
+
   test('rejects when nothing listens on the port', async () => {
     await assert.rejects(sendRawRequest(await getFreePort(), 'GET / HTTP/1.1\r\n\r\n'), { code: 'ECONNREFUSED' });
   });

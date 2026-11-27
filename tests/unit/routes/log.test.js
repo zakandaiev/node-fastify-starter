@@ -1,4 +1,6 @@
+import { createRateLimitConfig } from '#config/rate-limit.js';
 import { assertRouteContract } from '#core/schema/route.js';
+import { readReportMax } from '#root/src/routes/v1/log/controller.js';
 import useLogRoutes from '#root/src/routes/v1/log/index.js';
 import { accept, createAlertReceiver, readBlock } from '#root/tests/helper/alert.js';
 import {
@@ -8,9 +10,12 @@ import {
   successBody,
 } from '#root/tests/helper/app.js';
 import { timeIt, waitFor } from '#root/tests/helper/async.js';
-import { TEST_ENV } from '#root/tests/helper/config.js';
+import { createTestConfig, TEST_ENV } from '#root/tests/helper/config.js';
+import { DONE_SCHEMA } from '#root/tests/helper/guard.js';
 import { createLogSink, findLogLines } from '#root/tests/helper/log.js';
 import { REDIS_DOWN_ENV } from '#root/tests/helper/redis.js';
+import { mapSeries } from '#utils/async.js';
+import { convertStringToSeconds } from '#utils/date.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
@@ -51,13 +56,21 @@ const REPORT = Object.freeze({
 
 const OTHER_REPORT = Object.freeze({ ...REPORT, error: { ...REPORT.error, message: 'Another error of the page' } });
 
+const REPORT_LIMIT = Object.freeze({ max: 2, maxWithKey: 4, window: '1m' });
+const WRONG_BEARER = 'Bearer wrong-key';
+const ITEMS_URL = '/api/v1/items';
+const ADDRESSES = Object.freeze(['203.0.113.10', '203.0.113.20', '203.0.113.30']);
+
 function fail() {
   return FAILED;
 }
 
-async function buildApp(t, { receiver, env = {}, alert = {} } = {}) {
+async function buildApp(t, {
+  receiver, env = {}, alert = {}, ...sections
+} = {}) {
   const sink = createLogSink();
   const fastify = await buildTestApp({
+    ...sections,
     env: { ...REDIS_DOWN_ENV, ...receiver?.env.webhook, ...env },
     alert: { ...receiver?.config.alert, ...alert },
     logger: { level: 'info', stream: sink.stream },
@@ -66,6 +79,31 @@ async function buildApp(t, { receiver, env = {}, alert = {} } = {}) {
   t.after(() => fastify.close());
 
   return { fastify, sink };
+}
+
+function createReportLimits(tiers = {}) {
+  const defaults = createRateLimitConfig();
+
+  return { tiers: { ...defaults.tiers, ...tiers }, routes: { ...defaults.routes, report: REPORT_LIMIT } };
+}
+
+// inject() comes from loopback, an internal request the limiter never counts: a proxy that names a client makes it count.
+function from(address, headers = {}) {
+  return { ...headers, 'x-forwarded-for': address };
+}
+
+function postReports(fastify, count, headers) {
+  return mapSeries(Array.from({ length: count }), () => postReport(fastify, { headers }));
+}
+
+function readStatuses(responses) {
+  return responses.map((response) => response.statusCode);
+}
+
+function isWithinWindow(retryAfter, window) {
+  const seconds = Number(retryAfter);
+
+  return Number.isInteger(seconds) && seconds > 0 && seconds <= convertStringToSeconds(window);
 }
 
 function postReport(fastify, { headers = { origin: ALLOWED_ORIGIN }, payload = REPORT } = {}) {
@@ -229,7 +267,7 @@ describe('POST /api/v1/log/error: who may send', () => {
     assert.deepEqual(receiver.requests, []);
   });
 
-  test('is public by contract: POST with security { auth: false }, a typed response and the body limit of the intake', async (t) => {
+  test('is public by contract: POST with security { auth: false } and a quota of its own, a typed response and the body limit of the intake', async (t) => {
     const fastify = await buildTestApp();
     t.after(() => fastify.close());
 
@@ -244,7 +282,7 @@ describe('POST /api/v1/log/error: who may send', () => {
     const [route] = routes.filter((options) => options.url === '/api/v2/log/error');
 
     assert.equal(route.method, 'POST');
-    assert.deepEqual(route.security, { auth: false });
+    assert.deepEqual(route.security, { auth: false, rateLimit: { max: readReportMax, window: fastify.config.rateLimit.routes.report.window } });
     assert.equal(route.bodyLimit, fastify.config.alert.intake.bodyLimit);
     assert.doesNotThrow(() => assertRouteContract(route));
   });
@@ -611,5 +649,122 @@ describe('POST /api/v1/log/error: what the page learns', () => {
       ['public', FRONTEND_ERROR_TITLE],
       ['internal', 'Server error (5xx)'],
     ]);
+  });
+});
+
+describe('POST /api/v1/log/error: its quota', () => {
+  test('gives a page of an allowed Origin max of rateLimit.routes.report, then 429 RATE_LIMIT_ERROR with Retry-After, and the quota of one address holds no other', async (t) => {
+    const { fastify } = await buildApp(t, { rateLimit: createReportLimits() });
+    const [page, other] = ADDRESSES;
+    const pageReports = await postReports(fastify, REPORT_LIMIT.max + 1, from(page, { origin: ALLOWED_ORIGIN }));
+    const otherReports = await postReports(fastify, 1, from(other, { origin: ALLOWED_ORIGIN }));
+    const refused = pageReports.at(-1);
+
+    assert.deepEqual([readStatuses(pageReports), readStatuses(otherReports)], [[200, 200, 429], [200]]);
+    assert.deepEqual(refused.json(), errorBody(refused, 'RATE_LIMIT_ERROR', 'Rate limit exceeded'));
+    assert.ok(isWithinWindow(refused.headers['retry-after'], REPORT_LIMIT.window), refused.headers['retry-after']);
+  });
+
+  test('gives a sender with the valid key of logs maxWithKey, with an allowed Origin or without one, and a wrong key beside an allowed Origin max alone', async (t) => {
+    const { fastify } = await buildApp(t, { env: { APP_LOG_API_KEY: LOG_API_KEY }, rateLimit: createReportLimits() });
+    const [server, page, guess] = ADDRESSES;
+    const bearer = `Bearer ${LOG_API_KEY}`;
+    const keyed = await postReports(fastify, REPORT_LIMIT.maxWithKey + 1, from(server, { authorization: bearer }));
+    const keyedPage = await postReports(fastify, REPORT_LIMIT.maxWithKey + 1, from(page, { origin: ALLOWED_ORIGIN, authorization: bearer }));
+    const guessed = await postReports(fastify, REPORT_LIMIT.max + 1, from(guess, { origin: ALLOWED_ORIGIN, authorization: WRONG_BEARER }));
+
+    assert.deepEqual([keyed, keyedPage, guessed].map((responses) => readStatuses(responses)), [
+      [200, 200, 200, 200, 429],
+      [200, 200, 200, 200, 429],
+      [200, 200, 429],
+    ]);
+  });
+
+  test('counts a wrong key without Origin in the quota of a page before its 401: guesses at the key run into 429, and the quota they took is gone for that address', async (t) => {
+    const { fastify } = await buildApp(t, { env: { APP_LOG_API_KEY: LOG_API_KEY }, rateLimit: createReportLimits() });
+    const [address, other] = ADDRESSES;
+    const guessed = await postReports(fastify, REPORT_LIMIT.maxWithKey + 1, from(address, { authorization: WRONG_BEARER }));
+    const pageReports = await postReports(fastify, 1, from(address, { origin: ALLOWED_ORIGIN }));
+    const otherReports = await postReports(fastify, 1, from(other, { origin: ALLOWED_ORIGIN }));
+
+    assert.deepEqual(readStatuses(guessed), [401, 401, 429, 429, 429]);
+    assertRefused(guessed.slice(0, REPORT_LIMIT.max), 'AUTHENTICATION_ERROR', 'Authentication error');
+    assert.deepEqual([readStatuses(pageReports), readStatuses(otherReports)], [[429], [200]]);
+  });
+
+  test('reads no body of a request it refuses for its source: a body that never arrives gets the 401 at once', async (t) => {
+    const { fastify } = await buildApp(t, { env: { APP_LOG_API_KEY: LOG_API_KEY } });
+    const response = await fastify.inject({
+      method: 'POST',
+      url: LOG_URL,
+      headers: { 'content-type': 'application/json', authorization: WRONG_BEARER },
+      payload: 'x'.repeat(fastify.config.alert.intake.bodyLimit + 1),
+    });
+
+    assert.equal(response.statusCode, 401);
+    assert.deepEqual(response.json(), errorBody(response, 'AUTHENTICATION_ERROR', 'Authentication error'));
+  });
+
+  test('refuses a foreign Origin with 403 ORIGIN_ERROR from the origin check before the quota counts it, also with the key of logs: the address keeps the whole quota of the key', async (t) => {
+    const { fastify } = await buildApp(t, { env: { APP_LOG_API_KEY: LOG_API_KEY }, rateLimit: createReportLimits() });
+    const [address] = ADDRESSES;
+    const bearer = `Bearer ${LOG_API_KEY}`;
+    const foreign = await postReports(fastify, REPORT_LIMIT.maxWithKey + 1, from(address, { origin: FOREIGN_ORIGIN, authorization: bearer }));
+    const keyed = await postReports(fastify, REPORT_LIMIT.maxWithKey + 1, from(address, { authorization: bearer }));
+
+    assert.deepEqual(readStatuses(foreign), [403, 403, 403, 403, 403]);
+    assertRefused(foreign, 'ORIGIN_ERROR', 'Origin is not allowed');
+    assert.deepEqual(readStatuses(keyed), [200, 200, 200, 200, 429]);
+  });
+
+  test('counts apart from the global quota of the client: a report takes none of it, and a client that has used it up still reports', async (t) => {
+    const { fastify } = await buildApp(t, { rateLimit: createReportLimits({ guest: { max: 1, window: '1m' } }) });
+    const [address] = ADDRESSES;
+    const sequence = ['report', 'items', 'items', 'report', 'report'];
+
+    fastify.get(ITEMS_URL, { schema: DONE_SCHEMA, security: { auth: false } }, (request, reply) => reply.ok({ isDone: true }));
+
+    const responses = await mapSeries(sequence, (name) => (name === 'report'
+      ? postReport(fastify, { headers: from(address, { origin: ALLOWED_ORIGIN }) })
+      : fastify.inject({ url: ITEMS_URL, headers: from(address) })));
+
+    assert.deepEqual(responses.map((response, index) => [sequence[index], response.statusCode]), [
+      ['report', 200],
+      ['items', 200],
+      ['items', 429],
+      ['report', 200],
+      ['report', 429],
+    ]);
+  });
+});
+
+describe('readReportMax', () => {
+  function readMaxFor(config, headers) {
+    return readReportMax({ server: { config }, headers });
+  }
+
+  test('gives maxWithKey for the valid key of logs in a Bearer header of either case alone, and max for anything else, also while the server has no key', () => {
+    const rateLimit = createReportLimits();
+    const keyed = createTestConfig({ env: { APP_LOG_API_KEY: LOG_API_KEY }, rateLimit });
+    const keyless = createTestConfig({ rateLimit });
+    const { max, maxWithKey } = REPORT_LIMIT;
+    const cases = [
+      ['the key', keyed, { authorization: `Bearer ${LOG_API_KEY}` }, maxWithKey],
+      ['the key in a scheme of lower case', keyed, { authorization: `bearer ${LOG_API_KEY}` }, maxWithKey],
+      ['the key beside an allowed Origin', keyed, { origin: ALLOWED_ORIGIN, authorization: `Bearer ${LOG_API_KEY}` }, maxWithKey],
+      ['no header', keyed, {}, max],
+      ['an allowed Origin alone', keyed, { origin: ALLOWED_ORIGIN }, max],
+      ['a wrong key', keyed, { authorization: WRONG_BEARER }, max],
+      ['the key cut short', keyed, { authorization: `Bearer ${LOG_API_KEY.slice(0, -1)}` }, max],
+      ['the key in another scheme', keyed, { authorization: `Basic ${LOG_API_KEY}` }, max],
+      ['the key without a scheme', keyed, { authorization: LOG_API_KEY }, max],
+      ['the key while the server has none', keyless, { authorization: `Bearer ${LOG_API_KEY}` }, max],
+      ['"null" while the server has none', keyless, { authorization: 'Bearer null' }, max],
+    ];
+
+    assert.deepEqual(
+      cases.map(([name, config, headers]) => [name, readMaxFor(config, headers)]),
+      cases.map(([name, , , expected]) => [name, expected]),
+    );
   });
 });

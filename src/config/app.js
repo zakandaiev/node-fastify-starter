@@ -16,10 +16,6 @@ export function createAppConfig(env) {
     host: env.APP_HOST,
     url: `${env.APP_PROTOCOL}://${env.APP_HOST}`,
 
-    // Where a browser request may come from: the host of its Origin, or of its Referer without one. Read as a browser
-    // writes it, so a default port in APP_HOST ("app.example.com:443") is left out the same way.
-    allowedHosts: Object.freeze([new URL(`${env.APP_PROTOCOL}://${env.APP_HOST}`).host]),
-
     listen: Object.freeze({
       host: '127.0.0.1',
       port: 4173,
@@ -31,6 +27,23 @@ export function createAppConfig(env) {
 
     bodyLimit: 16 * 1024,
     maxParamLength: 100,
+
+    // The whole request, its body included: one that never arrives must not hold its connection for ever, and a file
+    // sent over a slow mobile link fits.
+    requestTimeout: '2m',
+
+    // A smaller answer goes as it is: compressing it costs more than it saves.
+    compressMinBytes: 1024,
+
+    // A process this busy answers 503 to every request but /health/live and the OPTIONS that CORS answers before: its
+    // event loop lags behind by more than maxEventLoopDelay on average, or was busy for more than maxEventLoopUtilization
+    // of the last utilizationWindow, a whole number of samples.
+    pressure: Object.freeze({
+      maxEventLoopDelay: '1s',
+      maxEventLoopUtilization: 0.8,
+      utilizationWindow: '10s',
+      sampleInterval: '1s',
+    }),
 
     validation: Object.freeze({
       maxErrors: 20,

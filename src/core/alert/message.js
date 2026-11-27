@@ -30,6 +30,13 @@ const REQUEST_ORIGIN_REGEXP = /^(?:[a-z][a-z\d+.-]*:\/\/)?[^/]*/i;
 const CAUSE_SEPARATOR = ':';
 const UNREADABLE_CAUSE = 'unreadable';
 
+const NO_ROUTE = '(no route)';
+
+// The place in a dedupe key: the method and the pattern of the route, so every id and query of its path is one place.
+export function readRouteName(request) {
+  return `${request.method} ${request.routeOptions?.url ?? NO_ROUTE}`;
+}
+
 // The cause in a dedupe key: the type, the code and the masked text of what was thrown, so one bug is one alert
 // whatever ids and values it carries. Anything can be thrown: a value without a text form, a getter that throws.
 export function readErrorCause(error) {

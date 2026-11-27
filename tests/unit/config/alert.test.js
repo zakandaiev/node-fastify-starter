@@ -3,7 +3,6 @@ import { TELEGRAM_TEST_ENV } from '#root/tests/helper/alert.js';
 import { createTestConfig, createTestEnv } from '#root/tests/helper/config.js';
 import { isDeepFrozen } from '#root/tests/helper/object.js';
 import { convertStringToMs } from '#utils/date.js';
-import { readOriginHost } from '#utils/header.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
@@ -102,25 +101,6 @@ describe('config.http', () => {
 });
 
 describe('config.app', () => {
-  test('allows browser requests from APP_HOST alone, in lower case', () => {
-    assert.deepEqual(buildConfig({ APP_HOST: 'App.Example.COM:8443' }).app.allowedHosts, ['app.example.com:8443']);
-    assert.deepEqual(createTestConfig().app.allowedHosts, ['app.test']);
-  });
-
-  test('allows the Origin a browser sends from the address of the app, a default port written in APP_HOST included', () => {
-    [
-      { APP_PROTOCOL: 'https', APP_HOST: 'App.Example.COM' },
-      { APP_PROTOCOL: 'https', APP_HOST: 'app.example.com:8443' },
-      { APP_PROTOCOL: 'https', APP_HOST: 'app.example.com:443' },
-      { APP_PROTOCOL: 'http', APP_HOST: 'localhost:80' },
-    ].forEach((env) => {
-      const { app } = buildConfig(env);
-      const host = readOriginHost({ origin: app.url });
-
-      assert.ok(app.allowedHosts.includes(host), `Origin ${app.url} reads as "${host}", not in ${JSON.stringify(app.allowedHosts)}`);
-    });
-  });
-
   test('gives a failing process a shutdown timeout above zero', () => {
     assert.ok(convertStringToMs(buildConfig().app.fatalShutdownTimeout) > 0);
   });

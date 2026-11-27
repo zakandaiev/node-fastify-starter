@@ -8,7 +8,12 @@ import {
   readBlock,
   readTitles,
 } from '#root/tests/helper/alert.js';
-import { buildTestApp, errorBody, readRequestId } from '#root/tests/helper/app.js';
+import {
+  buildTestApp,
+  errorBody,
+  readRequestId,
+  SECURITY_HEADERS,
+} from '#root/tests/helper/app.js';
 import { waitFor } from '#root/tests/helper/async.js';
 import { createDownEnv } from '#root/tests/helper/db.js';
 import {
@@ -69,7 +74,8 @@ const CHUNKED = 'chunked';
 const CHUNK_SIZE_RADIX = 16;
 const STATUS_LINE_REGEXP = /^HTTP\/1\.1 (\d{3}) (.*)$/;
 
-const NODE_HEADERS = Object.freeze(['date', 'connection', 'keep-alive']);
+// Those of Node and of the plugins in front of every route: the error handler sets neither.
+const NODE_HEADERS = Object.freeze(['date', 'connection', 'keep-alive', ...SECURITY_HEADERS]);
 
 const ERROR_STATUS_MIN = 400;
 

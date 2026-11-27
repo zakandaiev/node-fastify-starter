@@ -1252,7 +1252,7 @@ describe('handleClientError', SUITE_OPTIONS, () => {
     });
 
     const port = await listen(fastify);
-    const received = await sendRawRequest(port, `${toRequest('/stream')}GARBAGE${HEAD_END}`);
+    const received = await sendRawRequest(port, toRequest('/stream'), { followUp: `GARBAGE${HEAD_END}` });
     const [started, ...rest] = parseResponses(received);
 
     assert.equal(started.statusCode, 200);

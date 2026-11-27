@@ -2,7 +2,7 @@ import {
   hasBearerScheme,
   readBearerToken,
   readCookie,
-  readOriginHost,
+  readRequestOrigin,
 } from '#utils/header.js';
 import fastifyCookie from '@fastify/cookie';
 import createFastify from 'fastify';
@@ -186,42 +186,49 @@ describe('readCookie', () => {
   });
 });
 
-describe('readOriginHost', () => {
-  test('reads the host of Origin in lower case, with its port', () => {
-    assert.equal(readOriginHost({ origin: 'https://App.Example.COM' }), 'app.example.com');
-    assert.equal(readOriginHost({ origin: 'HTTP://APP.EXAMPLE.COM:8080' }), 'app.example.com:8080');
-    assert.equal(readOriginHost({ origin: 'http://[::1]:4173' }), '[::1]:4173');
+describe('readRequestOrigin', () => {
+  test('reads the origin of Origin as a browser writes it: scheme and host in lower case, with the port', () => {
+    assert.equal(readRequestOrigin({ origin: 'https://App.Example.COM' }), 'https://app.example.com');
+    assert.equal(readRequestOrigin({ origin: 'HTTP://APP.EXAMPLE.COM:8080' }), 'http://app.example.com:8080');
+    assert.equal(readRequestOrigin({ origin: 'http://[::1]:4173' }), 'http://[::1]:4173');
   });
 
   test('drops the port that is the default one of the scheme, and only that one', () => {
-    assert.equal(readOriginHost({ origin: 'https://app.example.com:443' }), 'app.example.com');
-    assert.equal(readOriginHost({ origin: 'http://app.example.com:80' }), 'app.example.com');
-    assert.equal(readOriginHost({ origin: 'http://app.example.com:443' }), 'app.example.com:443');
+    assert.equal(readRequestOrigin({ origin: 'https://app.example.com:443' }), 'https://app.example.com');
+    assert.equal(readRequestOrigin({ origin: 'http://app.example.com:80' }), 'http://app.example.com');
+    assert.equal(readRequestOrigin({ origin: 'http://app.example.com:443' }), 'http://app.example.com:443');
   });
 
-  test('reads the host of Referer when there is no Origin, without its credentials, path and query', () => {
+  test('keeps the scheme apart: the same host over http is another origin', () => {
+    assert.notEqual(readRequestOrigin({ origin: 'http://app.example.com' }), readRequestOrigin({ origin: 'https://app.example.com' }));
+  });
+
+  test('reads the origin of Referer when there is no Origin, without its credentials, path and query', () => {
     assert.equal(
-      readOriginHost({ referer: 'https://user:secret@App.Example.com:8443/page?token=secret#top' }),
-      'app.example.com:8443',
+      readRequestOrigin({ referer: 'https://user:secret@App.Example.com:8443/page?token=secret#top' }),
+      'https://app.example.com:8443',
     );
   });
 
   test('takes Origin over Referer', () => {
-    assert.equal(readOriginHost({ origin: 'https://a.example.com', referer: 'https://b.example.com/page' }), 'a.example.com');
+    assert.equal(readRequestOrigin({ origin: 'https://a.example.com', referer: 'https://b.example.com/page' }), 'https://a.example.com');
   });
 
-  test('gives an empty host for "Origin: null" and for a value it cannot parse, without falling back to Referer', () => {
-    assert.equal(readOriginHost({ origin: 'null' }), '');
-    assert.equal(readOriginHost({ origin: 'null', referer: 'https://app.example.com/page' }), '');
-    assert.equal(readOriginHost({ origin: 'not a url' }), '');
-    assert.equal(readOriginHost({ origin: '' }), '');
-    assert.equal(readOriginHost({ referer: 'app.example.com/page' }), '');
+  test('gives an empty origin for "Origin: null", a value it cannot parse and an address of no origin, without falling back to Referer', () => {
+    assert.equal(readRequestOrigin({ origin: 'null' }), '');
+    assert.equal(readRequestOrigin({ origin: 'null', referer: 'https://app.example.com/page' }), '');
+    assert.equal(readRequestOrigin({ origin: 'not a url' }), '');
+    assert.equal(readRequestOrigin({ origin: '' }), '');
+    assert.equal(readRequestOrigin({ referer: 'app.example.com/page' }), '');
+    assert.equal(readRequestOrigin({ origin: 'file:///etc/passwd' }), '');
+    assert.equal(readRequestOrigin({ referer: 'data:text/html,hi' }), '');
+    assert.equal(readRequestOrigin({ origin: 'chrome-extension://abcdef' }), '');
   });
 
   test('gives null when neither header is there', () => {
-    assert.equal(readOriginHost({}), null);
-    assert.equal(readOriginHost({ authorization: `Bearer ${TOKEN}` }), null);
-    assert.equal(readOriginHost({ origin: undefined, referer: undefined }), null);
-    assert.equal(readOriginHost(undefined), null);
+    assert.equal(readRequestOrigin({}), null);
+    assert.equal(readRequestOrigin({ authorization: `Bearer ${TOKEN}` }), null);
+    assert.equal(readRequestOrigin({ origin: undefined, referer: undefined }), null);
+    assert.equal(readRequestOrigin(undefined), null);
   });
 });

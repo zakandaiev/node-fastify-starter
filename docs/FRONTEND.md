@@ -23,7 +23,8 @@ Every JSON answer is an envelope:
 - `data` is in every success, `null` when there is nothing to give. A list also has `pagination`, `sort` and `filters`.
 - `422 VALIDATION_ERROR` carries `validation[]`: bind each entry to the form field named by `column` (a dotted path).
 - `204` has no body: do not parse it.
-- `401` and `403` mean the session or the rights, nothing else. An overload is `503 SERVICE_UNAVAILABLE_ERROR` and a limit
+- `401` and `403` mean the session or the rights, but for `403 ORIGIN_ERROR`: a page whose origin the backend does not
+  know (see Development). An overload is `503 SERVICE_UNAVAILABLE_ERROR` and a limit
   is `429 RATE_LIMIT_ERROR`, both with `Retry-After`. Judge by the `code` of our envelope: a `503` from a proxy in front of
   the API has none.
 - `X-Request-Id` (also `meta.requestId`) names the request in the logs of the server: show it with an error report.
@@ -210,3 +211,8 @@ function isGranted(scopes, code) {
   ```
 
   With nginx: `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;` and `proxy_set_header Host $host;`.
+- **Origin of the dev server.** The browser sends the origin of the page (`http://localhost:5173`), and the backend refuses
+  every `POST`, `PUT`, `PATCH` and `DELETE` from an origin it does not know with `403 ORIGIN_ERROR`. Make it the origin of
+  the backend (`APP_PROTOCOL` and `APP_HOST`) or list it in `APP_CORS_ORIGINS`. A page of another origin still cannot
+  read the few answers made before any hook (a malformed path, headers over the limit of Node): they carry no CORS
+  headers, and `fetch` sees a network error.

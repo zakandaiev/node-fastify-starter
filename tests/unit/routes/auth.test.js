@@ -1,5 +1,7 @@
+import { createRateLimitConfig } from '#config/rate-limit.js';
 import { RESERVED_ROUTE_NAMES } from '#core/auth/oauth/provider.js';
 import { issueTokens } from '#core/auth/token.js';
+import { readRefreshLimitKey } from '#core/rate-limit/index.js';
 import { assertRouteContract } from '#core/schema/route.js';
 import { COOKIE } from '#enums/cookie.js';
 import { HEADER } from '#enums/header.js';
@@ -28,6 +30,7 @@ import {
 } from '#root/tests/helper/session.js';
 import { example as sessionExample } from '#schemas/entity/session.js';
 import { unique } from '#utils/array.js';
+import { mapSeries } from '#utils/async.js';
 import { nowUtc } from '#utils/date.js';
 import { uuidv7 } from '#utils/id.js';
 import { omit } from '#utils/object.js';
@@ -37,6 +40,16 @@ import { describe, test } from 'node:test';
 const REFRESH_URL = '/api/v1/auth/refresh';
 const PUBLIC = Object.freeze({ auth: false });
 const GUARDED = Object.freeze({ auth: true });
+
+// A sign-in and a refresh count apart, the refresh by the person of its cookie and the address.
+function readSignInSecurity(fastify) {
+  const { auth } = fastify.config.rateLimit.routes;
+
+  return {
+    signIn: { auth: false, rateLimit: auth },
+    refresh: { auth: false, rateLimit: { ...auth, key: readRefreshLimitKey } },
+  };
+}
 const SCOPES = Object.freeze(['users:read']);
 
 // Google with both credentials, Telegram without, in dev mode.
@@ -57,6 +70,17 @@ const DATABASE_CONNECTION_TITLE = 'Database connection failed';
 const STATE_KEYS = Object.freeze(['id', 'scopes']);
 const SESSION_KEYS = Object.freeze(['id', 'userAgent', 'ip', 'isDev', 'startedAt', 'rotatedAt', 'expiresAt', 'isCurrent']);
 const SECRET_NAME_REGEXP = /token|hash|secret|jti/i;
+
+const AUTH_LIMIT = Object.freeze({ max: 2, window: '1m' });
+const ADDRESS = '203.0.113.10';
+const OTHER_ADDRESS = '203.0.113.20';
+const DEV_PROXY_ADDRESS = '127.0.0.1';
+const PROVIDERS_URL = '/api/v1/auth/providers';
+const GOOGLE_START_URL = '/api/v1/auth/google';
+const LOGIN_DEV_URL = '/api/v1/auth/login-dev';
+
+// APP_HOST of the tests is "app.test", over https.
+const SIGN_IN_PAGE_URL = 'https://app.test/auth/login';
 
 function issueFor(fastify) {
   const { issued } = runInApp(fastify, () => issueTokens({
@@ -162,6 +186,45 @@ function listNames(schema) {
   return [...own, ...Object.values(schema).flatMap((value) => listNames(value))];
 }
 
+function createAuthLimits(tiers = {}) {
+  const defaults = createRateLimitConfig();
+
+  return { tiers: { ...defaults.tiers, ...tiers }, routes: { ...defaults.routes, auth: AUTH_LIMIT } };
+}
+
+// inject() comes from loopback, an internal request the limiter never counts: a proxy that names a client makes it count.
+function from(address) {
+  return { [HEADER.X_FORWARDED_FOR]: address };
+}
+
+function repeat(count, value) {
+  return Array.from({ length: count }, () => value);
+}
+
+function describeRedirect(response) {
+  return {
+    statusCode: response.statusCode,
+    location: response.headers[HEADER.LOCATION],
+    cacheControl: response.headers[HEADER.CACHE_CONTROL],
+    retryAfter: response.headers[HEADER.RETRY_AFTER],
+    body: response.payload,
+  };
+}
+
+function redirectTo(location) {
+  return {
+    statusCode: 302,
+    location,
+    cacheControl: NO_STORE,
+    retryAfter: undefined,
+    body: '',
+  };
+}
+
+function isLimited(response) {
+  return response.statusCode === 429 && response.json().code === 'RATE_LIMIT_ERROR';
+}
+
 describe('POST /api/v1/auth/refresh with the database down', () => {
   test('answers 401 AUTHENTICATION_ERROR that names no scheme and sets no cookie for a token nobody can use, which it never asks the database about, and 503 for a genuine one', async (t) => {
     const receiver = await createAlertReceiver(t, accept);
@@ -225,12 +288,14 @@ async function listDeclaredRoutes(fastify) {
 
 describe('routes of auth and sessions: who may call them', () => {
   test('each has the method, the path and the security of its contract: only the refresh and the list of providers are public, and a provider without credentials has no routes', async (t) => {
-    const routes = await listDeclaredRoutes(await buildDownApp(t));
+    const fastify = await buildDownApp(t);
+    const { refresh } = readSignInSecurity(fastify);
+    const routes = await listDeclaredRoutes(fastify);
 
     assert.deepEqual(routes.filter(({ method }) => method !== 'HEAD').map(({ method, url, security }) => [method, url, security]), [
       ['GET', '/api/v2/auth/me', GUARDED],
       ['GET', '/api/v2/auth/providers', PUBLIC],
-      ['POST', '/api/v2/auth/refresh', PUBLIC],
+      ['POST', '/api/v2/auth/refresh', refresh],
       ['POST', '/api/v2/auth/logout', GUARDED],
       ['GET', '/api/v2/sessions', GUARDED],
       ['DELETE', '/api/v2/sessions', GUARDED],
@@ -242,7 +307,9 @@ describe('routes of auth and sessions: who may call them', () => {
   });
 
   test('a provider with both credentials gets a public start and a public callback without a HEAD twin, and dev mode the public dev sign-in', async (t) => {
-    const routes = await listDeclaredRoutes(await buildDownApp(t, { env: GOOGLE_DEV_ENV }));
+    const fastify = await buildDownApp(t, { env: GOOGLE_DEV_ENV });
+    const { signIn, refresh } = readSignInSecurity(fastify);
+    const routes = await listDeclaredRoutes(fastify);
     const authRoutes = routes.filter(({ url }) => url.startsWith('/api/v2/auth/'));
 
     assert.deepEqual(authRoutes.map(({ method, url, security }) => [method, url, security]), [
@@ -250,11 +317,11 @@ describe('routes of auth and sessions: who may call them', () => {
       ['HEAD', '/api/v2/auth/me', GUARDED],
       ['GET', '/api/v2/auth/providers', PUBLIC],
       ['HEAD', '/api/v2/auth/providers', PUBLIC],
-      ['POST', '/api/v2/auth/refresh', PUBLIC],
+      ['POST', '/api/v2/auth/refresh', refresh],
       ['POST', '/api/v2/auth/logout', GUARDED],
-      ['GET', '/api/v2/auth/google', PUBLIC],
-      ['GET', '/api/v2/auth/google/callback', PUBLIC],
-      ['POST', '/api/v2/auth/login-dev', PUBLIC],
+      ['GET', '/api/v2/auth/google', signIn],
+      ['GET', '/api/v2/auth/google/callback', signIn],
+      ['POST', '/api/v2/auth/login-dev', signIn],
     ]);
     authRoutes.forEach((route) => {
       assert.doesNotThrow(() => assertRouteContract(route));
@@ -388,5 +455,92 @@ describe('routes of auth and sessions: what they say', () => {
     assert.deepEqual(me.json(), successBody(me, state));
     assert.deepEqual(refresh.json(), successBody(refresh, state));
     assert.deepEqual(sessions.json(), successBody(sessions, [sessionExample]));
+  });
+});
+
+describe('routes of signing in: their quota', () => {
+  test('POST /api/v1/auth/refresh counts by the person of the refresh cookie and the address: two people behind one address do not share, one person from two addresses does not either, and a request without a usable cookie counts by the address', async (t) => {
+    const fastify = await buildDownApp(t, { rateLimit: createAuthLimits() });
+    const anna = toRefreshCookie(issueFor(fastify).refreshToken);
+    const olha = toRefreshCookie(issueFor(fastify).refreshToken);
+    const count = AUTH_LIMIT.max + 1;
+    const requests = [
+      ...repeat(count, ['Anna behind an address', { ...anna, headers: from(ADDRESS) }]),
+      ...repeat(count, ['Olha behind the same address', { ...olha, headers: from(ADDRESS) }]),
+      ...repeat(count, ['Anna from another address', { ...anna, headers: from(OTHER_ADDRESS) }]),
+      ['no cookie behind the address', { headers: from(ADDRESS) }],
+      ['a cookie nobody can use behind the address', { ...toRefreshCookie('garbage'), headers: from(ADDRESS) }],
+      ['no cookie behind the address', { headers: from(ADDRESS) }],
+    ];
+    const responses = await mapSeries(requests, ([, request]) => postRefresh(fastify, request));
+    const limited = responses[AUTH_LIMIT.max];
+
+    assert.deepEqual(responses.map((response, index) => [requests[index][0], response.statusCode]), [
+      ['Anna behind an address', 503],
+      ['Anna behind an address', 503],
+      ['Anna behind an address', 429],
+      ['Olha behind the same address', 503],
+      ['Olha behind the same address', 503],
+      ['Olha behind the same address', 429],
+      ['Anna from another address', 503],
+      ['Anna from another address', 503],
+      ['Anna from another address', 429],
+      ['no cookie behind the address', 401],
+      ['a cookie nobody can use behind the address', 401],
+      ['no cookie behind the address', 429],
+    ]);
+    assert.deepEqual(limited.json(), errorBody(limited, 'RATE_LIMIT_ERROR', 'Rate limit exceeded'));
+    assert.deepEqual([limited.headers[HEADER.CACHE_CONTROL], limited.headers[HEADER.SET_COOKIE]], [NO_STORE, undefined]);
+  });
+
+  test('the quota of the refresh is its own: it is not the global quota of the client, and the refresh takes none of that', async (t) => {
+    const fastify = await buildDownApp(t, { rateLimit: createAuthLimits({ guest: { max: 1, window: '1m' } }) });
+    const requests = [
+      ['refresh', { method: 'POST', url: REFRESH_URL }],
+      ['providers', { url: PROVIDERS_URL }],
+      ['providers', { url: PROVIDERS_URL }],
+      ['refresh', { method: 'POST', url: REFRESH_URL }],
+      ['refresh', { method: 'POST', url: REFRESH_URL }],
+    ];
+    const responses = await mapSeries(requests, ([, request]) => fastify.inject({ ...request, headers: from(ADDRESS) }));
+
+    assert.deepEqual(responses.map((response, index) => [requests[index][0], response.statusCode]), [
+      ['refresh', 401],
+      ['providers', 200],
+      ['providers', 429],
+      ['refresh', 401],
+      ['refresh', 429],
+    ]);
+  });
+
+  test('a provider start counts by the address, 10 a minute by default, and answers its 429 with the redirect of every failure of the route, to the sign-in page with authError=RATE_LIMIT_ERROR; another address and the callback count apart', async (t) => {
+    const fastify = await buildDownApp(t, { env: GOOGLE_DEV_ENV });
+    const { auth } = fastify.config.rateLimit.routes;
+    const { authorizationUrl } = fastify.config.oauth.providers.find(({ id }) => id === 'google');
+    const starts = await mapSeries(repeat(auth.max + 1, from(ADDRESS)), (headers) => fastify.inject({ url: GOOGLE_START_URL, headers }));
+    const elsewhere = await fastify.inject({ url: GOOGLE_START_URL, headers: from(OTHER_ADDRESS) });
+    const callback = await fastify.inject({ url: `${GOOGLE_START_URL}/callback`, headers: from(ADDRESS) });
+
+    assert.deepEqual(auth, { max: 10, window: '1m' });
+    assert.deepEqual(
+      [...starts.slice(0, -1), elsewhere].map((response) => [response.statusCode, response.headers[HEADER.LOCATION].startsWith(`${authorizationUrl}?`)]),
+      repeat(auth.max + 1, [302, true]),
+    );
+    assert.deepEqual(describeRedirect(starts.at(-1)), redirectTo(`${SIGN_IN_PAGE_URL}?authError=RATE_LIMIT_ERROR`));
+    assert.deepEqual(describeRedirect(callback), redirectTo(`${SIGN_IN_PAGE_URL}?authError=AUTHENTICATION_ERROR`));
+  });
+
+  test('the dev sign-in counts with rateLimit.routes.auth by the address its dev proxy names, apart from the refresh', async (t) => {
+    const fastify = await buildDownApp(t, { env: GOOGLE_DEV_ENV, rateLimit: createAuthLimits() });
+    const signIns = await mapSeries(repeat(AUTH_LIMIT.max + 1, from(DEV_PROXY_ADDRESS)), (headers) => fastify.inject({
+      method: 'POST',
+      url: LOGIN_DEV_URL,
+      payload: { email: 'anna@example.com' },
+      headers,
+    }));
+    const refresh = await postRefresh(fastify, { headers: from(DEV_PROXY_ADDRESS) });
+
+    assert.deepEqual(signIns.map((response) => isLimited(response)), [false, false, true]);
+    assert.equal(refresh.statusCode, 401);
   });
 });

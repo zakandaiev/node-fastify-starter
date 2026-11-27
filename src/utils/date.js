@@ -194,9 +194,24 @@ export function convertStringToSeconds(value) {
   return toDurationMs(value, SECONDS_SIGNATURE) / MS_IN_SECOND;
 }
 
-// For a server that counts a wait in whole seconds and takes 0 for no wait at all.
+// For a server that counts a wait in whole seconds and takes 0 for no wait at all, such as Retry-After.
+export function convertMsToWholeSeconds(milliseconds) {
+  if (!isNumber(milliseconds)) {
+    throw new TypeError('convertMsToWholeSeconds(milliseconds) requires a finite number of milliseconds');
+  }
+
+  return Math.max(WHOLE_SECONDS_MIN, Math.ceil(milliseconds / MS_IN_SECOND));
+}
+
 export function convertStringToWholeSeconds(value) {
-  return Math.max(WHOLE_SECONDS_MIN, Math.ceil(toDurationMs(value, WHOLE_SECONDS_SIGNATURE) / MS_IN_SECOND));
+  return convertMsToWholeSeconds(toDurationMs(value, WHOLE_SECONDS_SIGNATURE));
+}
+
+// For a value that is checked rather than read: false, not an error, for one nobody can read.
+export function isPositiveDuration(value) {
+  const milliseconds = readDurationMs(value);
+
+  return isNumber(milliseconds) && milliseconds > 0;
 }
 
 // For a section of the config, when its owner is made: a duration nobody can read would otherwise fail on the day it

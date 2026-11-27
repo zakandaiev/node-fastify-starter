@@ -8,6 +8,9 @@ const BEARER_REGEXP = /^Bearer[ \t]+(\S+)[ \t]*$/i;
 const ORIGIN_HEADER = 'origin';
 const REFERER_HEADER = 'referer';
 
+// What URL gives as the origin of an address it cannot place: file:, data:, a scheme it does not know.
+const OPAQUE_ORIGIN = 'null';
+
 // Whatever follows the scheme: "Bearer" alone or with a text of several parts is a token nobody can use, not none.
 export function hasBearerScheme(authorization) {
   return isString(authorization) && BEARER_SCHEME_REGEXP.test(authorization);
@@ -39,24 +42,32 @@ export function readCookie(header, name) {
 }
 
 // A browser that hides where a request comes from sends "Origin: null", and a sandboxed frame of any site can:
-// such a value names no host, and an empty one is on no allow-list.
-function readHost(value) {
-  return URL.canParse(value)
-    ? new URL(value).host.toLowerCase()
-    : '';
+// such a value names no origin, and an empty one is on no allow-list. As a browser writes it: the scheme and the host
+// in lower case, a default port left out.
+function readOrigin(value) {
+  if (!URL.canParse(value)) {
+    return '';
+  }
+
+  const { origin } = new URL(value);
+
+  return origin === OPAQUE_ORIGIN
+    ? ''
+    : origin;
 }
 
-// Neither header comes from a client that is not a browser: null, not a host.
-export function readOriginHost(headers) {
+// The origin of the Origin header, or of the Referer without one. Neither comes from a client that is not a browser:
+// null, not an origin.
+export function readRequestOrigin(headers) {
   const origin = headers?.[ORIGIN_HEADER];
 
   if (isString(origin)) {
-    return readHost(origin);
+    return readOrigin(origin);
   }
 
   const referer = headers?.[REFERER_HEADER];
 
   return isString(referer)
-    ? readHost(referer)
+    ? readOrigin(referer)
     : null;
 }

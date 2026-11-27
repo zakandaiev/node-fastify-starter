@@ -2,7 +2,12 @@ import { SCHEMA_LIMITS } from '#config/schema.js';
 import { HEADER } from '#enums/header.js';
 import { truncate } from '#utils/string.js';
 import { isNonEmptyString, isString } from '#utils/type.js';
-import { isLoopbackAddress, isLoopbackHostname, toIpAddress } from '#utils/validate.js';
+import {
+  isLoopbackAddress,
+  isLoopbackHostname,
+  isPrivateAddress,
+  toIpAddress,
+} from '#utils/validate.js';
 
 const NO_SUFFIX = '';
 
@@ -61,6 +66,14 @@ function hasLocalHopsOnly(headers) {
 
   return CLIENT_ADDRESS_HEADERS.every((name) => name === HEADER.X_FORWARDED_FOR || headers[name] === undefined)
     && (forwardedFor === undefined || hasLoopbackHopsOnly(forwardedFor));
+}
+
+// A worker, a job or a monitor of the own network: a private socket, and no header that names a client. A proxy names
+// its client in one, and an SSR server the visitor it renders for. The network of the proxy is private too, so its range
+// alone would let all public traffic in. The socket, not request.ip, which trustProxy takes from those headers.
+export function isInternalRequest(request) {
+  return isPrivateAddress(request.socket?.remoteAddress)
+    && CLIENT_ADDRESS_HEADERS.every((name) => request.headers[name] === undefined);
 }
 
 // The socket, not request.ip: trustProxy trusts the local network, whose client can write 127.0.0.1 into

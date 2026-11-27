@@ -1,3 +1,4 @@
+import { authenticate } from '#core/auth/authenticate.js';
 import { getContext } from '#core/context/index.js';
 import { AppError } from '#core/error/index.js';
 import useAuth from '#root/src/plugins/130.auth.js';
@@ -407,10 +408,11 @@ describe('auth plugin: a route that is not guarded', () => {
     const onRequest = [leaveName([], 'own')];
     const seen = {};
 
-    // Added after the plugins, it runs behind the hook of the guard and sees what that one has left.
+    // Added after the plugins, it runs behind the hook of the guard and sees what that one has left. The hooks of the other
+    // plugins (compress, the limiter) are not its matter.
     fastify.addHook('onRoute', (routeOptions) => {
       if (routeOptions.method === 'GET') {
-        seen[routeOptions.url] = routeOptions.onRequest;
+        seen[routeOptions.url] = (routeOptions.onRequest ?? []).filter((hook) => hook === onRequest[0] || hook === authenticate);
       }
     });
     fastify.get('/public', { onRequest, security: PUBLIC }, countCalls().handler);
@@ -418,11 +420,10 @@ describe('auth plugin: a route that is not guarded', () => {
     fastify.get('/no-security', { onRequest }, countCalls().handler);
     fastify.get('/guarded', { onRequest, security: GUARDED }, countCalls().handler);
 
-    assert.equal(seen['/public'], onRequest);
-    assert.equal(seen['/plain-public'], undefined);
-    assert.equal(seen['/no-security'], onRequest);
-    assert.equal(seen['/guarded'].length, 2);
-    assert.equal(seen['/guarded'][0], onRequest[0]);
+    assert.deepEqual(seen['/public'], onRequest);
+    assert.deepEqual(seen['/plain-public'], []);
+    assert.deepEqual(seen['/no-security'], onRequest);
+    assert.deepEqual(seen['/guarded'], [onRequest[0], authenticate]);
     assert.equal(onRequest.length, 1);
   });
 

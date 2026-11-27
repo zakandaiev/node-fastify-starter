@@ -2,6 +2,7 @@ import {
   ALERT_BLOCK,
   buildAlertMessage,
   describeRequest,
+  readRouteName,
 } from '#core/alert/message.js';
 import { ALERT_SPACE } from '#enums/alert-space.js';
 import { THROTTLE_CLASS } from '#enums/throttle-class.js';
@@ -355,5 +356,27 @@ describe('describeRequest', () => {
       requestId: readRequestId(response),
     });
     REQUEST_SECRETS.forEach((secret) => assert.equal(JSON.stringify(message).includes(secret), false, secret));
+  });
+});
+
+describe('readRouteName', () => {
+  test('names the method and the pattern of the route, not the path of the request with its ids and query', async (t) => {
+    const fastify = await buildTestApp();
+    const seen = [];
+
+    t.after(() => fastify.close());
+    fastify.get('/orders/:id', (request) => {
+      seen.push(readRouteName(request));
+
+      return { isDone: true };
+    });
+    await Promise.all(['/orders/1?page=2', '/orders/2#top'].map((url) => fastify.inject(url)));
+
+    assert.deepEqual(seen, ['GET /orders/:id', 'GET /orders/:id']);
+  });
+
+  test('names a request without the options of a route by its method alone', () => {
+    assert.equal(readRouteName({ method: 'POST' }), 'POST (no route)');
+    assert.equal(readRouteName({ method: 'GET', routeOptions: {} }), 'GET (no route)');
   });
 });

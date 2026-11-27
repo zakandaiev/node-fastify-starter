@@ -4,6 +4,7 @@ import {
   ISO_DATE_TIME_MAX_LENGTH,
   addToDate,
   assertDurations,
+  convertMsToWholeSeconds,
   convertStringToMs,
   convertStringToSeconds,
   convertStringToWholeSeconds,
@@ -15,6 +16,7 @@ import {
   isExpired,
   isFuture,
   isIsoDate,
+  isPositiveDuration,
   isPast,
   isUtcDateTime,
   nowUtc,
@@ -926,6 +928,37 @@ describe('convertStringToWholeSeconds', () => {
     assert.throws(() => convertStringToWholeSeconds('10 min'), {
       name: 'TypeError',
       message: 'convertStringToWholeSeconds(value) requires a number with a unit s, m, h, d or w, such as "10m" or "1.5h": received \'10 min\'',
+    });
+  });
+});
+
+describe('convertMsToWholeSeconds', () => {
+  test('gives the seconds of a number of milliseconds, a part of one rounded up and never below one', () => {
+    [[30000, 30], [1200, 2], [1001, 2], [1000, 1], [999, 1], [1, 1], [0, 1], [-0, 1], [-5000, 1]].forEach(([milliseconds, seconds]) => {
+      assert.equal(convertMsToWholeSeconds(milliseconds), seconds, String(milliseconds));
+    });
+  });
+
+  test('throws on what is no finite number', () => {
+    [Number.NaN, Infinity, -Infinity, '1000', null, undefined].forEach((value) => {
+      assert.throws(() => convertMsToWholeSeconds(value), {
+        name: 'TypeError',
+        message: 'convertMsToWholeSeconds(milliseconds) requires a finite number of milliseconds',
+      }, String(value));
+    });
+  });
+});
+
+describe('isPositiveDuration', () => {
+  test('takes a duration convertStringToMs reads as above zero', () => {
+    ['1s', '0.001s', '10m', '1.5h', '1d', '2w'].forEach((value) => {
+      assert.equal(isPositiveDuration(value), true, value);
+    });
+  });
+
+  test('refuses zero, what rounds to it, a negative one and what is no duration, without throwing', () => {
+    ['0s', '-0s', '0.0004s', '-1s', '', '10', '1mo', ' 1s', '1S', '1 minute', 'Infinitys', 60, null, undefined, {}].forEach((value) => {
+      assert.equal(isPositiveDuration(value), false, inspect(value));
     });
   });
 });

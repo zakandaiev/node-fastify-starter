@@ -13,6 +13,7 @@ const ENV_FILE = '.env';
 const BYTE_ORDER_MARK = String.fromCharCode(0xFEFF);
 const SECRET_MIN_LENGTH = 32;
 const LIST_SEPARATOR = ',';
+const ROOT_PATH = '/';
 
 const HOST_REGEXP = /^[A-Za-z0-9.-]+(:[0-9]{1,5})?$/;
 const INTEGER_REGEXP = /^[0-9]+$/;
@@ -40,11 +41,27 @@ function isEmailList(value) {
   return readEnvList(value).every((item) => isEmail(item));
 }
 
+// An origin as a browser sends it in Origin, which a path, a query or a fragment would never match.
+function isOrigin(value) {
+  if (!isWebUrl(value)) {
+    return false;
+  }
+
+  const url = new URL(value);
+
+  return url.pathname === ROOT_PATH && url.search === '' && url.hash === '';
+}
+
+function isOriginList(value) {
+  return readEnvList(value).every((item) => isOrigin(item));
+}
+
 const FORMATS = Object.freeze({
   // docker compose interpolates $ " \ in env files, base64url has none of them
   base64url: /^[A-Za-z0-9_-]+$/,
   'host[:port]': isPublicHost,
   'email-list': isEmailList,
+  'origin-list': isOriginList,
   // A channel with an address fetch() refuses would only show itself as an alert that never came.
   url: isWebUrl,
   'telegram-bot-token': /^[0-9]+:[A-Za-z0-9_-]+$/,
@@ -84,6 +101,7 @@ export const ENV_SCHEMA = Object.freeze({
 
     APP_PROTOCOL: { type: 'string', enum: ['http', 'https'], default: 'https' },
     APP_HOST: PUBLIC_HOST,
+    APP_CORS_ORIGINS: { type: 'string', format: 'origin-list' },
     APP_HEALTH_PORT: PORT,
 
     APP_ADMIN_EMAILS: { type: 'string', format: 'email-list' },

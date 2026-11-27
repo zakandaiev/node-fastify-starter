@@ -10,7 +10,7 @@ const RESET_CODES = Object.freeze(['ECONNRESET', 'EPIPE', 'ECONNABORTED']);
 // "Connection: close" unless the server is expected to drop the connection itself. A connection still open
 // at the deadline is a failure, not an answer: a response that hangs or drips must not look like one that was
 // torn down. A reset may take the last bytes with it: a test that reads the text leaves no request bytes unread.
-export function sendRawRequest(port, text, { timeoutMs = SOCKET_TIMEOUT_MS } = {}) {
+export function sendRawRequest(port, text, { timeoutMs = SOCKET_TIMEOUT_MS, followUp = null } = {}) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     const socket = net.connect({ host: '127.0.0.1', port });
@@ -19,6 +19,13 @@ export function sendRawRequest(port, text, { timeoutMs = SOCKET_TIMEOUT_MS } = {
     }, timeoutMs);
 
     socket.once('connect', () => socket.write(text));
+
+    // Once an answer has started: what comes in the same write as a request is read by the parser before any async hook
+    // of that request has run.
+    if (followUp !== null) {
+      socket.once('data', () => socket.write(followUp));
+    }
+
     socket.on('data', (chunk) => chunks.push(chunk));
     socket.on('error', (error) => {
       if (!RESET_CODES.includes(error.code)) {

@@ -1,5 +1,10 @@
 import { SCHEMA_LIMITS } from '#config/schema.js';
-import { CLIENT_ADDRESS_HEADERS, isLoopbackOnlyRequest, readClient } from '#core/auth/client.js';
+import {
+  CLIENT_ADDRESS_HEADERS,
+  isInternalRequest,
+  isLoopbackOnlyRequest,
+  readClient,
+} from '#core/auth/client.js';
 import { HEADER } from '#enums/header.js';
 import { buildTestApp } from '#root/tests/helper/app.js';
 import { createTestConfig } from '#root/tests/helper/config.js';
@@ -35,6 +40,36 @@ const TEST_CONFIG = createTestConfig();
 
 const PROXY_HEADERS = Object.freeze(CLIENT_ADDRESS_HEADERS.filter((name) => name !== HEADER.X_FORWARDED_FOR));
 
+const PUBLIC_IP = '8.8.8.8';
+
+const PRIVATE_SOCKETS = Object.freeze([
+  LOOPBACK,
+  '127.10.20.30',
+  PROXY_IP,
+  '172.16.0.1',
+  '172.31.255.254',
+  LAN_IP,
+  '100.64.0.1',
+  '169.254.169.254',
+  '::1',
+  'fc00::1',
+  'fd12:3456:789a::1',
+  'fe80::1',
+  '::ffff:127.0.0.1',
+  '::ffff:10.0.0.5',
+  '::ffff:192.168.1.20',
+]);
+
+const PUBLIC_SOCKETS = Object.freeze([
+  PUBLIC_IP,
+  '1.1.1.1',
+  '172.32.0.1',
+  '100.128.0.1',
+  '2a00:1450:4001::1',
+  '2606:4700:4700::1111',
+  '::ffff:8.8.8.8',
+]);
+
 function read({ userAgent = USER_AGENT, ip = IP } = {}) {
   return readClient({ headers: { [HEADER.USER_AGENT]: userAgent }, ip });
 }
@@ -64,6 +99,18 @@ function listShutOut(values, toOptions) {
   return values.filter((value) => !isLocal(toOptions(value)));
 }
 
+function isInternal({ socket = { remoteAddress: LOOPBACK }, headers = {}, ip } = {}) {
+  return isInternalRequest({ socket, headers, ip });
+}
+
+function listInternal(values, toOptions) {
+  return values.filter((value) => isInternal(toOptions(value)));
+}
+
+function listExternal(values, toOptions) {
+  return values.filter((value) => !isInternal(toOptions(value)));
+}
+
 async function buildApp(t) {
   const fastify = await buildTestApp({ env: { ...REDIS_DOWN_ENV, ...(await createDownEnv()) } });
 
@@ -74,6 +121,7 @@ async function buildApp(t) {
     ip: request.ip,
     hostname: request.hostname,
   }));
+  fastify.get('/internal', (request) => ({ isInternal: isInternalRequest(request), ip: request.ip }));
 
   return fastify;
 }
@@ -286,6 +334,67 @@ describe('isLoopbackOnlyRequest: a request of the app', () => {
       { isLocal: false, ip: LOOPBACK, hostname: 'localhost' },
       { isLocal: false, ip: IP, hostname: 'localhost' },
       { isLocal: false, ip: LOOPBACK, hostname: 'localhost' },
+    ]);
+  });
+});
+
+describe('isInternalRequest: the socket', () => {
+  test('takes a socket of loopback or of a private network, of either family and in the IPv4-mapped form, for an internal request while no header names a client', () => {
+    assert.deepEqual(listExternal(PRIVATE_SOCKETS, (remoteAddress) => ({ socket: { remoteAddress } })), []);
+  });
+
+  // A socket that has closed has no address.
+  test('takes a socket of the internet, of either family and in the IPv4-mapped form, one that is no address and one that has closed for an external one', () => {
+    const addresses = [...PUBLIC_SOCKETS, 'localhost', 'unknown', '', undefined];
+
+    assert.deepEqual(listInternal(addresses, (remoteAddress) => ({ socket: { remoteAddress } })), []);
+    assert.equal(isInternal({ socket: {} }), false);
+    assert.equal(isInternalRequest({ headers: {} }), false);
+  });
+});
+
+describe('isInternalRequest: the headers of a proxy', () => {
+  test('takes any header that names a client for an external request, whatever it holds and however private the socket', () => {
+    const values = [LOOPBACK, PROXY_IP, PUBLIC_IP, 'for=127.0.0.1', ''];
+    const cases = CLIENT_ADDRESS_HEADERS.flatMap((name) => values.flatMap((value) => [LOOPBACK, PROXY_IP, '::1'].map((remoteAddress) => ({
+      socket: { remoteAddress },
+      headers: { [name]: value },
+    }))));
+
+    assert.equal(CLIENT_ADDRESS_HEADERS.length, 5);
+    assert.deepEqual(listInternal(cases, (options) => options), []);
+  });
+
+  test('reads the socket, not request.ip: the address a proxy wrote neither lets a public socket in nor shuts a private one out', () => {
+    assert.equal(isInternal({ socket: { remoteAddress: PUBLIC_IP }, ip: LOOPBACK }), false);
+    assert.equal(isInternal({ socket: { remoteAddress: PROXY_IP }, ip: PUBLIC_IP }), true);
+  });
+});
+
+describe('isInternalRequest: a request of the app', () => {
+  test('is internal from a private socket without a header that names a client, whatever trustProxy makes of request.ip', async (t) => {
+    const fastify = await buildApp(t);
+    const requests = [
+      {},
+      { remoteAddress: PROXY_IP },
+      { remoteAddress: '::1' },
+      { remoteAddress: PUBLIC_IP },
+      { headers: { [HEADER.X_FORWARDED_FOR]: PROXY_IP } },
+      { headers: { [HEADER.X_FORWARDED_FOR]: LOOPBACK } },
+      { headers: { [HEADER.X_FORWARDED_FOR]: LOOPBACK }, remoteAddress: PUBLIC_IP },
+      { headers: { [HEADER.X_REAL_IP]: PUBLIC_IP }, remoteAddress: PROXY_IP },
+    ];
+    const responses = await Promise.all(requests.map((request) => fastify.inject({ url: '/internal', ...request })));
+
+    assert.deepEqual(responses.map((response) => response.json()), [
+      { isInternal: true, ip: LOOPBACK },
+      { isInternal: true, ip: PROXY_IP },
+      { isInternal: true, ip: '::1' },
+      { isInternal: false, ip: PUBLIC_IP },
+      { isInternal: false, ip: PROXY_IP },
+      { isInternal: false, ip: LOOPBACK },
+      { isInternal: false, ip: PUBLIC_IP },
+      { isInternal: false, ip: PROXY_IP },
     ]);
   });
 });

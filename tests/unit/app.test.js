@@ -5,6 +5,7 @@ import { buildApp } from '#root/src/app.js';
 import { buildTestApp } from '#root/tests/helper/app.js';
 import { createTestConfig } from '#root/tests/helper/config.js';
 import { createLogSink } from '#root/tests/helper/log.js';
+import { convertStringToMs } from '#utils/date.js';
 import { uuidVersion } from '#utils/id.js';
 import { PromisePool } from 'mysql2/promise';
 import assert from 'node:assert/strict';
@@ -90,6 +91,30 @@ describe('buildApp', () => {
 
     assert.equal(response.statusCode, 413);
     assert.equal(isHandled, false);
+  });
+
+  test('gives the server requestTimeout of the config in ms, and does not start with one that is no duration', async (t) => {
+    const [standard, short] = await Promise.all([buildTestApp(), buildTestApp({ app: { requestTimeout: '3s' } })]);
+    t.after(() => Promise.all([standard.close(), short.close()]));
+
+    assert.equal(standard.server.requestTimeout, convertStringToMs(standard.config.app.requestTimeout));
+    assert.equal(short.server.requestTimeout, 3000);
+
+    const results = await Promise.allSettled(['2 minutes', 120_000, null].map((requestTimeout) => buildTestApp({ app: { requestTimeout } })));
+
+    results.forEach((result) => {
+      assert.equal(result.status, 'rejected');
+      assert.match(result.reason.message, /convertStringToMs\(value\) requires a number with a unit/);
+    });
+  });
+
+  test('does not start with a requestTimeout of zero or below, which Node reads as no timeout at all', async () => {
+    const results = await Promise.allSettled(['0s', '-1s', '0.0004s'].map((requestTimeout) => buildTestApp({ app: { requestTimeout } })));
+
+    results.forEach((result) => {
+      assert.equal(result.status, 'rejected');
+      assert.equal(result.reason.message, 'config.app requires requestTimeout to be above zero');
+    });
   });
 
   test('uses no deprecated Fastify option', async (t) => {

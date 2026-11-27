@@ -1,5 +1,6 @@
 import { toFailureLocation } from '#core/auth/oauth/flow.js';
 import { assertOauthConfig, listEnabledProviders } from '#core/auth/oauth/provider.js';
+import { readRefreshLimitKey } from '#core/rate-limit/index.js';
 import { AUTH_ROUTE } from '#enums/auth-route.js';
 import {
   CALLBACK_PATH,
@@ -38,7 +39,7 @@ function logSignIn(fastify, providers) {
 function useProviderRoutes(fastify, provider) {
   const path = `/${provider.id}`;
   const options = {
-    security: { auth: false },
+    security: { auth: false, rateLimit: fastify.config.rateLimit.routes.auth },
     exposeHeadRoute: false,
     config: { providerId: provider.id, failureLocation: toFailureLocation },
   };
@@ -48,7 +49,7 @@ function useProviderRoutes(fastify, provider) {
 }
 
 export default async function useAuthRoutes(fastify) {
-  const { app, oauth } = fastify.config;
+  const { app, oauth, rateLimit } = fastify.config;
 
   assertOauthConfig(oauth);
 
@@ -66,7 +67,7 @@ export default async function useAuthRoutes(fastify) {
 
   fastify.post(`/${AUTH_ROUTE.REFRESH}`, {
     schema: postRefreshSchema,
-    security: { auth: false },
+    security: { auth: false, rateLimit: { ...rateLimit.routes.auth, key: readRefreshLimitKey } },
   }, postRefresh);
 
   fastify.post(`/${AUTH_ROUTE.LOGOUT}`, {
@@ -79,7 +80,7 @@ export default async function useAuthRoutes(fastify) {
   if (app.isDev) {
     fastify.post(`/${AUTH_ROUTE.LOGIN_DEV}`, {
       schema: postLoginDevSchema,
-      security: { auth: false },
+      security: { auth: false, rateLimit: rateLimit.routes.auth },
       onRequest: hideOffLoopback,
     }, postLoginDev);
   }

@@ -76,8 +76,12 @@
   },
   "dependencies": {
     "@fastify/autoload": "^6.6.0",
+    "@fastify/compress": "^9.3.0",
     "@fastify/cookie": "^11.1.5",
+    "@fastify/cors": "^11.4.3",
+    "@fastify/helmet": "^13.2.0",
     "@fastify/jwt": "^10.2.9",
+    "@fastify/rate-limit": "^11.3.0",
     "@fastify/swagger": "^9.9.5",
     "@fastify/swagger-ui": "^6.1.5",
     "ajv": "^8.20.0",

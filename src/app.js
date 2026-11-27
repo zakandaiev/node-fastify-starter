@@ -5,6 +5,7 @@ import { createSchemaErrorFormatter } from '#core/error/validation.js';
 import { createLogger } from '#core/logger/index.js';
 import { createRouteHook } from '#core/schema/route.js';
 import { buildValidator } from '#core/schema/validator.js';
+import { assertDurations, convertStringToMs } from '#utils/date.js';
 import { uuidv7 } from '#utils/id.js';
 import autoload from '@fastify/autoload';
 import Fastify, { LogController } from 'fastify';
@@ -14,6 +15,9 @@ import Fastify, { LogController } from 'fastify';
 const TRUST_PROXY = 'loopback,uniquelocal';
 
 const REQUEST_ID_LOG_LABEL = 'requestId';
+
+// Zero is no timeout to Node.
+const DURATION_KEYS = Object.freeze(['requestTimeout']);
 
 // Autoload gives the path relative to its directory, with a leading slash: "includes" also catches a nested "_" entry.
 const IGNORED_PATH_FRAGMENT = '/_';
@@ -25,6 +29,8 @@ function createFastify(config) {
     logController: new LogController({ requestIdLogLabel: REQUEST_ID_LOG_LABEL }),
     genReqId: () => uuidv7(),
     trustProxy: TRUST_PROXY,
+    // Fastify turns the default one of Node off, and a request that never arrives would hold its connection for good.
+    requestTimeout: convertStringToMs(config.app.requestTimeout),
     bodyLimit: config.app.bodyLimit,
     routerOptions: {
       maxParamLength: config.app.maxParamLength,
@@ -74,6 +80,7 @@ export async function buildApp({ config } = {}) {
   }
 
   assertErrorConfig(config.app);
+  assertDurations(config.app, DURATION_KEYS, 'config.app');
 
   // Created before the instance: a prefix it refuses must not leave an open instance behind.
   const checkRoute = createRouteHook(config.app);

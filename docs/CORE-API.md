@@ -56,6 +56,7 @@
 - `buildAlertMessage({ title, error, request, client, url, space, throttleClass, isSilent }, appConfig)`
 - `describeRequest(request)`
 - `readErrorCause(error)`
+- `readRouteName(request)`
 
 ## #core/alert/state.js
 
@@ -87,6 +88,7 @@
 ## #core/auth/client.js
 
 - `CLIENT_ADDRESS_HEADERS`
+- `isInternalRequest(request)`
 - `isLoopbackOnlyRequest(request)`
 - `readClient(request)`
 
@@ -398,6 +400,21 @@
 
 - `handleFatalErrors({ context, shutdown, timeout } = {})`
 
+## #core/rate-limit/index.js
+
+- `assertRateLimitConfig(rateLimitConfig)`
+- `assertRouteLimit(limit, name = 'security.rateLimit')`
+- `readAddressKey(request)`
+- `readLimitKey(request)`
+- `readLimitTier(rateLimitConfig, key)`
+- `readRefreshLimitKey(request)`
+- `toPluginBan(ban)`
+- `toRouteLimit(limit, rateLimitConfig)`
+
+## #core/rate-limit/store.js
+
+- `createLimitStore(options)`
+
 ## #core/redis/index.js
 
 - `REDIS_FAILURE`
@@ -435,6 +452,7 @@
 ## #core/schema/route.js
 
 - `AUTH_DECORATOR`
+- `RATE_LIMIT_DECORATOR`
 - `SCOPES_DECORATOR`
 - `assertRouteContract(routeOptions)`
 - `createRouteHook({ apiPrefix, healthPrefix } = {})`
@@ -489,6 +507,7 @@
 - `ISO_DATE_TIME_MAX_LENGTH`
 - `addToDate(value, duration)`
 - `assertDurations(section, keys, name)`
+- `convertMsToWholeSeconds(milliseconds)`
 - `convertStringToMs(value)`
 - `convertStringToSeconds(value)`
 - `convertStringToWholeSeconds(value)`
@@ -501,6 +520,7 @@
 - `isFuture(value, now = nowUtc())`
 - `isIsoDate(value)`
 - `isPast(value, now = nowUtc())`
+- `isPositiveDuration(value)`
 - `isUtcDateTime(value)`
 - `nowUtc()`
 - `parseStrictUtc(value)`
@@ -535,7 +555,7 @@
 - `hasBearerScheme(authorization)`
 - `readBearerToken(authorization)`
 - `readCookie(header, name)`
-- `readOriginHost(headers)`
+- `readRequestOrigin(headers)`
 
 ## #utils/id.js
 

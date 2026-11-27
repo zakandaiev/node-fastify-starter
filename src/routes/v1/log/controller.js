@@ -8,7 +8,7 @@ import { ERROR_CODE } from '#enums/error-code.js';
 import { HEADER } from '#enums/header.js';
 import { text } from '#schemas/common/field.js';
 import { timingSafeEqual } from '#utils/hash.js';
-import { readBearerToken, readOriginHost } from '#utils/header.js';
+import { readBearerToken, readRequestOrigin } from '#utils/header.js';
 import { freezeDeep, pick } from '#utils/object.js';
 import { cutAddressTail, cutAddressTails, truncate } from '#utils/string.js';
 import { isString } from '#utils/type.js';
@@ -75,20 +75,24 @@ function isApiKey(request) {
   return logApiKey !== null && token !== null && timingSafeEqual(token, logApiKey);
 }
 
-// Before the body is read: a browser of an allowed host, or another app or an SSR server with the key of logs.
-// A foreign Origin is refused even with the key: a server that sends one is not the client it claims to be.
-export async function checkSource(request) {
-  const host = readOriginHost(request.headers);
-
-  if (host !== null && !request.server.config.app.allowedHosts.includes(host)) {
-    throw new AppError(ERROR_CODE.ORIGIN_ERROR);
-  }
-
-  if (host === null && !isApiKey(request)) {
+// A browser of an allowed origin, or another app or an SSR server with the key of logs; a foreign Origin never gets here,
+// the origin check (110) refuses it first. A preParsing hook: after the limiter, which counts a guess at the key too, and
+// before the body is read. It gives the payload on, since anything else it returned would be read as the body.
+export async function checkSource(request, reply, payload) {
+  if (readRequestOrigin(request.headers) === null && !isApiKey(request)) {
     throw new AppError(ERROR_CODE.AUTHENTICATION_ERROR);
   }
 
-  return true;
+  return payload;
+}
+
+// By the key itself, not by a Bearer header: any header would get the quota of an app.
+export function readReportMax(request) {
+  const { report } = request.server.config.rateLimit.routes;
+
+  return isApiKey(request)
+    ? report.maxWithKey
+    : report.max;
 }
 
 // The values an error of the server repeats are masked before the cut, which could leave half of one.

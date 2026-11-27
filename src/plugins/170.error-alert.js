@@ -1,6 +1,6 @@
 import { findEnabledChannels } from '#core/alert/channels/index.js';
 import { alert, assertAlertConfig } from '#core/alert/index.js';
-import { readErrorCause } from '#core/alert/message.js';
+import { readErrorCause, readRouteName } from '#core/alert/message.js';
 import { findDbError, POOL_SATURATED_CODE } from '#core/db/error.js';
 import { classifyError } from '#core/error/classify.js';
 import { findUpstreamError } from '#core/http/index.js';
@@ -27,11 +27,6 @@ const STATEMENT_TIMEOUT_KEY = 'db-statement-timeout';
 const OVERLOAD_KEY = 'db-overload';
 
 const KEY_SEPARATOR = ':';
-const NO_ROUTE = '(no route)';
-
-function readRoute(request) {
-  return `${request.method} ${request.routeOptions?.url ?? NO_ROUTE}`;
-}
 
 // A stopped service fails every route that calls it, and the database is called by them all: one alert for the service
 // and the way it failed. The status is a part of it, or a 422 of one route would mute the 503 of the whole service, and
@@ -58,7 +53,7 @@ function describeServerFault(error, request) {
 
   return {
     title: SERVER_ERROR_TITLE,
-    dedupeKey: [SERVER_ERROR_KEY, readRoute(request), readErrorCause(error)].join(KEY_SEPARATOR),
+    dedupeKey: [SERVER_ERROR_KEY, readRouteName(request), readErrorCause(error)].join(KEY_SEPARATOR),
     error,
   };
 }
@@ -72,7 +67,7 @@ function describeOverload(error, request) {
   if (dbError?.kind === DB_ERROR_KIND.TIMEOUT) {
     return {
       title: STATEMENT_TIMEOUT_TITLE,
-      dedupeKey: [STATEMENT_TIMEOUT_KEY, readRoute(request)].join(KEY_SEPARATOR),
+      dedupeKey: [STATEMENT_TIMEOUT_KEY, readRouteName(request)].join(KEY_SEPARATOR),
       error,
       throttleClass: THROTTLE_CLASS.WARNING,
     };

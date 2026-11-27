@@ -6,6 +6,26 @@ import assert from 'node:assert/strict';
 
 const REQUEST_ID_VERSION = 7;
 
+// What helmet and cors put on every answer of a route and of the 404 handler: a test of one answer reads past them. A
+// refusal of the parser of Node (handleClientError) comes before any hook and carries none of them.
+export const SECURITY_HEADERS = Object.freeze([
+  'content-security-policy',
+  'cross-origin-opener-policy',
+  'cross-origin-resource-policy',
+  'origin-agent-cluster',
+  'referrer-policy',
+  'strict-transport-security',
+  'x-content-type-options',
+  'x-dns-prefetch-control',
+  'x-download-options',
+  'x-frame-options',
+  'x-permitted-cross-domain-policies',
+  'x-xss-protection',
+  'vary',
+  'access-control-allow-credentials',
+  'access-control-expose-headers',
+]);
+
 export function buildTestApp(overrides) {
   return buildApp({ config: createTestConfig(overrides) });
 }

@@ -1,3 +1,4 @@
+import { createRateLimitConfig } from '#config/rate-limit.js';
 import {
   dropSchemaMarkers,
   isJsonField,
@@ -8,13 +9,15 @@ import {
   assertRouteContract,
   AUTH_DECORATOR,
   createRouteHook,
+  RATE_LIMIT_DECORATOR,
   SCOPES_DECORATOR,
 } from '#core/schema/route.js';
 import { SCOPE, SCOPE_ALL } from '#enums/scope.js';
 import { pingSchema } from '#root/src/routes/v1/system/controller.js';
-import { buildTestApp } from '#root/tests/helper/app.js';
+import { buildTestApp, readRequestId } from '#root/tests/helper/app.js';
 import { errorEnvelope, listEnvelope, successEnvelope } from '#schemas/common/envelope.js';
 import { json, nullable } from '#schemas/common/field.js';
+import { mapSeries } from '#utils/async.js';
 import { freezeDeep } from '#utils/object.js';
 import Fastify from 'fastify';
 import fp from 'fastify-plugin';
@@ -47,6 +50,83 @@ const REQUIREMENT_LIST_MESSAGE = "security.scopes requires a non-empty list of s
 const SECURITY_FORM_MESSAGE = 'requires security: { auth: true } or, for a public route, security: { auth: false }';
 
 const PREFIXED_AND_FREE_URLS = Object.freeze(['/api/v1/items', '/health/items', '/items']);
+
+const PRESETS = createRateLimitConfig().routes;
+const LIMIT = Object.freeze({ max: 10, window: '1m' });
+const LIMITED = Object.freeze({ auth: false, rateLimit: LIMIT });
+const LIMIT_OUT_OF_REACH = 'has security.rateLimit and is out of reach of the rate-limit plugin, which limits what is declared after it, in scopes opened after it';
+const HAND_WRITTEN_LIMIT = 'names config.rateLimit: declare the limit of a route as security.rateLimit';
+const LIMIT_FORM_MESSAGE = 'security.rateLimit requires false, or { max, window } with an optional ban and key';
+const LIMIT_COUNT_MESSAGE = 'security.rateLimit requires max, a positive integer or a function (request, key) that gives one, and window, a duration above zero such as "1m"';
+const LIMIT_OPTION_MESSAGE = 'security.rateLimit requires ban to be null or an integer not below zero, and key a function (request) that gives the key';
+
+// inject() comes from loopback, an internal request the limiter never counts: a proxy that names a client makes it count.
+const COUNTED = Object.freeze({ 'x-forwarded-for': '203.0.113.7' });
+
+const VALID_LIMITS = Object.freeze({
+  'no limit at all': false,
+  'max and window': { max: 10, window: '1m' },
+  'a frozen preset of the config': PRESETS.auth,
+  'a preset with ban: null': PRESETS.publicRead,
+  'a window with a fraction': { max: 1, window: '1.5s' },
+  'max as a function': { max: readMax, window: '10m' },
+  'ban: 0': { ...LIMIT, ban: 0 },
+  'a ban': { ...LIMIT, ban: 30 },
+  'a key': { ...LIMIT, key: readKey },
+  'every key': {
+    max: readMax, window: '1d', ban: 5, key: readKey,
+  },
+  'ban and key left undefined': { ...LIMIT, ban: undefined, key: undefined },
+  'an object without a prototype': Object.assign(Object.create(null), LIMIT),
+});
+
+const MALFORMED_LIMITS = Object.freeze([
+  ['true', true, LIMIT_FORM_MESSAGE],
+  ['null', null, LIMIT_FORM_MESSAGE],
+  ['a number', 10, LIMIT_FORM_MESSAGE],
+  ['the name of a preset', 'auth', LIMIT_FORM_MESSAGE],
+  ['a list', [LIMIT], LIMIT_FORM_MESSAGE],
+  ['an object that inherits its limit', Object.create(LIMIT), LIMIT_FORM_MESSAGE],
+  ['timeWindow of the plugin', { max: 10, timeWindow: 60000 }, unreadLimitKeyMessage('timeWindow')],
+  ['keyGenerator of the plugin', { ...LIMIT, keyGenerator: readKey }, unreadLimitKeyMessage('keyGenerator')],
+  ['allowList of the plugin', { ...LIMIT, allowList: [] }, unreadLimitKeyMessage('allowList')],
+  ['the preset of reports, whose maxWithKey its controller reads', PRESETS.report, unreadLimitKeyMessage('maxWithKey')],
+  ['a misspelt window', { max: 10, windw: '1m' }, unreadLimitKeyMessage('windw')],
+  ['an empty object', {}, LIMIT_COUNT_MESSAGE],
+  ['no max', { window: '1m' }, LIMIT_COUNT_MESSAGE],
+  ['max: 0', { ...LIMIT, max: 0 }, LIMIT_COUNT_MESSAGE],
+  ['a negative max', { ...LIMIT, max: -1 }, LIMIT_COUNT_MESSAGE],
+  ['a max with a fraction', { ...LIMIT, max: 1.5 }, LIMIT_COUNT_MESSAGE],
+  ['a max in a string', { ...LIMIT, max: '10' }, LIMIT_COUNT_MESSAGE],
+  ['an endless max', { ...LIMIT, max: Infinity }, LIMIT_COUNT_MESSAGE],
+  ['no window', { max: 10 }, LIMIT_COUNT_MESSAGE],
+  ['a window in milliseconds', { ...LIMIT, window: 60000 }, LIMIT_COUNT_MESSAGE],
+  ['a window without a unit', { ...LIMIT, window: '60' }, LIMIT_COUNT_MESSAGE],
+  ['a window in ms', { ...LIMIT, window: '500ms' }, LIMIT_COUNT_MESSAGE],
+  ['a window of zero', { ...LIMIT, window: '0s' }, LIMIT_COUNT_MESSAGE],
+  ['a negative window', { ...LIMIT, window: '-1m' }, LIMIT_COUNT_MESSAGE],
+  ['an empty window', { ...LIMIT, window: '' }, LIMIT_COUNT_MESSAGE],
+  ['a negative ban', { ...LIMIT, ban: -1 }, LIMIT_OPTION_MESSAGE],
+  ['a ban with a fraction', { ...LIMIT, ban: 1.5 }, LIMIT_OPTION_MESSAGE],
+  ['a ban in a string', { ...LIMIT, ban: '30' }, LIMIT_OPTION_MESSAGE],
+  ['ban: false', { ...LIMIT, ban: false }, LIMIT_OPTION_MESSAGE],
+  ['a key that is a text', { ...LIMIT, key: 'user' }, LIMIT_OPTION_MESSAGE],
+  ['key: null', { ...LIMIT, key: null }, LIMIT_OPTION_MESSAGE],
+]);
+
+const ROUTE_HOOK_NAMES = Object.freeze([
+  'onRequest',
+  'preParsing',
+  'preValidation',
+  'preHandler',
+  'preSerialization',
+  'onSend',
+  'onResponse',
+  'onTimeout',
+  'onError',
+  'onRequestAbort',
+]);
+const MARKED_HOOK_NAMES = Object.freeze(['onRequest', 'preParsing', 'onSend']);
 
 // The auth plugin guards auth: true alone: a route with any of these would start open to anyone.
 const MALFORMED_SECURITIES = Object.freeze([
@@ -177,12 +257,78 @@ function createAppBehindGuards(t) {
   return fastify;
 }
 
+function createAppBehindLimiter(t) {
+  const fastify = createAppBehindGuards(t);
+
+  fastify.decorateRequest(RATE_LIMIT_DECORATOR, null);
+
+  return fastify;
+}
+
 function unknownScopeMessage(code) {
   return `security.scopes names "${code}", which is no action of the scope catalog in src/enums/scope.js: a typo would leave the route to full access alone`;
 }
 
 function unreadKeyMessage(key) {
-  return `names security.${key}, which no guard reads: security takes auth and scopes`;
+  return `names security.${key}, which no guard reads: security takes auth, scopes, rateLimit`;
+}
+
+function unreadLimitKeyMessage(key) {
+  return `security.rateLimit names "${key}", which no limiter reads: it takes max, window, ban, key`;
+}
+
+function readMax() {
+  return 5;
+}
+
+function readKey() {
+  return 'test-key';
+}
+
+function markHooks(events, label) {
+  async function onRequest(request) {
+    events.push([request.id, label, 'onRequest']);
+  }
+
+  async function preParsing(request, reply, payload) {
+    events.push([request.id, label, 'preParsing']);
+
+    return payload;
+  }
+
+  async function onSend(request, reply, payload) {
+    events.push([request.id, label, 'onSend']);
+
+    return payload;
+  }
+
+  return { onRequest, preParsing, onSend };
+}
+
+// In place, as @fastify/compress and @fastify/rate-limit push theirs: a list two routes share would collect both.
+function pushRouteHooks(events) {
+  return function pushHooks(routeOptions) {
+    const hooks = markHooks(events, `${routeOptions.method} ${routeOptions.url}`);
+
+    MARKED_HOOK_NAMES.forEach((name) => {
+      routeOptions[name].push(hooks[name]);
+    });
+  };
+}
+
+function readRun(events, response) {
+  const requestId = readRequestId(response);
+
+  return events.filter(([id]) => id === requestId).map(([, label, phase]) => [label, phase]);
+}
+
+function listRun(labels) {
+  return MARKED_HOOK_NAMES.flatMap((phase) => labels.map((label) => [label, phase]));
+}
+
+// A refusal in onRequest ends that phase and skips preParsing; onSend still runs.
+function listRefusedRun(author, own) {
+  return [[author, 'onRequest'], [author, 'onSend'], [own, 'onSend']];
 }
 
 function readRow(request, reply) {
@@ -496,10 +642,10 @@ describe('createRouteHook', () => {
       [{ auth: true, scope: [GROUPS_READ] }, 'scope'],
       [{ auth: true, Scopes: [GROUPS_READ] }, 'Scopes'],
       [{ auth: true, roles: ['admin'] }, 'roles'],
-      [{ auth: false, rateLimit: { max: 5 } }, 'rateLimit'],
+      [{ auth: false, captcha: { score: 0.5 } }, 'captcha'],
       [{ auth: true, scope: undefined }, 'scope'],
       [{ auth: true, scopes: [GROUPS_READ], scope: [GROUPS_MANAGE] }, 'scope'],
-      [{ auth: false, scopes: [GROUPS_READ], rateLimit: { max: 5 } }, 'rateLimit'],
+      [{ auth: false, scopes: [GROUPS_READ], captcha: { score: 0.5 } }, 'captcha'],
       [{ auth: true, scopes: ['groups:write'], roles: ['admin'] }, 'roles'],
       [{ auth: false, Auth: true }, 'Auth'],
     ];
@@ -699,6 +845,215 @@ describe('createRouteHook', () => {
         mediaType,
       );
     });
+  });
+});
+
+describe('createRouteHook: security.rateLimit', () => {
+  test('the hook takes security.rateLimit of false or of a limit, a frozen preset among them, beside auth and scopes, under a prefix or not, with its HEAD twin, behind the three plugins', (t) => {
+    const fastify = createAppBehindLimiter(t);
+    const { schema } = createRoute();
+    const urls = Object.values(VALID_LIMITS).flatMap((rateLimit, index) => {
+      fastify.get(`/api/v1/items/${index}`, { schema, security: { auth: false, rateLimit } }, readRow);
+      fastify.get(`/items/${index}`, { security: { auth: true, scopes: [GROUPS_READ], rateLimit } }, readRow);
+
+      return [`/api/v1/items/${index}`, `/items/${index}`];
+    });
+
+    assert.deepEqual(urls.filter((url) => ['GET', 'HEAD'].every((method) => fastify.hasRoute({ method, url }))), urls);
+  });
+
+  test('the hook refuses security.rateLimit of any other form, under a prefix or not, names the route with every method, keeps the TypeError of the form as the cause, and registers neither the route nor its HEAD twin', (t) => {
+    const fastify = createAppBehindLimiter(t);
+    const { schema } = createRoute();
+    const urls = MALFORMED_LIMITS.flatMap(([name, rateLimit, message], index) => {
+      const routes = [[`/api/v1/items/${index}`, { schema }], [`/items/${index}`, {}]];
+
+      routes.forEach(([url, options]) => {
+        assert.throws(() => fastify.get(url, { ...options, security: { auth: false, rateLimit } }, readRow), (error) => {
+          assert.equal(error.name, 'Error', name);
+          assert.equal(error.message, `Route GET ${url}: ${message}`, name);
+          assert.equal(error.cause.name, 'TypeError', name);
+          assert.equal(error.cause.message, message, name);
+
+          return true;
+        }, `${url} ${name}`);
+      });
+
+      return routes.map(([url]) => url);
+    });
+
+    assert.throws(
+      () => fastify.route({
+        method: ['PUT', 'PATCH'], url: '/items/:id', security: { auth: false, rateLimit: { ...LIMIT, max: 0 } }, handler: readRow,
+      }),
+      { name: 'Error', message: `Route PUT,PATCH /items/:id: ${LIMIT_COUNT_MESSAGE}` },
+    );
+    assert.deepEqual([...urls, '/items/:id'].filter((url) => ['GET', 'HEAD', 'PUT', 'PATCH'].some((method) => fastify.hasRoute({ method, url }))), []);
+  });
+
+  test('the hook called without an instance looks for no rate-limit plugin: it still checks the form of security.rateLimit', () => {
+    const checkRoute = createRouteHook(PREFIXES);
+
+    assert.doesNotThrow(() => checkRoute(createRoute({ security: LIMITED })));
+    assert.doesNotThrow(() => checkRoute(createRoute({ url: '/items', security: { auth: false, rateLimit: false }, schema: undefined })));
+    assert.throws(
+      () => checkRoute(createRoute({ security: { auth: false, rateLimit: { ...LIMIT, ban: -1 } } })),
+      { name: 'Error', message: `Route GET /api/v1/items: ${LIMIT_OPTION_MESSAGE}` },
+    );
+  });
+
+  test('the hook refuses config.rateLimit written by hand on every route, whatever its security and security.rateLimit, under a prefix or not, a route without security outside the prefixes too', (t) => {
+    const fastify = createAppBehindLimiter(t);
+    const { schema } = createRoute();
+    const securities = [
+      PUBLIC,
+      GUARDED,
+      { auth: false, rateLimit: false },
+      LIMITED,
+      { auth: true, scopes: [GROUPS_READ], rateLimit: LIMIT },
+      { auth: false, rateLimit: { ...LIMIT, max: 0 } },
+    ];
+    const configs = [
+      { rateLimit: { max: 1, timeWindow: 60000 } },
+      { rateLimit: false },
+      { rateLimit: null },
+      { isPressureExempt: true, rateLimit: LIMIT },
+    ];
+    const cases = securities.flatMap((security) => configs.map((config) => ({ security, config })));
+    const urls = cases.flatMap(({ security, config }, index) => [`/api/v1/items/${index}`, `/items/${index}`].map((url) => {
+      assert.throws(
+        () => fastify.get(url, { schema, security, config }, readRow),
+        { name: 'Error', message: `Route GET ${url} ${HAND_WRITTEN_LIMIT}` },
+        `${url} ${inspect(security)} ${inspect(config)}`,
+      );
+
+      return url;
+    }));
+
+    const plainUrls = ['/plain', '/api/v1/plain'];
+
+    [{ max: 1, timeWindow: 60000 }, false].forEach((rateLimit) => {
+      plainUrls.forEach((url) => {
+        assert.throws(
+          () => fastify.get(url, { schema, config: { rateLimit } }, readRow),
+          { name: 'Error', message: `Route GET ${url} ${HAND_WRITTEN_LIMIT}` },
+          `${url} ${inspect(rateLimit)}`,
+        );
+      });
+    });
+    assert.deepEqual([...urls, ...plainUrls].filter((url) => fastify.hasRoute({ method: 'GET', url })), []);
+  });
+
+  test('the hook refuses a route with security.rateLimit, false among them, on an instance the rate-limit plugin has not reached, also behind the auth plugin and the guard, under a prefix or not, and names it with every method', (t) => {
+    const fastify = createAppBehindGuards(t);
+    const { schema } = createRoute();
+
+    assert.throws(
+      () => fastify.get('/api/v1/items', { schema, security: LIMITED }, readRow),
+      { name: 'Error', message: `Route GET /api/v1/items ${LIMIT_OUT_OF_REACH}` },
+    );
+    assert.throws(
+      () => fastify.get('/items', { security: { auth: true, scopes: [GROUPS_READ], rateLimit: LIMIT } }, readRow),
+      { name: 'Error', message: `Route GET /items ${LIMIT_OUT_OF_REACH}` },
+    );
+    assert.throws(
+      () => fastify.route({
+        method: ['PUT', 'PATCH'], url: '/items/:id', security: { auth: false, rateLimit: false }, handler: readRow,
+      }),
+      { name: 'Error', message: `Route PUT,PATCH /items/:id ${LIMIT_OUT_OF_REACH}` },
+    );
+    fastify.get('/scoped', { security: SCOPED }, readRow);
+
+    assert.deepEqual(
+      ['/api/v1/items', '/items', '/items/:id', '/scoped'].map((url) => ['GET', 'PUT'].some((method) => fastify.hasRoute({ method, url }))),
+      [false, false, false, true],
+    );
+  });
+
+  test('the hook refuses one in a scope opened before the rate-limit plugin however late it is declared, and one beside a plugin that has the name of the rate-limit plugin and decorates as @fastify/rate-limit does', async (t) => {
+    const fastify = createAppBehindGuards(t);
+    let early;
+
+    await fastify.register(async (scope) => {
+      early = scope;
+    }, { prefix: '/early' });
+    await fastify.register(fp(async (instance) => {
+      instance.decorate('rateLimit', readRow);
+      instance.decorate('createRateLimit', readRow);
+      instance.decorateRequest(Symbol('fastify.request.rateLimitRan'), false);
+    }, { name: 'rate-limit' }));
+
+    assert.throws(() => fastify.get('/items', { security: LIMITED }, readRow), { message: `Route GET /items ${LIMIT_OUT_OF_REACH}` });
+
+    fastify.decorateRequest(RATE_LIMIT_DECORATOR, null);
+    fastify.get('/items', { security: LIMITED }, readRow);
+
+    assert.throws(() => early.get('/items', { security: LIMITED }, readRow), { message: `Route GET /early/items ${LIMIT_OUT_OF_REACH}` });
+    early.get('/open', { security: PUBLIC }, readRow);
+    assert.deepEqual(['/items', '/early/items', '/early/open'].map((url) => fastify.hasRoute({ method: 'GET', url })), [true, false, true]);
+  });
+});
+
+describe('createRouteHook: the hook lists of a route', () => {
+  test('the hook gives a route a list of its own for each hook it names, with what it was given in it, and names none it was not given', () => {
+    const checkRoute = createRouteHook(PREFIXES);
+    const { onRequest, onSend } = markHooks([], 'given');
+    const given = Object.freeze([onRequest, onSend]);
+
+    ROUTE_HOOK_NAMES.forEach((name) => {
+      const listed = { method: 'GET', url: '/items', [name]: given };
+      const single = { method: 'GET', url: '/items', [name]: onRequest };
+
+      checkRoute(listed);
+      checkRoute(single);
+
+      assert.notEqual(listed[name], given, name);
+      assert.equal(Object.isFrozen(listed[name]), false, name);
+      assert.deepEqual([listed[name], single[name]], [[onRequest, onSend], [onRequest]], name);
+    });
+
+    const bare = { method: 'GET', url: '/items' };
+
+    checkRoute(bare);
+
+    assert.deepEqual(ROUTE_HOOK_NAMES.filter((name) => Object.hasOwn(bare, name)), []);
+    assert.deepEqual(given, [onRequest, onSend]);
+  });
+
+  test('a hook list two routes share and a frozen one stay as they were after compress, the limiter and auth add hooks of their own: the app starts, and each route runs its own hooks once per request', async (t) => {
+    const fastify = await createApp(t);
+    const events = [];
+    const shared = markHooks(events, 'shared');
+    const frozen = markHooks(events, 'frozen');
+    const sharedLists = Object.fromEntries(MARKED_HOOK_NAMES.map((name) => [name, [shared[name]]]));
+    const frozenLists = Object.freeze(Object.fromEntries(MARKED_HOOK_NAMES.map((name) => [name, Object.freeze([frozen[name]])])));
+    const { schema } = createRoute();
+    const routes = {
+      limited: { ...sharedLists, security: { auth: false, rateLimit: { max: 1, window: '1m' } } },
+      open: { ...sharedLists, security: PUBLIC },
+      guarded: { ...sharedLists, security: GUARDED },
+      frozen: { ...frozenLists, security: PUBLIC },
+    };
+
+    fastify.addHook('onRoute', pushRouteHooks(events));
+    Object.entries(routes).forEach(([name, options]) => {
+      fastify.get(`/api/v1/items/${name}`, { ...options, schema }, readRow);
+    });
+    await fastify.ready();
+
+    const requests = [['GET', 'limited'], ['GET', 'open'], ['GET', 'limited'], ['GET', 'guarded'], ['GET', 'frozen'], ['HEAD', 'open']];
+    const responses = await mapSeries(requests, ([method, name]) => fastify.inject({ method, url: `/api/v1/items/${name}`, headers: COUNTED }));
+
+    assert.deepEqual(sharedLists, Object.fromEntries(MARKED_HOOK_NAMES.map((name) => [name, [shared[name]]])));
+    assert.deepEqual(responses.map((response) => response.statusCode), [200, 200, 429, 401, 200, 200]);
+    assert.deepEqual(responses.map((response) => readRun(events, response)), [
+      listRun(['shared', 'GET /api/v1/items/limited']),
+      listRun(['shared', 'GET /api/v1/items/open']),
+      listRefusedRun('shared', 'GET /api/v1/items/limited'),
+      listRefusedRun('shared', 'GET /api/v1/items/guarded'),
+      listRun(['frozen', 'GET /api/v1/items/frozen']),
+      listRun(['shared', 'HEAD /api/v1/items/open']),
+    ]);
   });
 });
 
@@ -1514,8 +1869,8 @@ describe('route contract in the app', () => {
       { name: 'Error', message: `Route GET /api/v1/items ${unreadKeyMessage('scope')}` },
     );
     assert.throws(
-      () => fastify.get('/items', { security: { auth: false, rateLimit: { max: 5 } } }, readRow),
-      { name: 'Error', message: `Route GET /items ${unreadKeyMessage('rateLimit')}` },
+      () => fastify.get('/items', { security: { auth: false, captcha: { score: 0.5 } } }, readRow),
+      { name: 'Error', message: `Route GET /items ${unreadKeyMessage('captcha')}` },
     );
     assert.deepEqual(['/api/v1/items', '/items'].map((url) => fastify.hasRoute({ method: 'GET', url })), [false, false]);
 
@@ -1604,9 +1959,9 @@ describe('route contract in the app', () => {
     assert.throws(() => fastify.get('/health', readRow), /GET \/health\b.*security/);
     assert.throws(() => fastify.get('/health/ready', { security: PUBLIC }, readRow), /GET \/health\/ready\b.*response/);
 
-    fastify.get('/health/live', { schema: { response: { 200: successEnvelope(createItem()) } }, security: PUBLIC }, readRow);
+    fastify.get('/health/probe', { schema: { response: { 200: successEnvelope(createItem()) } }, security: PUBLIC }, readRow);
 
-    const [live, health, ready] = await Promise.all(['/health/live', '/health', '/health/ready'].map((url) => fastify.inject(url)));
+    const [live, health, ready] = await Promise.all(['/health/probe', '/health', '/health/ready'].map((url) => fastify.inject(url)));
 
     assert.equal(live.statusCode, 200);
     assert.deepEqual(live.json().data, FILTERED_ROW);
@@ -1933,5 +2288,56 @@ describe('route contract in the app', () => {
     }));
 
     bodies.forEach((body) => assert.doesNotMatch(String(body), LEAK));
+  });
+});
+
+describe('route contract in the app: security.rateLimit', () => {
+  test('a route under /api with security.rateLimit of a wrong form or with config.rateLimit written by hand makes fastify.get() throw and is not registered; one with a limit counts by it alone, and one with false is not counted at all', async (t) => {
+    const fastify = await createApp(t, { rateLimit: { tiers: { ...createRateLimitConfig().tiers, guest: { max: 1, window: '1m' } } } });
+    const { schema } = createRoute();
+
+    assert.throws(
+      () => fastify.get('/api/v1/items', { schema, security: { auth: false, rateLimit: { ...LIMIT, keyGenerator: readKey } } }, readRow),
+      { name: 'Error', message: `Route GET /api/v1/items: ${unreadLimitKeyMessage('keyGenerator')}` },
+    );
+    assert.throws(
+      () => fastify.get('/api/v1/items', { schema, security: PUBLIC, config: { rateLimit: { max: 1, timeWindow: 60000 } } }, readRow),
+      { name: 'Error', message: `Route GET /api/v1/items ${HAND_WRITTEN_LIMIT}` },
+    );
+    assert.equal(fastify.hasRoute({ method: 'GET', url: '/api/v1/items' }), false);
+
+    fastify.get('/api/v1/items/limited', { schema, security: { auth: false, rateLimit: { max: 2, window: '1m' } } }, readRow);
+    fastify.get('/api/v1/items/free', { schema, security: { auth: false, rateLimit: false } }, readRow);
+
+    const urls = ['limited', 'limited', 'limited', 'free', 'free', 'free', 'missing'].map((name) => `/api/v1/items/${name}`);
+    const responses = await mapSeries(urls, (url) => fastify.inject({ url, headers: COUNTED }));
+
+    assert.deepEqual(responses.map((response) => [response.statusCode, response.json().code]), [
+      [200, undefined],
+      [200, undefined],
+      [429, 'RATE_LIMIT_ERROR'],
+      [200, undefined],
+      [200, undefined],
+      [200, undefined],
+      [404, 'NOT_FOUND_ERROR'],
+    ]);
+  });
+
+  test('a route with security.rateLimit of a wrong form or with config.rateLimit written by hand inside an async plugin under /api makes ready() reject with the route in the message', async (t) => {
+    const { schema } = createRoute();
+    const routes = [
+      [{ security: { auth: false, rateLimit: { ...LIMIT, window: '0s' } } }, `Route GET /api/v2/items: ${LIMIT_COUNT_MESSAGE}`],
+      [{ security: PUBLIC, config: { rateLimit: false } }, `Route GET /api/v2/items ${HAND_WRITTEN_LIMIT}`],
+    ];
+
+    await Promise.all(routes.map(async ([options, message]) => {
+      const fastify = await createApp(t);
+
+      fastify.register(async (instance) => {
+        instance.get('/items', { ...options, schema }, readRow);
+      }, { prefix: '/api/v2' });
+
+      await assert.rejects(fastify.ready(), { name: 'Error', message });
+    }));
   });
 });

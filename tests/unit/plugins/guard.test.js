@@ -332,10 +332,11 @@ describe('guard plugin: the order of the hooks', () => {
     const onRequest = [leaveName([], 'own')];
     const seen = {};
 
-    // Added after the plugins, it runs behind their onRoute hooks and sees what they have left.
+    // Added after the plugins, it runs behind their onRoute hooks and sees what they have left. The hooks of compress and
+    // the limiter come before those of auth and are not the matter here.
     fastify.addHook('onRoute', (routeOptions) => {
       if (routeOptions.method === 'GET') {
-        seen[routeOptions.url] = routeOptions.onRequest;
+        seen[routeOptions.url] = (routeOptions.onRequest ?? []).filter((hook) => hook === onRequest[0] || hook === authenticate || hook.name === 'guardScopes');
       }
     });
     fastify.get('/public', { onRequest, security: PUBLIC }, countCalls().handler);
@@ -344,8 +345,8 @@ describe('guard plugin: the order of the hooks', () => {
     fastify.get('/scoped', { onRequest, security: READ }, countCalls().handler);
     fastify.get('/plain-scoped', { security: READ }, countCalls().handler);
 
-    assert.equal(seen['/public'], onRequest);
-    assert.equal(seen['/no-security'], onRequest);
+    assert.deepEqual(seen['/public'], onRequest);
+    assert.deepEqual(seen['/no-security'], onRequest);
     assert.deepEqual(seen['/guarded'], [onRequest[0], authenticate]);
     assert.deepEqual(seen['/scoped'].slice(0, -1), [onRequest[0], authenticate]);
     assert.deepEqual(seen['/plain-scoped'].slice(0, -1), [authenticate]);

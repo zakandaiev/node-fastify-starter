@@ -1,5 +1,6 @@
 import { assertScopeRequirement } from '#core/authz/match.js';
 import { AppError } from '#core/error/index.js';
+import { assertRouteLimit } from '#core/rate-limit/index.js';
 import { isJsonField, rememberSourceSchema } from '#core/schema/docs.js';
 import { guardRouteSchema } from '#core/schema/finite.js';
 import { gateRouteSchema } from '#core/schema/gate.js';
@@ -42,13 +43,28 @@ const PREFIX_REGEXP = /^\/[^/]+(?:\/[^/]+)*$/;
 
 const PROPERTY_NAMES_KEYWORD = 'propertyNames';
 
-// Put on requests by the auth plugin and by the guard of scopes alone. A scope opened before such a plugin has none,
-// whatever it decorates itself.
+// The hooks Fastify reads from the options of a route.
+const ROUTE_HOOK_NAMES = Object.freeze([
+  'onRequest',
+  'preParsing',
+  'preValidation',
+  'preHandler',
+  'preSerialization',
+  'onSend',
+  'onResponse',
+  'onTimeout',
+  'onError',
+  'onRequestAbort',
+]);
+
+// Put on requests by the auth plugin, the guard of scopes and the limiter alone. A scope opened before such a plugin has
+// none, whatever it decorates itself.
 export const AUTH_DECORATOR = Symbol('auth');
 export const SCOPES_DECORATOR = Symbol('scopes');
+export const RATE_LIMIT_DECORATOR = Symbol('rate limit');
 
 // A key no guard reads, such as a misspelt "scope", would leave the route to every user who signs in.
-const SECURITY_KEYS = Object.freeze(['auth', 'scopes']);
+const SECURITY_KEYS = Object.freeze(['auth', 'scopes', 'rateLimit']);
 
 function isUnderPrefix(url, prefix) {
   return url === prefix || url.startsWith(`${prefix}/`);
@@ -377,16 +393,45 @@ function assertSecurityKeys(routeOptions) {
   const unknown = Object.keys(routeOptions.security).find((key) => !SECURITY_KEYS.includes(key));
 
   if (unknown !== undefined) {
-    throw new Error(`${formatRoute(routeOptions)} names security.${unknown}, which no guard reads: security takes ${SECURITY_KEYS.join(' and ')}`);
+    throw new Error(`${formatRoute(routeOptions)} names security.${unknown}, which no guard reads: security takes ${SECURITY_KEYS.join(', ')}`);
   }
+}
+
+// The limiter reads config.rateLimit, which its plugin writes from security.rateLimit: one written by hand would skip the
+// checks of the form, and a route would carry two limits that disagree.
+function assertOwnLimit(routeOptions) {
+  if (routeOptions.config?.rateLimit !== undefined) {
+    throw new Error(`${formatRoute(routeOptions)} names config.rateLimit: declare the limit of a route as security.rateLimit`);
+  }
+}
+
+function assertRateLimit(fastify, routeOptions) {
+  if (routeOptions.security.rateLimit === undefined) {
+    return false;
+  }
+
+  try {
+    assertRouteLimit(routeOptions.security.rateLimit);
+  } catch (error) {
+    throw new Error(`${formatRoute(routeOptions)}: ${error.message}`, { cause: error });
+  }
+
+  if (fastify?.hasRequestDecorator(RATE_LIMIT_DECORATOR) === false) {
+    throw new Error(`${formatRoute(routeOptions)} has security.rateLimit and is out of reach of the rate-limit plugin, which limits what is declared after it, in scopes opened after it`);
+  }
+
+  return true;
 }
 
 // A guard is put on the routes declared after its plugin, in scopes opened after it: any other would be open to anyone.
 // The form is checked for every route that has security, also outside the prefixes: auth: 'true' would let anyone in.
 function assertGuard(fastify, routeOptions) {
+  assertOwnLimit(routeOptions);
+
   if (routeOptions.security !== undefined) {
     assertSecurity(routeOptions);
     assertSecurityKeys(routeOptions);
+    assertRateLimit(fastify, routeOptions);
   }
 
   if (routeOptions.security?.auth === true && fastify?.hasRequestDecorator(AUTH_DECORATOR) === false) {
@@ -396,6 +441,18 @@ function assertGuard(fastify, routeOptions) {
   if (routeOptions.security?.scopes !== undefined) {
     assertScopes(fastify, routeOptions);
   }
+}
+
+// Plugins push hooks of their own into the lists of a route (compress, the limiter): a list its author shares between
+// routes would collect those of every route, and a frozen one would fail the start. Each route gets lists of its own.
+function copyRouteHooks(routeOptions) {
+  ROUTE_HOOK_NAMES
+    .filter((name) => routeOptions[name] !== undefined)
+    .forEach((name) => {
+      routeOptions[name] = [routeOptions[name]].flat();
+    });
+
+  return true;
 }
 
 // Synchronous: Fastify ignores the promise of an async onRoute hook, and the route would go live unchecked.
@@ -408,6 +465,7 @@ export function createRouteHook({ apiPrefix, healthPrefix } = {}) {
   }
 
   function checkRoute(routeOptions) {
+    copyRouteHooks(routeOptions);
     assertGuard(this, routeOptions);
 
     if (isObject(routeOptions.schema)) {
